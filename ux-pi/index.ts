@@ -88,6 +88,9 @@ export default function piUx(pi: ExtensionAPI): void {
 		}
 		// pasteToEditor inserts at the cursor and keeps typed text. setEditorText would replace it.
 		ctx.ui.pasteToEditor(quoted);
+		// The paste lands after an async clipboard read, outside pi's key handling, so nothing
+		// redraws the editor. Re-setting the widget is the public way to request a frame.
+		render(ctx);
 	}
 
 	pi.on("session_start", (_event, ctx) => {

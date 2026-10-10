@@ -83,6 +83,7 @@ describe("extension wiring (fake pi)", () => {
 		await f.shortcuts["alt+q"]!(ctx);
 		assert.deepEqual(calls.pasted, ["\n> line one\n> line two\n\n"]);
 		assert.deepEqual(calls.setText, []);
+		assert.equal(calls.widgets.length, 1, "a redraw is requested after the paste");
 		const c2 = fakeCtx("");
 		await f.commands.quote!("", c2.ctx);
 		assert.deepEqual(c2.calls.pasted, ["> line one\n> line two\n\n"]);
