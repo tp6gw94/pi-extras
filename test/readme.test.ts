@@ -56,6 +56,16 @@ for (const [lang, { file, other }] of Object.entries(readmes)) {
 			assert.ok(text.includes("`null`"), "disabling a shortcut is not documented");
 		});
 
+		it("says the defaults only collide in pi's Windows keybinding mode", () => {
+			for (const needle of ["`shift+ctrl+p`", "`alt+up`", "`WSL_DISTRO_NAME`", "`WSL_INTEROP`"]) {
+				assert.ok(text.includes(needle), `${needle} missing`);
+			}
+		});
+
+		it("says /quote replaces typed text and the shortcut keeps it", () => {
+			assert.ok(text.includes("`/quote` replaces what you typed") || text.includes("`/quote` 會取代你打好的字"));
+		});
+
 		it("lists the clipboard tools in the order pi-ux tries them", () => {
 			let from = 0;
 			for (const tool of CLIPBOARD_TOOLS) {

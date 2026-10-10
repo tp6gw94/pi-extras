@@ -5,7 +5,7 @@ import { CLIPBOARD_TOOLS, clipboardFailureMessage, readClipboard, type ExecFn } 
 import { DEFAULT_KEYS, isValidKey, parseConfig } from "../ux-core/config.ts";
 import { lastUserPrompt, PromptPin } from "../ux-core/prompt-state.ts";
 import { formatQuote } from "../ux-core/quote.ts";
-import { collapsedLine, ELLIPSIS, expandedLines, oneLine } from "../ux-core/summary.ts";
+import { collapsedLine, ELLIPSIS, expandedLines, oneLine, stripControls } from "../ux-core/summary.ts";
 
 describe("collapsed summary", () => {
 	it("is one line: newlines and runs of spaces collapse", () => {
@@ -51,6 +51,47 @@ describe("expanded view", () => {
 
 	it("wraps CJK by display width", () => {
 		for (const l of expandedLines("一二三四五六七八九十一二三四五六七八九十", 12)) assert.ok(visibleWidth(l) <= 12, l);
+	});
+});
+
+describe("control characters in the pinned prompt", () => {
+	const ESC = "\u001b";
+	const hostile = `before${ESC}[2J${ESC}[H${ESC}]0;pwned title\u0007middle${ESC}]8;;https://x.test${ESC}\\link${ESC}]8;;${ESC}\\ ${ESC}[31mred${ESC}[0m after`;
+	const noControls = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+	it("strips CSI (ESC[2J, cursor home, SGR) and OSC (title, hyperlink) sequences", () => {
+		assert.equal(stripControls(hostile), "beforemiddlelink red after");
+		assert.equal(oneLine(hostile), "beforemiddlelink red after");
+	});
+
+	it("strips C0 controls, DEL and C1 controls but keeps newlines and turns tabs into spaces", () => {
+		const text = "a\u0000b\u0007c\u0008d\u007fe\u009b2Jf\u0085g\th\r\ni\rj";
+		assert.equal(stripControls(text), "abcde2Jfg    h\ni\nj");
+		assert.ok(!noControls.test(stripControls(text)));
+	});
+
+	it("drops a lone ESC, an ESC + final byte, and an unterminated OSC", () => {
+		assert.equal(stripControls(`x${ESC}`), "x");
+		assert.equal(stripControls(`x${ESC}cy${ESC}(Bz`), "xyz");
+		assert.equal(stripControls(`x${ESC}]0;never ends`), "x");
+	});
+
+	it("collapsed and expanded views never contain ESC or control characters from the prompt", () => {
+		const prompt = `clear${ESC}[2J now\nline two${ESC}]2;title\u0007 ok\u0001\u009d`;
+		const collapsed = collapsedLine(prompt, 80);
+		assert.equal(collapsed, "❯ clear now line two ok");
+		const expanded = expandedLines(prompt, 80);
+		assert.deepEqual(expanded, ["│ clear now", "│ line two ok"]);
+		for (const l of [collapsed, ...expanded]) {
+			assert.ok(!l.includes(ESC) && !noControls.test(l), JSON.stringify(l));
+		}
+	});
+
+	it("keeps CJK, emoji and the width math intact", () => {
+		const line = collapsedLine(`${ESC}[1m第二行：請用英文回答${ESC}[0m 🙂`, 12);
+		assert.ok(visibleWidth(line) <= 12);
+		assert.ok(line.endsWith(ELLIPSIS));
+		assert.ok(!line.includes(ESC));
 	});
 });
 

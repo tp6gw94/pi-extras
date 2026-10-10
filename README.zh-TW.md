@@ -76,7 +76,7 @@ Explain this code:
 What does add return?
 ```
 
-引用最後會接一行空白行，你可以直接在下面繼續打字。執行 `/quote` 效果相同。剪貼簿是空的時候，pi-ux 不插入任何東西，並顯示警告：
+引用最後會接一行空白行，你可以直接在下面繼續打字。執行 `/quote` 會把同樣的引用插入空的編輯器。它會取代你打好的字，因為指令執行時，編輯器裡的內容就是 `/quote` 本身。剪貼簿是空的時候，pi-ux 不插入任何東西，並顯示警告：
 
 ```text
  Warning: pi-ux: the clipboard is empty (read with xsel). Nothing inserted.
@@ -111,6 +111,15 @@ pi 自己的 `keybindings.json` 只對應 pi 內建的動作，所以 pi-ux 從 
 
 - pi 核心動作用到的按鍵，例如 `ctrl+c` 或 `ctrl+p`，保留給 pi。pi 會略過 pi-ux 的快捷鍵，並在啟動時顯示警告。
 - pi 用到的其他按鍵交給 pi-ux，pi 會在啟動時顯示警告。
+
+pi 比對的是目前生效的按鍵，包括你自己的 `keybindings.json`。
+
+在 macOS 與 Linux 上，pi 的預設按鍵不會用到 `alt+p` 與 `alt+q`。pi 用 `shift+ctrl+p` 切換到上一個模型，用 `alt+up` 還原排隊中的訊息。在原生 Windows，以及設定了 `WSL_DISTRO_NAME` 或 `WSL_INTEROP` 的 WSL Linux 上，pi 會改用 Windows 按鍵模式。在這個模式下，pi 把 `alt+p` 綁在上一個模型、`alt+q` 綁在還原排隊訊息，兩個 pi-ux 預設鍵都會衝突：
+
+- `alt+p` 是 pi 的核心按鍵，pi 會略過 pi-ux 的展開快捷鍵。
+- `alt+q` 交給 pi-ux，pi 的還原排隊訊息就沒有按鍵了。
+
+在 Windows 按鍵模式下，請在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
 
 預設用 `alt` 組合鍵，是因為 tmux、herdr 等終端機多工器使用 `ctrl+b` 前綴，而且舊式終端機會把 `alt+字母` 送成 Escape 加上該字母，pi 看得懂。`ctrl+shift+p` 這類組合鍵，只有在支援 kitty keyboard protocol 或類似延伸按鍵模式的終端機才傳得到 pi。
 
@@ -170,9 +179,9 @@ pi-ux 不處理對話紀錄的導覽，因為 pi 本身就有。在預設的 ful
 ## 限制
 
 - 在 macOS 上，`alt` 快捷鍵需要終端機把 Option 當成 Meta 送出。Terminal.app 請開啟「Use Option as Meta key」。iTerm2 請把 Option 鍵設成「Esc+」。否則 Option 會打出特殊字元，例如 `π`。
-- 在 Windows 與 WSL 上，pi 把 `alt+p` 綁在反向切換模型，這是保留按鍵，所以 pi-ux 會略過展開快捷鍵。pi 在那裡也綁了 `alt+q`，pi-ux 會接手。在這些系統上請在 `pi-ux.json` 設定其他按鍵。
-- `/quote` 是從編輯器執行的，所以執行前打的字會消失。要保留已輸入的文字，請用快捷鍵。
-- pi-ux 看不到游標位置，所以只能依編輯器文字的結尾，決定引用要不要從新的一行開始。
+- 在 pi 的 Windows 按鍵模式，也就是原生 Windows 與 WSL 上，兩個預設鍵都和 pi 衝突。請參考[更改快捷鍵](#更改快捷鍵)，並在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
+- `/quote` 會取代你打好的字。指令執行時，編輯器裡的內容是 `/quote`，pi 送出時會清空它，所以引用會落在空的編輯器。要保留已輸入的文字，請用快捷鍵。
+- pi-ux 看不到游標位置。只要整個編輯器文字不是以換行結尾，引用就會從新的一行開始，即使游標在別處，例如中間某個空行的開頭。
 - 恢復 session 後，pi-ux 釘選的是 session 裡最後一則使用者訊息。pi 不會記錄訊息來源，所以其他 extension 送出的使用者訊息可能會出現在那裡。
 - 恢復 session 後，skill 或 prompt template 顯示的是展開後的文字，而不是你輸入的指令。
 

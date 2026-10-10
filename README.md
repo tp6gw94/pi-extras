@@ -76,7 +76,7 @@ Explain this code:
 What does add return?
 ```
 
-The quote ends with one blank line, so you can keep typing below it. Running `/quote` does the same. If the clipboard is empty, pi-ux inserts nothing and shows a warning:
+The quote ends with one blank line, so you can keep typing below it. Running `/quote` inserts the same quote into an empty editor. It replaces what you typed, because the editor holds `/quote` itself when the command runs. If the clipboard is empty, pi-ux inserts nothing and shows a warning:
 
 ```text
  Warning: pi-ux: the clipboard is empty (read with xsel). Nothing inserted.
@@ -111,6 +111,15 @@ Keys use pi's key syntax: zero or more of `ctrl`, `shift`, `alt` and `super`, jo
 
 - A key that one of pi's core actions uses, such as `ctrl+c` or `ctrl+p`, stays with pi. pi skips the pi-ux shortcut and shows a warning at startup.
 - Any other key that pi uses goes to pi-ux, and pi shows a warning at startup.
+
+pi makes this check against its active keys, including your own `keybindings.json`.
+
+On macOS and Linux, pi's defaults leave `alt+p` and `alt+q` free. pi cycles to the previous model with `shift+ctrl+p` and restores queued messages with `alt+up`. pi switches to a Windows keybinding mode on native Windows, and on Linux under WSL when `WSL_DISTRO_NAME` or `WSL_INTEROP` is set. In that mode, pi binds `alt+p` to the previous model and `alt+q` to restoring queued messages, so both pi-ux defaults collide:
+
+- `alt+p` is a core pi key, so pi skips the pi-ux toggle shortcut.
+- `alt+q` goes to pi-ux, and pi's restore of queued messages loses its key.
+
+In the Windows keybinding mode, set other keys in `~/.pi/agent/pi-ux.json`.
 
 The defaults are `alt` chords because terminal multiplexers such as tmux and herdr use a `ctrl+b` prefix, and because legacy terminals send `alt+letter` as Escape followed by the letter, which pi understands. Chords such as `ctrl+shift+p` only reach pi in terminals that support the kitty keyboard protocol or a similar extended key mode.
 
@@ -170,9 +179,9 @@ pi-ux does not navigate the transcript, because pi already does. In the default 
 ## Limitations
 
 - On macOS, `alt` shortcuts need the terminal to send Option as Meta. In Terminal.app, turn on "Use Option as Meta key". In iTerm2, set the Option key to "Esc+". Otherwise, Option types a special character, such as `π`.
-- On Windows and WSL, pi binds `alt+p` to cycling models backward, which is reserved, so pi-ux skips its toggle shortcut. pi also binds `alt+q` there, and pi-ux takes it over. Set other keys in `pi-ux.json` on those systems.
-- `/quote` runs from the editor, so the text you typed before it is gone. Use the shortcut to keep typed text.
-- pi-ux cannot see the cursor position, so it decides whether to start the quote on a new line from the end of the editor text.
+- In pi's Windows keybinding mode, native Windows and WSL, both default keys collide with pi. See [Change the shortcuts](#change-the-shortcuts) and set other keys in `~/.pi/agent/pi-ux.json`.
+- `/quote` replaces what you typed. When the command runs, the editor holds `/quote`, and pi clears it on submit, so the quote lands in an empty editor. Use the shortcut to keep typed text.
+- pi-ux cannot see the cursor position. It starts the quote on a new line when the whole editor text does not end with a newline, even when the cursor sits elsewhere, such as at the start of an empty line in the middle.
 - After a resume, pi-ux pins the last user message in the session. pi does not record where a message came from, so a user message sent by another extension can show up there.
 - After a resume, a skill or prompt template shows its expanded text instead of the command you typed.
 

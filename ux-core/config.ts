@@ -1,6 +1,15 @@
 export const CONFIG_FILE_NAME = "pi-ux.json";
 
-/** Shortcut actions and their default keys. */
+/**
+ * Shortcut actions and their default keys.
+ *
+ * pi (keybindings.ts @28dcce2) leaves alt+p and alt+q free on macOS and Linux, where the previous
+ * model is shift+ctrl+p and restoring queued messages is alt+up. Only pi's Windows keybinding mode
+ * (native Windows, or WSL via WSL_DISTRO_NAME or WSL_INTEROP) binds alt+p and alt+q. pi-ux does no
+ * platform check itself: pi's extension runner compares each shortcut with its active keys, skips
+ * one that hits a reserved key (alt+p there) and lets pi-ux override the rest (alt+q there), with a
+ * startup warning either way. The README tells Windows-mode users to change pi-ux.json.
+ */
 export const DEFAULT_KEYS = {
 	togglePrompt: "alt+p",
 	quoteClipboard: "alt+q",
