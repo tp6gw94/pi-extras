@@ -1,0 +1,19 @@
+{
+  "name": "pi-ux",
+  "version": "0.0.0",
+  "description": "Small interactive-UX additions for the pi coding agent.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.4",
+    "@earendil-works/pi-tui": "^1.0.4",
+    "node": "^22.23.3",
+    "typescript": "^7.0.2"
+  }
+}
