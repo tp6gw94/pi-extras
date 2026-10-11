@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Drive interactive pi in tmux and check pi-ux end to end.
-#
 # Needs: tmux, xclip, xsel, an X server on $DISPLAY (Xvfb works), pi on PATH,
 # and a logged-in model. Not part of `npm test` because it calls a real model.
 #
 #	Xvfb :77 &
 #	DISPLAY=:77 PI_UX_MODEL="--provider openai-codex --model gpt-5.5" test/e2e/tmux-verify.sh
-#
-# Captured panes land in $EV (default /tmp/pi-ux-ev).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -32,7 +28,7 @@ keys() { tmux send-keys -t "$S" "$@"; }
 type_text() { tmux send-keys -t "$S" -l "$1"; sleep 0.4; }
 paste_text() { tmux set-buffer -b piux "$1"; tmux paste-buffer -p -b piux -t "$S"; sleep 0.4; }
 cap() { tmux capture-pane -p -t "$S" >"$EV/$1.txt"; cat "$EV/$1.txt"; }
-expect() { # name, file, regex
+expect() {
 	if grep -qE -- "$3" "$EV/$2.txt"; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi
 }
 reject() {
@@ -83,7 +79,6 @@ expect "empty clipboard warns" 10-empty-shortcut 'clipboard is empty.*Nothing in
 expect "empty clipboard keeps editor" 10-empty-shortcut '^keep me$'
 reject "empty clipboard inserts nothing" 10-empty-shortcut '^> '
 
-# Resume: send one more prompt, quit, continue the session.
 keys C-c; sleep 0.4; type_text "Reply with exactly: resumed-ok"; send
 keys C-d; sleep 2
 start --continue

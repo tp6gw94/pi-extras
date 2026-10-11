@@ -18,7 +18,6 @@ function sections(failures: readonly CheckFailure[], maxChars: number): string {
 		.join("\n\n");
 }
 
-/** Message asking the agent to fix failures within the same turn. */
 export function fixRequestMessage(failures: readonly CheckFailure[], attempt: number, limit: number, maxChars: number): string {
 	return [
 		`[pi-hooks] Checks failed on files you changed (automatic fix attempt ${attempt} of ${limit}). Fix the code so these checks pass, then finish your reply.`,
@@ -28,7 +27,6 @@ export function fixRequestMessage(failures: readonly CheckFailure[], attempt: nu
 	].join("\n");
 }
 
-/** Final message once the fix cap is reached. */
 export function giveUpMessage(failures: readonly CheckFailure[], limit: number, maxChars: number): string {
 	return `[pi-hooks] Checks still fail after ${limit} automatic fix attempt(s); stopped. Remaining errors:\n\n${sections(failures, maxChars)}`;
 }

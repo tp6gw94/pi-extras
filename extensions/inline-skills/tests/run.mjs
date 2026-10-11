@@ -1,12 +1,14 @@
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
-const EVIDENCE = process.env.EVIDENCE ?? "/tmp/pi-inline-skills-20261008/evidence/implementation";
+const EVIDENCE = process.env.EVIDENCE ?? mkdtempSync(join(tmpdir(), "pi-inline-skills-"));
+if (!process.env.EVIDENCE) process.on("exit", () => rmSync(EVIDENCE, { recursive: true, force: true }));
 
 function findPiRoot() {
 	if (process.env.PI_ROOT) return process.env.PI_ROOT;

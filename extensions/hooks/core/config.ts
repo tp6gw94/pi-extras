@@ -4,32 +4,25 @@ export const DEFAULT_BEFORE_SETTLE_TIMEOUT_MS = 120_000;
 export const DEFAULT_MAX_FIX_ATTEMPTS = 3;
 export const DEFAULT_MAX_OUTPUT_CHARS = 4_000;
 
-/** Every top-level key the loader reads. README tests check each one is documented. */
 export const TOP_LEVEL_KEYS = ["afterWrite", "beforeSettle", "maxFixAttempts", "maxOutputChars"] as const;
-/** Every rule key the loader reads. */
 export const RULE_KEYS = ["glob", "command", "timeoutMs", "name"] as const;
 
 export interface HookRule {
-	/** One or more globs; `!glob` excludes. */
 	globs: string[];
 	command: string;
 	timeoutMs: number;
-	/** Optional label used in notifications. Defaults to the command. */
 	name: string;
 }
 
 export interface HooksConfig {
 	afterWrite: HookRule[];
 	beforeSettle: HookRule[];
-	/** Automatic fix continuations per user prompt before giving up. */
 	maxFixAttempts: number;
-	/** Per-rule cap on error output sent to the agent. */
 	maxOutputChars: number;
 }
 
 export interface ParseResult {
 	config: HooksConfig;
-	/** Problems found; invalid rules are skipped, the rest still load. */
 	errors: string[];
 }
 

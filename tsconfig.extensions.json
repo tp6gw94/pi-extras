@@ -14,8 +14,6 @@
 	"include": ["extensions/**/*.ts"],
 	"exclude": [
 		"extensions/ux/**",
-		"extensions/hooks/**",
-		"extensions/ralph/**",
-		"extensions/skill-name-normalizer/test/**"
+		"extensions/hooks/**"
 	]
 }

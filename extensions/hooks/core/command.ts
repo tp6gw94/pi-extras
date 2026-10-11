@@ -1,7 +1,6 @@
 import { matchAny } from "./glob.ts";
 import type { HookRule } from "./config.ts";
 
-/** POSIX single-quote a word for `sh -c`. */
 export function shellQuote(word: string): string {
 	if (word !== "" && /^[A-Za-z0-9_@%+=:,./-]+$/.test(word)) return word;
 	return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -15,18 +14,12 @@ export function safeFileArg(file: string): string {
 	return file.startsWith("-") ? `./${file}` : file;
 }
 
-/**
- * Replace every `{files}` in the command with the shell-quoted file list
- * (paths starting with `-` are prefixed with `./`, see `safeFileArg`).
- * A command without `{files}` is returned unchanged (it runs project-wide).
- */
 export function substituteFiles(command: string, files: readonly string[]): string {
 	if (!command.includes("{files}")) return command;
 	const list = files.map((f) => shellQuote(safeFileArg(f))).join(" ");
 	return command.split("{files}").join(list);
 }
 
-/** Files (project-relative) a rule applies to, in input order, de-duplicated. */
 export function filesForRule(rule: HookRule, files: readonly string[]): string[] {
 	const seen = new Set<string>();
 	const out: string[] = [];
@@ -39,7 +32,6 @@ export function filesForRule(rule: HookRule, files: readonly string[]): string[]
 	return out;
 }
 
-/** Each rule paired with the files it should run on; rules with no files are dropped. */
 export function routeFiles(rules: readonly HookRule[], files: readonly string[]): { rule: HookRule; files: string[] }[] {
 	const out: { rule: HookRule; files: string[] }[] = [];
 	for (const rule of rules) {
@@ -49,12 +41,10 @@ export function routeFiles(rules: readonly HookRule[], files: readonly string[])
 	return out;
 }
 
-/** Remove ANSI color/escape sequences (linters often color output even when piped). */
 export function stripAnsi(text: string): string {
 	return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
 }
 
-/** Strip ANSI, then keep the head and tail of long output, marking what was cut. */
 export function truncateOutput(text: string, maxChars: number): string {
 	const t = stripAnsi(text).replace(/\r\n/g, "\n").trimEnd();
 	if (t.length <= maxChars) return t;

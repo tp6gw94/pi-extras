@@ -119,7 +119,6 @@ export const terminalScheduleStates: Set<ScheduleState["status"]>;
 export function assertTransition(previous: TaskState["status"], next: TaskState["status"]): void;
 export function boundedInteger(value: unknown, name: string, min: number, max: number): number;
 export function nonempty(value: unknown, name: string, max?: number): string;
-/** Resume omits context so normalizing an already normalized spec preserves the exclusion. */
 export function normalizeTaskSpec(input: unknown, defaults?: TaskDefaults): TaskSpec;
 export function normalizeTools(value?: unknown): string[];
 export function normalizeSessionReference(value: unknown): string;

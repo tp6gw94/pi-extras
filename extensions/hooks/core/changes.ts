@@ -4,10 +4,6 @@ import type { ExecFn } from "./run.ts";
 
 const GIT_TIMEOUT_MS = 30_000;
 
-/**
- * Write the whole working tree (tracked + untracked, respecting .gitignore) as a git
- * tree object, using a throwaway copy of the index so the user's index is untouched.
- */
 const SNAPSHOT_SCRIPT = [
 	'idx=$(mktemp "${TMPDIR:-/tmp}/pi-hooks-index.XXXXXX") || exit 1',
 	'real=$(git rev-parse --git-path index) || { rm -f "$idx"; exit 1; }',
@@ -44,7 +40,6 @@ export async function snapshotGit(exec: ExecFn, cwd: string): Promise<GitSnapsho
 	return { kind: "git", root, tree };
 }
 
-/** Paths (relative to `cwd`) added or modified between two snapshots; deletions and paths outside cwd excluded. */
 export async function changedSince(exec: ExecFn, cwd: string, start: GitSnapshot): Promise<string[] | undefined> {
 	const end = await snapshotGit(exec, cwd);
 	if (!end || end.root !== start.root) return undefined;
@@ -64,7 +59,6 @@ export async function changedSince(exec: ExecFn, cwd: string, start: GitSnapshot
 	return out;
 }
 
-/** Project-relative POSIX path, or undefined when outside the project. */
 export function toProjectRelative(absPath: string, cwd: string): string | undefined {
 	const rel = relative(cwd, absPath);
 	if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
@@ -79,7 +73,6 @@ function isRegularFile(p: string): boolean {
 	}
 }
 
-/** Fallback when the project is not a git repo: paths reported by write/edit tool results. */
 export class ToolChangeRecorder {
 	private files = new Set<string>();
 	reset(): void {

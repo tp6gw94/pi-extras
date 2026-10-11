@@ -66,22 +66,15 @@ export type ParsedCoordinationRecord =
   | { method: "input"; nativeDialogId: string; envelope: Extract<CoordinationEnvelope, { kind: "ask" }> }
   | { method: "notify"; envelope: Exclude<CoordinationEnvelope, { kind: "ask" }> };
 
-/** Undefined uses the defaults. Custom arrays replace them, including an empty array. Duplicates reject. */
 export function normalizeTools(value?: unknown): string[];
-/** Accepts an opaque literal ID or an absolute .jsonl path without resolving or adopting it. */
 export function normalizeSessionReference(value: unknown): string;
 export function normalizeCoordinationText(value: unknown, name?: string): string;
 export function normalizeParentCall(value: unknown): NormalizedParentCall;
 export function normalizeParentAnswer(value: unknown): ParentAnswer;
 export function normalizePendingOptions(value?: unknown): { after: number; limit: number };
-/** The ask- namespace distinguishes coordination request IDs from native UUID dialog IDs. */
 export function createCoordinationRequestId(): string;
 export function encodeCoordinationEnvelope(binding: LaunchBinding, message: CoordinationMessage): string;
-/** Ordinary text and unrelated version/kind/binding return null. Malformed prefixed JSON or matching payloads throw. */
 export function decodeCoordinationEnvelope(value: unknown, binding: LaunchBinding): CoordinationEnvelope | null;
-/** Notify carries inventory/report/ask_closed in message. Input carries ask in title. Other methods stay ordinary. */
 export function parseCoordinationRecord(record: unknown, binding: LaunchBinding): ParsedCoordinationRecord | null;
-/** Validates bounded names, complete exposure metadata, and actual active/declared/callable consistency. */
 export function validateToolInventory(value: unknown): ToolInventory;
-/** Requires declared union callable to equal requested union the model-only parent tool. Reachable is sorted. */
 export function verifyCapabilities(requested: unknown, selectedWebTools: unknown, inventory: unknown, approvedWebTools?: string[]): Capabilities;

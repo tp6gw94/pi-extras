@@ -94,6 +94,8 @@ pi config 會在設定檔寫入一筆精確路徑的排除：
 
 ## 開發
 
+開發需要 Node 22 以上（`.nvmrc` 指定 22，`nvm use` 會選用它）。
+
 ```sh
 npm install
 npm test
@@ -101,7 +103,7 @@ npm run typecheck
 ```
 
 - `npm test` 會跑每個 extension 的測試，包括 `.ts` 與 `.mjs`。`rpc-subagents` 裡需要已安裝 pi 的測試會略過，除非你把 `RPC_SUBAGENTS_PI_PACKAGE` 設成全域安裝的 pi，例如 `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`。
-- `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。`ralph` 與 `skill-name-normalizer` 的測試目前還沒有做型別檢查。
+- `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。
 - `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
 
 pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。`croner` 是唯一的執行期 dependency。

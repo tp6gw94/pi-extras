@@ -3,10 +3,13 @@ import { fileURLToPath } from "node:url"
 import { Type } from "typebox"
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
-	ReplacedSessionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
+
+type NewSessionOptions = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>
+type ReplacedSessionContext = Parameters<NonNullable<NewSessionOptions["withSession"]>>[0]
 
 const RUN_STATE_TYPE = "ralph:run-state"
 const RUN_STATE_VERSION = 1
@@ -201,12 +204,16 @@ function clearStatus(ctx: Pick<ExtensionContext, "mode" | "ui">): void {
 	if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined)
 }
 
-function tryClearStatus(ctx: Pick<ExtensionContext, "mode" | "ui">): void {
+function ignoreReplacedContext(action: () => void): void {
 	try {
-		clearStatus(ctx)
+		action()
 	} catch {
-		// The context may have been invalidated by session replacement.
+		// pi throws from a context that went stale after a session replacement or reload.
 	}
+}
+
+function tryClearStatus(ctx: Pick<ExtensionContext, "mode" | "ui">): void {
+	ignoreReplacedContext(() => clearStatus(ctx))
 }
 
 function refreshStatus(ctx: Pick<ExtensionContext, "mode" | "ui" | "sessionManager">): void {
@@ -224,11 +231,7 @@ function pendingState(state: RalphRunState): RalphRunState {
 }
 
 function tryAppendRunStateToContext(ctx: Pick<ExtensionContext, "sessionManager">, state: RalphRunState): void {
-	try {
-		appendRunStateToContext(ctx, state)
-	} catch {
-		// The context may have been invalidated by session replacement.
-	}
+	ignoreReplacedContext(() => appendRunStateToContext(ctx, state))
 }
 
 function tryNotify(
@@ -236,11 +239,7 @@ function tryNotify(
 	message: string,
 	level: "info" | "warning" | "error",
 ): void {
-	try {
-		notify(ctx, message, level)
-	} catch {
-		// The context may have been invalidated by session replacement.
-	}
+	ignoreReplacedContext(() => notify(ctx, message, level))
 }
 
 export function buildRalphPrompt(task: string, iteration: number, maxIterations: number): string {
@@ -378,14 +377,14 @@ const ralphReportTool = {
 	async execute(_toolCallId: string, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) {
 		if (!isRecord(params) || typeof params.stage !== "string" || !/\S/u.test(params.stage)) {
 			return {
-				content: [{ type: "text", text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
+				content: [{ type: "text" as const, text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
 				details: undefined,
 			}
 		}
 		const stage = sanitizeProgressText(params.stage)
 		if (!stage) {
 			return {
-				content: [{ type: "text", text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
+				content: [{ type: "text" as const, text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
 				details: undefined,
 			}
 		}
@@ -393,7 +392,7 @@ const ralphReportTool = {
 		const state = latestRunState(ctx)
 		if (!state?.active || state.status !== "running") {
 			return {
-				content: [{ type: "text", text: "No active Ralph loop to report progress to." }],
+				content: [{ type: "text" as const, text: "No active Ralph loop to report progress to." }],
 				details: undefined,
 			}
 		}
@@ -402,7 +401,7 @@ const ralphReportTool = {
 		appendRunStateToContext(ctx, nextState)
 		updateStatus(ctx, nextState)
 		return {
-			content: [{ type: "text", text: `Ralph stage updated: ${nextState.stage}` }],
+			content: [{ type: "text" as const, text: `Ralph stage updated: ${nextState.stage}` }],
 			details: undefined,
 		}
 	},

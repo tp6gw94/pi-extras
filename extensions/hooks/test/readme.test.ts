@@ -16,7 +16,6 @@ function read(file: string): string {
 	return readFileSync(join(root, file), "utf8");
 }
 
-/** The ```json block right after the `<!-- example-config -->` marker. */
 function exampleConfig(text: string): string {
 	const m = /<!-- example-config -->\s*```json\n([\s\S]*?)\n```/.exec(text);
 	assert.ok(m, "example-config block not found");
@@ -48,7 +47,6 @@ for (const [lang, { file, other }] of Object.entries(readmes)) {
 			assert.deepEqual(route(config.beforeSettle, "app/util.py"), ["ruff check"]);
 			assert.deepEqual(route(config.afterWrite, "docs/notes.md"), []);
 			assert.deepEqual(route(config.beforeSettle, "docs/notes.md"), []);
-			// a turn touching both: each lint runs once with only its own files
 			const mixed = routeFiles(config.beforeSettle, ["src/math.ts", "app/util.py", "src/greet.ts", "docs/notes.md"]);
 			assert.deepEqual(
 				mixed.map((r) => [r.rule.name, r.files]),
@@ -57,7 +55,6 @@ for (const [lang, { file, other }] of Object.entries(readmes)) {
 					["ruff check", ["app/util.py"]],
 				],
 			);
-			// the table rows name the same commands
 			for (const row of ["| `src/math.ts` | `prettier` | `eslint` |", "| `app/util.py` | `ruff format` | `ruff check` |"]) {
 				assert.ok(text.includes(row), `table row missing: ${row}`);
 			}

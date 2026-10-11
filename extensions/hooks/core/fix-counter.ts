@@ -1,7 +1,3 @@
-/**
- * Counts automatic fix continuations within one user prompt.
- * `reset()` on before_agent_start; `tryConsume()` before asking the agent to fix.
- */
 export class FixCounter {
 	private used = 0;
 	private max: number;
@@ -30,7 +26,6 @@ export class FixCounter {
 		return this.used >= this.max;
 	}
 
-	/** Returns the 1-based attempt number, or undefined when the cap is reached. */
 	tryConsume(): number | undefined {
 		if (this.used >= this.max) return undefined;
 		this.used++;

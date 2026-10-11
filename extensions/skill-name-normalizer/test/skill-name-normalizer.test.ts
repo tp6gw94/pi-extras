@@ -52,7 +52,7 @@ function addInvalidSkill(box: Box): void {
 }
 
 function skillCommands(box: Box): Promise<Map<string, string>> {
-	const env = { ...process.env, HOME: box.home };
+	const env: NodeJS.ProcessEnv = { ...process.env, HOME: box.home };
 	delete env.PI_CODING_AGENT_DIR;
 	return new Promise((resolvePromise, reject) => {
 		const child = spawn(PI_BIN, ["--mode", "rpc", "--no-session"], { cwd: box.work, env });
@@ -85,7 +85,7 @@ test("an invalid skill name is exposed under its directory name with its files r
 
 	assert.equal(commands.has("skill:Poteto Mode"), false);
 	const path = commands.get("skill:poteto-mode");
-	assert.ok(path?.startsWith(`${box.generated}/`));
+	assert.ok(path !== undefined && path.startsWith(`${box.generated}/`));
 	assert.equal(readFileSync(path, "utf8"), INVALID_SKILL.replace("name: Poteto Mode", "name: poteto-mode"));
 	assert.equal(readFileSync(join(dirname(path), "playbooks", "a.md"), "utf8"), "playbook\n");
 });

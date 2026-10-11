@@ -1,8 +1,3 @@
-/**
- * Holds the config frozen at the start of a user prompt. While a run is active the
- * frozen copy is used even if the file changes on disk (the agent may edit it);
- * the change applies, after re-confirmation, from the next prompt.
- */
 export class RunConfig<T extends { hash: string }> {
 	private frozen: T | undefined;
 	private active = false;
@@ -27,7 +22,6 @@ export class RunConfig<T extends { hash: string }> {
 		return this.frozen;
 	}
 
-	/** True once per distinct on-disk hash that differs from the frozen one (undefined = file removed). */
 	shouldWarnChange(currentHash: string | undefined): boolean {
 		if (!this.active || !this.frozen || currentHash === this.frozen.hash) return false;
 		const key = currentHash ?? "<missing>";

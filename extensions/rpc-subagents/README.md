@@ -299,5 +299,3 @@ RPC_SUBAGENTS_PI_PACKAGE=/absolute/path/to/@earendil-works/pi-coding-agent \
 ```
 
 型別檢查需要 PATH 上已有 `tsc`，只讀取指定 Pi 的宣告檔，不執行 Pi。指定 `RPC_SUBAGENTS_PI_PACKAGE` 的測試會使用該安裝的純 context projection 與 TUI 寬度工具，不建立 Pi session 或執行模型。未指定 package 時這些測試明確略過；cron DST 測試在缺少依賴時明確略過。測試使用假 RPC process 與可控時計，不呼叫 provider API 或 Herdr CLI。
-
-完整狀態、儲存與限制見 [參考文件](REFERENCE.md)。

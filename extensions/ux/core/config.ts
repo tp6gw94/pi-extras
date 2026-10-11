@@ -16,18 +16,15 @@ export const DEFAULT_KEYS = {
 } as const;
 
 export type KeyAction = keyof typeof DEFAULT_KEYS;
-/** Every top-level key the loader reads. README tests check each one is documented. */
 export const TOP_LEVEL_KEYS = ["keys"] as const;
 export const KEY_ACTIONS = Object.keys(DEFAULT_KEYS) as KeyAction[];
 
 export interface UxConfig {
-	/** `undefined` disables the shortcut. */
 	keys: Record<KeyAction, string | undefined>;
 }
 
 const MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
 
-/** Loose check of pi's key syntax: zero or more modifiers, then one key. */
 export function isValidKey(key: string): boolean {
 	const k = key.toLowerCase();
 	if (k === "" || k === "+") return k === "+";

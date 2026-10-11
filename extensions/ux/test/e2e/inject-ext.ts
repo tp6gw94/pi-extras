@@ -1,4 +1,3 @@
-/** Test-only extension: `/inject` sends a user message from an extension (input source "extension"). */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {

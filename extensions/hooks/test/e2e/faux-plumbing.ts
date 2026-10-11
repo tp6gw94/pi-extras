@@ -1,7 +1,3 @@
-/**
- * Plumbing smoke test only (scripted model, not the acceptance run):
- * one turn writes 5 files (one with a lint error), then fixes it after the lint message.
- */
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 

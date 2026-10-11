@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ExecFn } from "../core/run.ts";
 
-/** Same contract as pi's execCommand (spawn without shell, SIGTERM on timeout/abort). */
 export const nodeExec: ExecFn = (command, args, options) =>
 	new Promise((resolve) => {
 		const proc = spawn(command, args, { cwd: options?.cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });

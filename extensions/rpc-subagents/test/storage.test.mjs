@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { SessionRegistry } from "../sessions.mjs";
 import { ScheduleManager } from "../schedules.mjs";
 import { projectKey } from "../store.mjs";
-import { legacyLayout, prepareStorage, storageLayout } from "../storage.mjs";
+import { copyDataRoot, legacyLayout, prepareStorage, storageLayout } from "../storage.mjs";
 import { loadLocalConfig, providerExtensionPaths } from "../runtime.mjs";
 
 const model = { provider: "test-provider", id: "test-model" };
@@ -132,4 +132,35 @@ test("a failed copy leaves no partial data and no marker", async (t) => {
   await writeFile(join(agentDir, "rpc-subagents", "data"), "a file where the data directory goes");
   await assert.rejects(prepareStorage({ agentDir }));
   assert.deepEqual((await readdir(join(agentDir, "rpc-subagents"))).sort(), ["data"]);
+});
+
+async function oldAgentDir(t) {
+  const agentDir = join(await temporary(t), "agent");
+  const oldData = legacyLayout(agentDir).dataRoots[1];
+  await mkdir(join(oldData, "tasks"), { recursive: true });
+  await writeFile(join(oldData, "tasks", "old.json"), "{\"id\":\"old\"}\n");
+  return { agentDir, oldData };
+}
+
+test("a copy that finds the target already migrated keeps the target and removes its own staging", async (t) => {
+  const { agentDir, oldData } = await oldAgentDir(t);
+  const { base, dataRoot } = storageLayout(agentDir);
+  await mkdir(join(dataRoot, "tasks"), { recursive: true });
+  await writeFile(join(dataRoot, "tasks", "migrated.json"), "{}\n");
+
+  assert.equal(await copyDataRoot(oldData, dataRoot), false);
+  assert.deepEqual(await readdir(join(dataRoot, "tasks")), ["migrated.json"]);
+  assert.deepEqual((await readdir(base)).sort(), ["data"]);
+});
+
+test("two starts migrating at once both succeed and share one copy", async (t) => {
+  for (let round = 0; round < 20; round++) {
+    const { agentDir } = await oldAgentDir(t);
+    const results = await Promise.allSettled([prepareStorage({ agentDir }), prepareStorage({ agentDir })]);
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"], String(results.find((result) => result.status === "rejected")?.reason));
+    const { base, dataRoot } = storageLayout(agentDir);
+    assert.deepEqual(await readdir(join(dataRoot, "tasks")), ["old.json"]);
+    assert.deepEqual((await readdir(base)).filter((name) => name.includes(".migrating-") || name.endsWith(".tmp")), []);
+    assert.ok(results.some((result) => result.value.migrated.data));
+  }
 });
