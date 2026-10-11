@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createConnection, createServer, type Server } from "node:net";
 import { after, describe, it } from "node:test";
@@ -8,6 +9,8 @@ import {
 	type CloseReason,
 	DEFAULT_PORT,
 	diffItems,
+	FRAME_CSP,
+	mermaidPath,
 	MAX_BODY_BYTES,
 	preferredPort,
 	SESSION_SWITCHED,
@@ -146,6 +149,15 @@ describe("annotate server over real HTTP", () => {
 		assert.ok(nonce && page.body.includes(`<script nonce="${nonce}">`));
 		assert.ok(!page.body.includes(server.token));
 		for (const name of Object.keys(page.headers)) assert.ok(!name.startsWith("access-control-"), name);
+		assert.equal(
+			csp,
+			`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+		);
+		assert.ok(page.body.includes("function createMarkdown(document)"));
+		assert.ok(!page.body.includes("__MARKDOWN_JS__") && !page.body.includes("__NONCE__"));
+		assert.ok(!page.body.includes("mermaid.min.js") && !page.body.includes("/frame/mermaid.js"));
+		assert.equal([...page.body.matchAll(/<script\b[^>]*>/g)].length, 2);
+		assert.ok([...page.body.matchAll(/<script\b[^>]*>/g)].every((tag) => tag[0] === `<script nonce="${nonce}">`));
 	});
 
 	it("answers 410 for another session id on the page and every endpoint", async () => {
@@ -438,3 +450,85 @@ describe("annotate server robustness", () => {
 		assert.deepEqual(crashes, []);
 	});
 });
+
+describe("annotate diagram frame routes", () => {
+	const frameCsp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts";
+
+	it("serves /frame without the token, with its own CSP and no conversation or token", async () => {
+		const { server } = await start();
+		server.update([item("u1", "hello", "user"), item("a1", "SECRET-CONVERSATION-TEXT")]);
+		const frame = await request(server.port, { path: "/frame" });
+		assert.equal(frame.status, 200);
+		assert.equal(FRAME_CSP, frameCsp);
+		assert.equal(frame.headers["content-security-policy"], frameCsp);
+		assert.match(String(frame.headers["content-type"]), /^text\/html; charset=utf-8$/);
+		assert.equal(frame.headers["x-frame-options"], "SAMEORIGIN");
+		assert.equal(frame.headers["x-content-type-options"], "nosniff");
+		assert.equal(frame.body, readFileSync(new URL("../frame.html", import.meta.url), "utf8"));
+		assert.deepEqual([...frame.body.matchAll(/<script\b[^>]*>/g)].map((tag) => tag[0]), ['<script src="/frame/mermaid.js">', '<script src="/frame/frame.js">']);
+		for (const body of [frame.body, (await request(server.port, { path: "/frame/frame.js" })).body]) {
+			assert.ok(!body.includes(server.token));
+			assert.ok(!body.includes("SECRET-CONVERSATION-TEXT"));
+			assert.ok(!body.includes(SID));
+		}
+		for (const name of Object.keys(frame.headers)) assert.ok(!name.startsWith("access-control-"), name);
+	});
+
+	it("serves mermaid.min.js from the installed package and the frame script, both as JavaScript", async () => {
+		const { server } = await start();
+		const file = mermaidPath();
+		assert.ok(file !== undefined && file.endsWith("mermaid/dist/mermaid.min.js"), String(file));
+		const mermaid = await request(server.port, { path: "/frame/mermaid.js" });
+		assert.equal(mermaid.status, 200);
+		assert.match(String(mermaid.headers["content-type"]), /^text\/javascript; charset=utf-8$/);
+		assert.equal(mermaid.headers["x-content-type-options"], "nosniff");
+		assert.equal(mermaid.headers["content-security-policy"], frameCsp);
+		assert.equal(Number(mermaid.headers["content-length"]), statSync(file).size);
+		assert.equal(Buffer.byteLength(mermaid.body), statSync(file).size);
+		assert.ok(!mermaid.body.includes(server.token));
+		const etag = String(mermaid.headers.etag);
+		assert.equal((await request(server.port, { path: "/frame/mermaid.js", headers: { "if-none-match": etag } })).status, 304);
+		const script = await request(server.port, { path: "/frame/frame.js" });
+		assert.equal(script.status, 200);
+		assert.match(String(script.headers["content-type"]), /^text\/javascript; charset=utf-8$/);
+		assert.equal(script.body, readFileSync(new URL("../frame.js", import.meta.url), "utf8"));
+		assert.equal((await request(server.port, { path: "/frame?x=1" })).status, 200);
+	});
+
+	it("serves nothing else under /frame: traversal and other names get 404", async () => {
+		const { server } = await start();
+		const paths = [
+			"/frame/",
+			"/frame/x",
+			"/frame/mermaid.min.js",
+			"/frame/mermaid.js/",
+			"/frame/mermaid.js/x",
+			"/frame/../package.json",
+			"/frame/%2e%2e/package.json",
+			"/frame/%2E%2E/%2E%2E/package.json",
+			"/frame/..%2fpackage.json",
+			"/frame/..%5cpackage.json",
+			"/frame/frame.html",
+			"/frame/page.html",
+			"/frame/server.ts",
+			"/frame/./mermaid.js",
+			"/frame//mermaid.js",
+			"/frame/%6d%65rmaid.js",
+			"/frame/node_modules/mermaid/package.json",
+		];
+		for (const path of paths) {
+			const reply = await request(server.port, { path });
+			assert.equal(reply.status, 404, path);
+			assert.ok(!reply.body.includes('"version"') && !reply.body.includes("mermaid"), path);
+		}
+		for (const path of ["/frame%2Fmermaid.js", "/FRAME", "/frame.js", "/mermaid.js", "/package.json", "/../package.json"]) {
+			const reply = await request(server.port, { path });
+			assert.ok(reply.status === 404 || reply.status === 410, `${path} ${reply.status}`);
+			assert.ok(!reply.body.includes('"version"'), path);
+		}
+		assert.equal((await request(server.port, { method: "POST", path: "/frame" })).status, 405);
+		assert.equal((await request(server.port, { path: "/frame", headers: { host: "localhost" } })).status, 403);
+		assert.equal((await request(server.port, { path: "/frame/mermaid.js", headers: { host: `127.0.0.1:${server.port + 1}` } })).status, 403);
+	});
+});
+

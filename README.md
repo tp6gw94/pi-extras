@@ -34,6 +34,23 @@ Each extension lives in `extensions/<name>/`, with its tests and any skills it s
 
 Running `/annotate` while the server is running prints the same URL again and opens it; it does not start a second server. `/annotation-end` stops the server and releases the port. The server also stops when the session ends: `/new`, `/resume`, a fork, a reload, or quitting pi. There is no idle timeout. After a session switch, the old tab says the session switched; run `/annotate` again in the new session.
 
+### Markdown and diagrams
+
+Your messages and the assistant's replies are shown as markdown: headings, paragraphs, bold, italic, strikethrough, inline code, lists (nested and numbered), blockquotes, tables, horizontal rules, links and code blocks. Code blocks keep their indentation, use a monospace font and show their language in the corner. Tool outputs stay collapsed plain text.
+
+- Only `http`, `https` and `mailto` links become links; they open in a new tab with `rel="noopener noreferrer"`. Any other link is shown as its markdown text. Images are never loaded; the page shows `image: <alt text>` instead, as a link when the image URL is a safe link.
+- The page builds the markdown with DOM nodes and never parses message text as HTML, so HTML in a message is shown as text.
+
+` ```mermaid ` code blocks are drawn as diagrams with [mermaid](https://mermaid.js.org/). A diagram is drawn only when it scrolls into view, at most two at a time. Each one is drawn in its own sandboxed iframe (`sandbox="allow-scripts"`, without `allow-same-origin`) loaded from `/frame` on the same server; the page sends it the diagram source and the iframe answers only with its size. The iframe cannot reach the page, the token or the network: its Content Security Policy only allows scripts from the server and blocks requests, images and forms, and mermaid runs with `securityLevel: "strict"`. If a diagram cannot be drawn within 10 seconds, the page shows its source as a code block. `/frame` and `/frame/mermaid.js` need no token and contain no conversation text.
+
+Quoting code and diagrams:
+
+- A selection that starts and ends inside the same code block is quoted as a fenced code block with the block's language, for example ` ```ts `. A selection anywhere else is quoted as the visible text, without markdown syntax.
+- Under each diagram, **Show source** switches between the diagram and its source. A selection in the source is quoted in a ` ```mermaid ` fence.
+- **Quote whole diagram** opens the note box with the full diagram source in a ` ```mermaid ` fence as one quote.
+
+The `mermaid` dependency makes the install bigger. The page only uses its 5.5 MB browser bundle (`mermaid/dist/mermaid.min.js`), and only inside the diagram iframes, but installing the package pulls about 117 packages, about 200 MB in `node_modules`.
+
 ### Port and URL
 
 Each pi process runs its own server on `127.0.0.1` only. It uses port 4747, or the port in `PI_ANNOTATE_PORT` if you set it. If that port is busy, it tries the next nine ports (4748 to 4756 by default) and then a random free port. Several pi processes therefore get 4747, 4748 and so on.
@@ -134,7 +151,7 @@ npm run typecheck
 
 - `npm test` runs the tests of every extension, both `.ts` and `.mjs`. The `rpc-subagents` tests that need an installed pi skip unless you set `RPC_SUBAGENTS_PI_PACKAGE` to a global pi install, for example `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`.
 - `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`.
-- The `annotation` tests cover the quote format, the conversation snapshot, the page script (content is rendered as text, never as HTML) and the HTTP server against a real local server (token, Host and session checks, send sequence numbers, long-poll live updates, port fallback). `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` in a real pi under tmux with a fake model and checks the editor, live updates, `/tree`, `/annotation-end` and session switches; set `PI_BIN` to the pi binary. `extensions/annotation/test/e2e/browser.mjs` drives the page in headless Chromium; it needs `playwright-core`, which is not a dependency of this package.
+- The `annotation` tests cover the quote format, the conversation snapshot, the page script (content is rendered as text, never as HTML) and the HTTP server against a real local server (token, Host and session checks, send sequence numbers, long-poll live updates, port fallback). `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` in a real pi under tmux with a fake model and checks the editor, live updates, `/tree`, `/annotation-end` and session switches; set `PI_BIN` to the pi binary. The markdown tests cover each construct, inert XSS payloads and code-block quoting, and the server tests cover the `/frame` routes, their CSP and path traversal. `extensions/annotation/test/e2e/browser.mjs` drives the page in headless Chromium; it needs `playwright-core`, which is not a dependency of this package. `extensions/annotation/test/e2e/tmux-markdown.sh` runs pi with a markdown reply and drives `extensions/annotation/test/e2e/markdown.mjs`, which checks rendering, the diagram iframes, quoting, live updates, the timeout fallback, CSP violations and network requests; it needs `PI_BIN`, `PLAYWRIGHT_CORE` and `CHROME_BIN`.
 - `scripts/acceptance.sh` installs pi-extras from git into a throwaway home directory and checks what pi loads, with all extensions, with a settings filter, and after `pi config`.
 
-pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions, so `package.json` lists them as `"*"` peer dependencies. `croner` is the only runtime dependency.
+pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions, so `package.json` lists them as `"*"` peer dependencies. The runtime dependencies are `croner` (for cron in `rpc-subagents`) and `mermaid` (for diagrams in `annotation`), both pinned to exact versions.

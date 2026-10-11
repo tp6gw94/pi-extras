@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import type { Annotation } from "./quote.ts";
@@ -53,6 +54,27 @@ export interface AnnotateServer {
 }
 
 const PAGE = new URL("./page.html", import.meta.url);
+const MARKDOWN = new URL("./markdown.js", import.meta.url);
+const FRAME_PAGE = new URL("./frame.html", import.meta.url);
+const FRAME_SCRIPT = new URL("./frame.js", import.meta.url);
+
+export const PAGE_CSP = (nonce: string) =>
+	`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+export const FRAME_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts";
+
+export function mermaidPath(): string | undefined {
+	try {
+		return createRequire(import.meta.url).resolve("mermaid/dist/mermaid.min.js");
+	} catch {
+		return undefined;
+	}
+}
+
+export function pageTemplate(): string {
+	const markdown = readFileSync(MARKDOWN, "utf8");
+	if (/<\/script/i.test(markdown) || markdown.includes("__NONCE__")) throw new Error("annotate: markdown.js cannot be inlined");
+	return readFileSync(PAGE, "utf8").replace("__MARKDOWN_JS__", () => markdown);
+}
 
 export function preferredPort(env: NodeJS.ProcessEnv): number {
 	const raw = env.PI_ANNOTATE_PORT?.trim();
@@ -120,11 +142,11 @@ export function decodePathPart(part: string): string | undefined {
 	}
 }
 
-export function splitTarget(target: string): { parts: string[]; query: URLSearchParams } | undefined {
+export function splitTarget(target: string): { path: string; parts: string[]; query: URLSearchParams } | undefined {
 	const at = target.indexOf("?");
 	const path = at < 0 ? target : target.slice(0, at);
 	if (!path.startsWith("/")) return undefined;
-	return { parts: path.split("/").filter((part) => part !== ""), query: new URLSearchParams(at < 0 ? "" : target.slice(at + 1)) };
+	return { path, parts: path.split("/").filter((part) => part !== ""), query: new URLSearchParams(at < 0 ? "" : target.slice(at + 1)) };
 }
 
 export function parseSend(body: unknown): { seq: number; items: Annotation[] } | string {
@@ -167,7 +189,9 @@ function listen(server: Server, port: number): Promise<boolean> {
 }
 
 export async function startAnnotateServer(options: AnnotateServerOptions): Promise<AnnotateServer> {
-	const template = readFileSync(PAGE, "utf8");
+	const template = pageTemplate();
+	const framePage = readFileSync(FRAME_PAGE, "utf8");
+	const frameScript = readFileSync(FRAME_SCRIPT, "utf8");
 	const token = randomBytes(24).toString("base64url");
 	const sessionId = options.sessionId;
 	const longPollMs = options.longPollMs ?? LONG_POLL_MS;
@@ -216,9 +240,45 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		res.writeHead(200, {
 			...baseHeaders(),
 			"Content-Type": "text/html; charset=utf-8",
-			"Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+			"Content-Security-Policy": PAGE_CSP(nonce),
 		});
 		res.end(template.replaceAll("__NONCE__", nonce));
+	};
+
+	const frameHeaders = (type: string) => ({ ...baseHeaders(), "Content-Type": type, "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": FRAME_CSP });
+
+	const serveMermaid = (req: IncomingMessage, res: ServerResponse) => {
+		const file = mermaidPath();
+		if (!file) return sendJson(res, 404, { error: "mermaid is not installed" });
+		const stat = statSync(file);
+		const etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+		const headers = { ...frameHeaders("text/javascript; charset=utf-8"), "Cache-Control": "no-cache", ETag: etag };
+		if (req.headers["if-none-match"] === etag) {
+			res.writeHead(304, headers);
+			res.end();
+			return;
+		}
+		res.writeHead(200, { ...headers, "Content-Length": String(stat.size) });
+		const stream = createReadStream(file);
+		stream.on("error", () => res.destroy());
+		stream.pipe(res);
+	};
+
+	const serveFrame = (path: string, req: IncomingMessage, res: ServerResponse) => {
+		req.resume();
+		if (req.method !== "GET") return sendJson(res, 405, { error: "method not allowed" });
+		if (path === "/frame") {
+			res.writeHead(200, frameHeaders("text/html; charset=utf-8"));
+			res.end(framePage);
+			return;
+		}
+		if (path === "/frame/frame.js") {
+			res.writeHead(200, frameHeaders("text/javascript; charset=utf-8"));
+			res.end(frameScript);
+			return;
+		}
+		if (path === "/frame/mermaid.js") return serveMermaid(req, res);
+		sendJson(res, 404, { error: "not found" });
 	};
 
 	const switchedPage = (res: ServerResponse) => {
@@ -318,7 +378,8 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			req.resume();
 			return;
 		}
-		const { parts, query } = target;
+		const { path, parts, query } = target;
+		if (path === "/frame" || path.startsWith("/frame/")) return serveFrame(path, req, res);
 		if (parts.length === 0 || parts.length === 2 || parts.length > 3 || (parts.length === 3 && parts[1] !== "api")) {
 			sendJson(res, 404, { error: "not found" });
 			req.resume();

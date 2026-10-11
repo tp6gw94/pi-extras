@@ -4,7 +4,11 @@ import { describe, it } from "node:test";
 import vm from "node:vm";
 
 const html = readFileSync(new URL("../page.html", import.meta.url), "utf8");
-const script = /<script nonce="__NONCE__">([\s\S]*?)<\/script>/.exec(html)?.[1] ?? "";
+const markdownSource = readFileSync(new URL("../markdown.js", import.meta.url), "utf8");
+const frameSource = readFileSync(new URL("../frame.js", import.meta.url), "utf8");
+const frameHtml = readFileSync(new URL("../frame.html", import.meta.url), "utf8");
+const scripts = [...html.matchAll(/<script nonce="__NONCE__">([\s\S]*?)<\/script>/g)].map((match) => match[1]!);
+const script = scripts.find((body) => body.includes("createMarkdown(document)")) ?? "";
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -24,6 +28,10 @@ class FakeElement {
 	listeners: Record<string, Listener[]> = {};
 	ownText = "";
 	removed = false;
+	parentNode: FakeElement | null = null;
+	contentWindow: unknown = null;
+	annotateSource?: string;
+	annotateLang?: string;
 	constructor(tag: string) {
 		this.tag = tag;
 	}
@@ -45,11 +53,16 @@ class FakeElement {
 	}
 	append(...nodes: FakeElement[]): void {
 		this.children = this.children.filter((child) => !child.removed);
+		for (const node of nodes) node.parentNode = this;
 		this.children.push(...nodes);
 	}
 	replaceChildren(...nodes: FakeElement[]): void {
 		this.ownText = "";
+		for (const node of nodes) node.parentNode = this;
 		this.children = [...nodes];
+	}
+	getBoundingClientRect() {
+		return { top: 300, bottom: 320, left: 40, right: 140 };
 	}
 	setAttribute(name: string, value: string): void {
 		this.attributes[name] = value;
@@ -87,7 +100,11 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 	const eventWaiters: ((reply: Reply) => void)[] = [];
 	const eventQueue: Reply[] = [];
 	let selectionText = "";
-	const timers: (() => void)[] = [];
+	let selectionStart: unknown = {};
+	let selectionEnd: unknown = {};
+	let timerId = 0;
+	const timers: { id: number; fn: () => void; ms: number }[] = [];
+	const windowListeners: Record<string, Listener[]> = {};
 	const location = { pathname: "/sid-1", hash: "#t=tok123", search: "" };
 	const history = {
 		calls: [] as unknown[][],
@@ -101,8 +118,17 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		getElementById: (id: string) => byId.get(id),
 		createElement: (tag: string) => {
 			const element = new FakeElement(tag);
+			if (tag === "iframe") {
+				const posted: unknown[][] = [];
+				element.contentWindow = { posted, postMessage: (...args: unknown[]) => posted.push(args) };
+			}
 			created.push(element);
 			return element;
+		},
+		createTextNode: (text: string) => {
+			const node = new FakeElement("#text");
+			node.ownText = String(text);
+			return node;
 		},
 		addEventListener: () => {},
 		write: () => {
@@ -115,10 +141,13 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		scrollX: 0,
 		scrollY: 0,
 		scrollTo: () => {},
+		addEventListener: (type: string, listener: Listener) => {
+			(windowListeners[type] ??= []).push(listener);
+		},
 		getSelection: () => ({
 			isCollapsed: selectionText === "",
 			rangeCount: selectionText === "" ? 0 : 1,
-			getRangeAt: () => ({ commonAncestorContainer: {}, getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 50, right: 200 }), cloneRange: () => ({ clone: selectionText }) }),
+			getRangeAt: () => ({ commonAncestorContainer: {}, startContainer: selectionStart, endContainer: selectionEnd, getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 50, right: 200 }), cloneRange: () => ({ clone: selectionText }) }),
 			toString: () => selectionText,
 			removeAllRanges: () => {
 				selectionText = "";
@@ -149,7 +178,15 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		location,
 		history,
 		URLSearchParams,
-		setTimeout: (fn: () => void) => timers.push(fn),
+		setTimeout: (fn: () => void, ms = 0) => {
+			timerId++;
+			timers.push({ id: timerId, fn, ms });
+			return timerId;
+		},
+		clearTimeout: (id: number) => {
+			const index = timers.findIndex((timer) => timer.id === id);
+			if (index >= 0) timers.splice(index, 1);
+		},
 		JSON,
 		Date,
 		String,
@@ -160,16 +197,26 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		TypeError,
 		...options.globals,
 	});
+	vm.runInContext(markdownSource, context);
 	vm.runInContext(script, context);
-	const flush = async () => {
+	const flush = async (options: { slow?: boolean } = {}) => {
 		for (let round = 0; round < 3; round++) {
 			for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
-			while (timers.length) timers.shift()!();
+			for (;;) {
+				const index = timers.findIndex((timer) => options.slow || timer.ms < 10000);
+				if (index < 0) break;
+				timers.splice(index, 1)[0]!.fn();
+			}
 		}
 	};
-	const select = (text: string) => {
+	const select = (text: string, start: unknown = {}, end: unknown = start) => {
 		selectionText = text;
+		selectionStart = start;
+		selectionEnd = end;
 		byId.get("conversation")!.dispatch("mouseup");
+	};
+	const message = (source: unknown, data: unknown) => {
+		for (const listener of windowListeners.message ?? []) listener({ source, data });
 	};
 	const pushEvent = async (reply: Reply) => {
 		const waiter = eventWaiters.shift();
@@ -185,7 +232,7 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 	};
 	const sends = () => requests.filter((entry) => entry.path === "/sid-1/api/send").map((entry) => JSON.parse(String(entry.init.body)));
 	const blocks = () => byId.get("conversation")!.children.filter((child) => child.tag === "article").map((child) => child.attributes["data-id"]);
-	return { byId, created, requests, flush, select, history, location, pushEvent, annotate, sends, blocks };
+	return { byId, created, requests, flush, select, history, location, pushEvent, annotate, sends, blocks, message, timers };
 }
 
 const item = (id: string, text: string, kind = "assistant") => ({ id, kind, label: kind, text });
@@ -423,4 +470,147 @@ describe("annotate page script", () => {
 		assert.match(page.byId.get("status")!.textContent, /token is no longer valid/);
 		assert.equal(page.byId.get("send")!.disabled, true);
 	});
+
+	const observers: { callback: (entries: unknown[]) => void; observed: FakeElement[] }[] = [];
+	class FakeObserver {
+		entry: { callback: (entries: unknown[]) => void; observed: FakeElement[] };
+		constructor(callback: (entries: unknown[]) => void) {
+			this.entry = { callback, observed: [] };
+			observers.push(this.entry);
+		}
+		observe(target: FakeElement) {
+			this.entry.observed.push(target);
+		}
+		unobserve(target: FakeElement) {
+			this.entry.observed = this.entry.observed.filter((item) => item !== target);
+		}
+	}
+	const showAll = async (page: ReturnType<typeof loadPage>) => {
+		const observer = observers.at(-1)!;
+		observer.callback(observer.observed.map((target) => ({ target, isIntersecting: true })));
+		await page.flush();
+	};
+	const frames = (page: ReturnType<typeof loadPage>) => page.byId.get("conversation")!.all().filter((element) => element.tag === "iframe" && !element.removed);
+	const mermaidItem = (id: string, body: string) => item(id, "Here:\n\n```mermaid\n" + body + "\n```\n");
+
+	it("renders user and assistant messages as markdown and keeps tool output as plain text", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("u1", "**ask** `x`", "user"), item("a1", "# Head\n\n- one\n- two"), { id: "t1", kind: "tool", label: "Tool", text: "# not a heading\n- not a list" }] });
+		await page.flush();
+		const articles = page.byId.get("conversation")!.children.filter((child) => child.tag === "article");
+		const tags = (article: FakeElement) => article.all().map((element) => element.tag);
+		assert.ok(tags(articles[0]!).includes("strong") && tags(articles[0]!).includes("code"));
+		assert.ok(tags(articles[1]!).includes("h1") && tags(articles[1]!).includes("ul"));
+		assert.ok(!tags(articles[2]!).includes("h1") && !tags(articles[2]!).includes("ul"));
+		assert.equal(articles[2]!.all().find((element) => element.className === "text")!.textContent, "# not a heading\n- not a list");
+	});
+
+	it("wraps a selection inside one code block in a fence with its language, and quotes other selections as shown", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "Intro text\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n\nAfter")] });
+		await page.flush();
+		const all = page.byId.get("conversation")!.all();
+		const pre = all.find((element) => element.tag === "pre")!;
+		const code = pre.children[0]!;
+		const para = all.find((element) => element.tag === "p")!;
+		page.select("const b = 2;", code, code);
+		await page.flush();
+		assert.equal(page.byId.get("composer-quote")!.textContent, "```ts\nconst b = 2;\n```");
+		page.byId.get("note")!.dispatch("keydown", { key: "Escape" });
+		page.select("Intro text const a", para, code);
+		await page.flush();
+		assert.equal(page.byId.get("composer-quote")!.textContent, "Intro text const a");
+		page.byId.get("note")!.dispatch("keydown", { key: "Escape" });
+		page.select("Intro", para, para);
+		await page.flush();
+		assert.equal(page.byId.get("composer-quote")!.textContent, "Intro");
+		page.byId.get("note")!.value = "check";
+		page.byId.get("note")!.dispatch("keydown", { key: "Escape" });
+		page.select("1;", code, code);
+		await page.flush();
+		page.byId.get("note")!.value = "why one";
+		page.byId.get("note")!.dispatch("keydown", { key: "Enter" });
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		assert.deepEqual(plain(page.sends()), [{ seq: 1, items: [{ quote: "```ts\n1;\n```", note: "why one" }] }]);
+	});
+
+	it("renders mermaid lazily in sandboxed frames, at most two at a time, and accepts only a size from the right frame", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [mermaidItem("a1", "graph TD\n  A --> B"), mermaidItem("a2", "graph LR\n  C --> D"), mermaidItem("a3", "graph TD\n  E --> F")] }, { globals: { IntersectionObserver: FakeObserver } });
+		await page.flush();
+		assert.equal(frames(page).length, 0);
+		assert.equal(observers.at(-1)!.observed.length, 3);
+		await showAll(page);
+		const [first, second] = frames(page);
+		assert.equal(frames(page).length, 2);
+		for (const frame of [first!, second!]) {
+			assert.deepEqual(plain([frame.attributes]), [{ sandbox: "allow-scripts", referrerpolicy: "no-referrer", title: "Mermaid diagram", src: "/frame" }]);
+		}
+		first!.dispatch("load");
+		const posted = (first!.contentWindow as { posted: unknown[][] }).posted;
+		assert.deepEqual(plain(posted), [[{ source: "graph TD\n  A --> B" }, "*"]]);
+		const elementsBefore = page.byId.get("conversation")!.all().length;
+		page.message({}, { width: 300, height: 200 });
+		page.message(first!.contentWindow, { width: "300", height: 200 });
+		page.message(first!.contentWindow, { width: 300, height: Number.POSITIVE_INFINITY });
+		page.message(first!.contentWindow, null);
+		assert.equal(first!.className, "diagram-frame");
+		page.message(first!.contentWindow, { width: 640, height: 99999, html: "<img src=x onerror=alert(1)>", source: "evil", type: "svg" });
+		await page.flush();
+		assert.equal(first!.className, "diagram-frame ready");
+		assert.equal(first!.style.height, "4000px");
+		assert.equal(page.byId.get("conversation")!.all().length, elementsBefore + 1);
+		assert.ok(!page.byId.get("conversation")!.textContent.includes("evil"));
+		const diagram = first!.parentNode!.parentNode!;
+		const code = diagram.children[1]!;
+		const [toggle, quote] = diagram.children[2]!.children;
+		assert.equal(code.hidden, true);
+		assert.equal(toggle!.hidden, false);
+		toggle!.dispatch("click");
+		assert.equal(code.hidden, false);
+		assert.equal(first!.hidden, true);
+		assert.equal(toggle!.textContent, "Show diagram");
+		assert.equal(frames(page).length, 3);
+		second!.dispatch("load");
+		page.message(second!.contentWindow, { width: 0, height: 0 });
+		await page.flush();
+		assert.equal(second!.removed, true);
+		const failed = second!.parentNode!.parentNode!;
+		assert.equal(failed.children[1]!.hidden, false);
+		assert.equal(failed.children[2]!.children[0]!.hidden, true);
+		assert.match(failed.children[2]!.children[2]!.textContent, /could not be rendered/);
+		const third = frames(page).at(-1)!;
+		await page.flush({ slow: true });
+		assert.equal(third.removed, true);
+		assert.match(third.parentNode!.parentNode!.children[2]!.children[2]!.textContent, /could not be rendered/);
+		quote!.dispatch("click");
+		await page.flush();
+		assert.equal(page.byId.get("composer")!.hidden, false);
+		assert.equal(page.byId.get("composer-quote")!.textContent, "```mermaid\ngraph TD\n  A --> B\n```");
+		page.byId.get("note")!.value = "whole diagram";
+		page.byId.get("note")!.dispatch("keydown", { key: "Enter" });
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		assert.deepEqual(plain(page.sends()), [{ seq: 1, items: [{ quote: "```mermaid\ngraph TD\n  A --> B\n```", note: "whole diagram" }] }]);
+	});
+
+	it("renders mermaid in live updates and again after a reset, ignoring frames from before the reset", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [mermaidItem("a1", "graph TD\n  A --> B")] }, { globals: { IntersectionObserver: FakeObserver } });
+		await page.flush();
+		await showAll(page);
+		const old = frames(page)[0]!;
+		await page.pushEvent({ status: 200, body: { version: 2, reset: false, items: [mermaidItem("a2", "graph TD\n  X --> Y")] } });
+		await showAll(page);
+		assert.equal(frames(page).length, 2);
+		await page.pushEvent({ status: 200, body: { version: 3, reset: true, items: [mermaidItem("b1", "graph TD\n  N --> M")] } });
+		assert.equal(frames(page).length, 0);
+		page.message(old.contentWindow, { width: 100, height: 100 });
+		assert.notEqual(old.className, "diagram-frame ready");
+		await showAll(page);
+		const fresh = frames(page);
+		assert.equal(fresh.length, 1);
+		fresh[0]!.dispatch("load");
+		assert.deepEqual(plain((fresh[0]!.contentWindow as { posted: unknown[][] }).posted), [[{ source: "graph TD\n  N --> M" }, "*"]]);
+		page.message(fresh[0]!.contentWindow, { width: 100, height: 120 });
+		assert.equal(fresh[0]!.style.height, "120px");
+	});
 });
+
