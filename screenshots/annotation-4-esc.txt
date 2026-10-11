@@ -1,0 +1,32 @@
+  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills,
+tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff, tp6gw94/pi-extras:rpc-subagents,
+tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
+
+
+ fd not found. Downloading...
+ fd installed to /tmp/ann/h-1.1.0.aspg/home/.pi/agent/bin/fd
+
+ Warning: tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to
+ ~/.tmux.conf and restart tmux.
+
+
+ Show me the add helper
+
+
+ Here is the helper:
+
+ ```js
+   const x = 1;
+   function add(a, b) {
+     return a + b;
+   }
+ ```
+
+ It adds two numbers.
+
+❯ Show me the add helper
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/ann/h-1.1.0.aspg/project
+1.4%/128k (auto)                                                                                    fake-model
