@@ -6,6 +6,11 @@ import { bindSelectionHook, type SelectionEnd, type SelectionHook } from "./sele
 
 const PROBE_KEY = "annotation:probe";
 
+/** pi throws this from a ctx captured before a session replacement (/new, resume, fork) or a reload. */
+export function isStaleContextError(error: unknown): boolean {
+	return error instanceof Error && /\bctx is stale\b/.test(error.message);
+}
+
 function captureTui(ctx: ExtensionContext): unknown {
 	let captured: unknown;
 	ctx.ui.setWidget(PROBE_KEY, (tui) => {
@@ -29,6 +34,7 @@ export default function annotation(pi: ExtensionAPI): void {
 	let hook: SelectionHook | undefined;
 	let boxOpen = false;
 	let warned = false;
+	let failureShown = false;
 	let unsubscribe: (() => void) | undefined;
 
 	const unbind = () => {
@@ -39,7 +45,9 @@ export default function annotation(pi: ExtensionAPI): void {
 	const ensureBound = () => {
 		if (!tui || hook?.isCurrent()) return;
 		unbind();
-		const result = bindSelectionHook(tui, (end) => void openBox(end));
+		const result = bindSelectionHook(tui, (end) => {
+			openBox(end).catch(reportFailure);
+		});
 		if (result.kind === "bound") hook = result.hook;
 		else if (result.kind === "missing" && !warned) {
 			warned = true;
@@ -47,6 +55,16 @@ export default function annotation(pi: ExtensionAPI): void {
 				`annotation: turned off. This pi's fullscreen TUI has no ${result.members.join(", ")}, so selections cannot be annotated. Everything else in pi works as usual.`,
 				"warning",
 			);
+		}
+	};
+
+	const reportFailure = (error: unknown) => {
+		if (isStaleContextError(error) || failureShown) return;
+		failureShown = true;
+		try {
+			ctxRef?.ui.notify(`annotation: the annotation box failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		} catch {
+			return;
 		}
 	};
 

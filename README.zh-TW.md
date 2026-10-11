@@ -42,6 +42,7 @@ What does add return?
 annotation 有這些限制：
 
 - 只在 fullscreen 模式有作用。在 regular 模式（`--tui-mode regular`），選取由終端機負責，annotation 什麼都不做。
+- 在 `/settings` 切換畫面模式後，annotation 會在下一次按鍵時接上新的畫面。切換後的第一次滑鼠選取不會跳出框。
 - 它用到 pi-tui `TuiAltScreen` 的私有成員：`copySelectionToClipboard`、`getActiveSelectionText`、`clearTextSelection` 與 `handleSelectionMouseEvent`。pi 更新若改了其中任何一個名字，測試會失敗。執行時如果缺少前三個之一，annotation 會自行關閉並顯示一次警告，pi 照常運作。如果只缺 `handleSelectionMouseEvent`，框會出現在畫面底部正中央。
 - 和一般貼上一樣，超過 10 行或 1000 個字元的引用會收合成 pi 的貼上標記，例如 `[paste #1 +24 lines]`。送出 prompt 時，pi 會把標記展開。
 - annotation 看不到編輯器的游標。如果編輯器文字不是以換行結尾，引用會從新的一行開始。
@@ -131,5 +132,6 @@ npm run typecheck
 - `npm test` 會跑每個 extension 的測試，包括 `.ts` 與 `.mjs`。`rpc-subagents` 裡需要已安裝 pi 的測試會略過，除非你把 `RPC_SUBAGENTS_PI_PACKAGE` 設成全域安裝的 pi，例如 `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`。
 - `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。
 - `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
+- `extensions/annotation/test/e2e/tmux-annotation.sh` 會在 tmux 裡用滑鼠輸入與假的本機模型，操作真實 pi 裡的 annotation。把 `PI_BIN` 設成放 pi 的目錄，例如 `PI_BIN=~/.local/pi-1.1.0/bin extensions/annotation/test/e2e/tmux-annotation.sh`。它需要 `tmux`、`python3` 與 `node`，設定了 `DISPLAY` 時會用 `xclip` 檢查剪貼簿。其他設定列在腳本開頭。
 
 pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。`croner` 是唯一的執行期 dependency。

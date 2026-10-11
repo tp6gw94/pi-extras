@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import annotation from "../index.ts";
+import annotation, { isStaleContextError } from "../index.ts";
 import { drag, piTuiReference, settle, startAltScreen, startMainScreen } from "./harness.ts";
 
 type Handler = (...args: any[]) => any;
 const theme = { fg: (_c: string, s: string) => s };
 
-function setup(tui: unknown, opts: { mode?: string; editorText?: string } = {}) {
+function setup(tui: unknown, opts: { mode?: string; editorText?: string; ui?: Record<string, Handler> } = {}) {
 	const on: Record<string, Handler> = {};
 	const pi = {
 		on: (event: string, h: Handler) => {
@@ -41,6 +41,7 @@ function setup(tui: unknown, opts: { mode?: string; editorText?: string } = {}) 
 					box = factory(tui, theme, undefined, resolve);
 				});
 			},
+			...opts.ui,
 		},
 	};
 	annotation(pi as any);
@@ -216,5 +217,160 @@ describe("annotation outside fullscreen", () => {
 		t.on.session_start!({ type: "session_start", reason: "new" }, t.ctx);
 		assert.equal(t.calls.notes.length, 1);
 		assert.match(t.calls.notes[0]!, /annotation: turned off\. .*copySelectionToClipboard, clearTextSelection/);
+	});
+});
+
+const STALE = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
+
+async function withoutUnhandledRejections(run: (rejections: unknown[]) => Promise<void>) {
+	const rejections: unknown[] = [];
+	const listener = (reason: unknown) => rejections.push(reason);
+	process.on("unhandledRejection", listener);
+	try {
+		await run(rejections);
+		await settle();
+		await settle();
+		assert.deepEqual(rejections, [], "no unhandled rejection");
+	} finally {
+		process.off("unhandledRejection", listener);
+	}
+}
+
+describe("annotation errors never escape", () => {
+	it("recognizes pi's stale ctx error only", () => {
+		assert.equal(isStaleContextError(new Error(STALE)), true);
+		assert.equal(isStaleContextError(new Error("boom")), false);
+		assert.equal(isStaleContextError(STALE), false);
+	});
+
+	it("ignores a stale ctx when the box closes after /new or resume, and still clears the selection", async () => {
+		await withoutUnhandledRejections(async () => {
+			const { alt, proxy } = await altBehindProxy();
+			try {
+				const t = setup(proxy, {
+					ui: {
+						getEditorText: () => {
+							throw new Error(STALE);
+						},
+					},
+				});
+				t.on.session_start!({ type: "session_start", reason: "startup" }, t.ctx);
+				drag(alt.send, [0, 0], [4, 0]);
+				await settle();
+				t.type("\r");
+				await settle();
+				assert.deepEqual(t.calls.pasted, []);
+				assert.deepEqual(t.calls.notes, [], "a stale ctx is expected after a session switch, so no notice");
+				assert.equal((alt.screen as any).getActiveSelectionText(), undefined);
+			} finally {
+				alt.stop();
+			}
+		});
+	});
+
+	it("ignores a stale ctx thrown by pasteToEditor", async () => {
+		await withoutUnhandledRejections(async () => {
+			const { alt, proxy } = await altBehindProxy();
+			try {
+				const t = setup(proxy, {
+					ui: {
+						pasteToEditor: () => {
+							throw new Error(STALE);
+						},
+					},
+				});
+				t.on.session_start!({ type: "session_start", reason: "startup" }, t.ctx);
+				drag(alt.send, [0, 0], [4, 0]);
+				await settle();
+				t.type("\r");
+				await settle();
+				assert.deepEqual(t.calls.notes, []);
+			} finally {
+				alt.stop();
+			}
+		});
+	});
+
+	it("notifies once when custom throws, keeps working, and never rethrows", async () => {
+		await withoutUnhandledRejections(async () => {
+			const { alt, proxy } = await altBehindProxy();
+			try {
+				let calls = 0;
+				const t = setup(proxy, {
+					ui: {
+						custom: () => {
+							calls++;
+							throw new Error("overlay exploded");
+						},
+					},
+				});
+				t.on.session_start!({ type: "session_start", reason: "startup" }, t.ctx);
+				drag(alt.send, [0, 0], [4, 0]);
+				await settle();
+				drag(alt.send, [0, 1], [4, 1]);
+				await settle();
+				assert.equal(calls, 2, "a failed box does not block the next selection");
+				assert.equal(t.calls.notes.length, 1, "one notice, not one per selection");
+				assert.match(t.calls.notes[0]!, /annotation: the annotation box failed: overlay exploded/);
+				assert.equal((alt.screen as any).getActiveSelectionText(), undefined);
+			} finally {
+				alt.stop();
+			}
+		});
+	});
+
+	it("notifies once when pasteToEditor throws something else, and a rejected custom is handled too", async () => {
+		await withoutUnhandledRejections(async () => {
+			const { alt, proxy } = await altBehindProxy();
+			try {
+				const t = setup(proxy, {
+					ui: {
+						pasteToEditor: () => {
+							throw new Error("editor gone");
+						},
+					},
+				});
+				t.on.session_start!({ type: "session_start", reason: "startup" }, t.ctx);
+				drag(alt.send, [0, 0], [4, 0]);
+				await settle();
+				t.type("\r");
+				await settle();
+				assert.equal(t.calls.notes.length, 1);
+				assert.match(t.calls.notes[0]!, /editor gone/);
+
+				const r = setup(proxy, { ui: { custom: () => Promise.reject(new Error("rejected overlay")) } });
+				t.on.session_shutdown!({ type: "session_shutdown" }, t.ctx);
+				r.on.session_start!({ type: "session_start", reason: "startup" }, r.ctx);
+				drag(alt.send, [0, 1], [4, 1]);
+				await settle();
+				assert.equal(r.calls.notes.length, 1);
+				assert.match(r.calls.notes[0]!, /rejected overlay/);
+			} finally {
+				alt.stop();
+			}
+		});
+	});
+
+	it("does not throw when even the notice fails", async () => {
+		await withoutUnhandledRejections(async () => {
+			const { alt, proxy } = await altBehindProxy();
+			try {
+				const t = setup(proxy, {
+					ui: {
+						custom: () => {
+							throw new Error("overlay exploded");
+						},
+						notify: () => {
+							throw new Error(STALE);
+						},
+					},
+				});
+				t.on.session_start!({ type: "session_start", reason: "startup" }, t.ctx);
+				drag(alt.send, [0, 0], [4, 0]);
+				await settle();
+			} finally {
+				alt.stop();
+			}
+		});
 	});
 });

@@ -42,6 +42,7 @@ Copy-on-select keeps working. With pi's `fullscreenCopyOnSelect` setting on, whi
 annotation has these limits:
 
 - It only works in fullscreen mode. In the regular mode (`--tui-mode regular`), the terminal owns the selection, and annotation does nothing.
+- After you switch the screen mode in `/settings`, annotation attaches to the new screen on the next key press. The first mouse selection right after the switch does not open the box.
 - It uses private members of pi-tui's `TuiAltScreen`: `copySelectionToClipboard`, `getActiveSelectionText`, `clearTextSelection` and `handleSelectionMouseEvent`. The tests fail when a pi update renames one of them. If one of the first three is missing at runtime, annotation turns itself off and shows one warning, and pi keeps working. If only `handleSelectionMouseEvent` is missing, the box opens at the bottom center of the screen.
 - Like any paste, a quote longer than 10 lines or 1000 characters collapses into pi's paste marker, such as `[paste #1 +24 lines]`. pi expands the marker when you send the prompt.
 - annotation cannot see the editor cursor. If the editor text does not end with a newline, the quote starts on a new line.
@@ -131,5 +132,6 @@ npm run typecheck
 - `npm test` runs the tests of every extension, both `.ts` and `.mjs`. The `rpc-subagents` tests that need an installed pi skip unless you set `RPC_SUBAGENTS_PI_PACKAGE` to a global pi install, for example `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`.
 - `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`.
 - `scripts/acceptance.sh` installs pi-extras from git into a throwaway home directory and checks what pi loads, with all extensions, with a settings filter, and after `pi config`.
+- `extensions/annotation/test/e2e/tmux-annotation.sh` drives annotation in a real pi in tmux, with mouse input and a fake local model. Set `PI_BIN` to the directory that holds pi, for example `PI_BIN=~/.local/pi-1.1.0/bin extensions/annotation/test/e2e/tmux-annotation.sh`. It needs `tmux`, `python3` and `node`, and checks the clipboard with `xclip` when `DISPLAY` is set. The header of the script lists its other settings.
 
 pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions, so `package.json` lists them as `"*"` peer dependencies. `croner` is the only runtime dependency.
