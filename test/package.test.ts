@@ -12,7 +12,6 @@ const extensions = readdirSync(join(root, "extensions"), { withFileTypes: true }
 	.map((d) => d.name)
 	.sort();
 
-/** The ```json block right after the `<!-- example-filter -->` marker. */
 function exampleFilter(text: string): string {
 	const m = /<!-- example-filter -->\s*```json\n([\s\S]*?)\n```/.exec(text);
 	assert.ok(m, "example-filter block not found");

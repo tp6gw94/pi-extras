@@ -80,7 +80,6 @@ test("copied managed sessions and fork schedules stay usable from the new root",
   const cwd = join(directory, "project"); await mkdir(cwd);
   const oldRoot = join(agentDir, "extensions", "rpc-subagents", "data");
 
-  // A completed, reusable managed session in the old root.
   const owner = new SessionRegistry({ root: oldRoot, ownerId: "owner-one" });
   const lease = await owner.acquireFresh({ taskId: "task-one", directory: join(oldRoot, "tasks", "task-one"), cwd, model });
   const header = { type: "session", version: 3, id: "session-one", timestamp: "2026-01-01T00:00:00.000Z", cwd };
@@ -93,7 +92,6 @@ test("copied managed sessions and fork schedules stay usable from the new root",
   assert.equal((await owner.finalize(lease, { status: "completed", processClosed: true })).sessionReusable, true);
   await owner.release(lease);
 
-  // A fork schedule whose template path points into the old root.
   const project = (root) => join(root, "projects", projectKey(cwd));
   const timers = { setTimer: () => ({}), clearTimer() {}, now: () => 100000 };
   const before = new ScheduleManager({ directory: project(oldRoot), cwd, fleet: {}, ...timers });
@@ -106,14 +104,12 @@ test("copied managed sessions and fork schedules stay usable from the new root",
   assert.deepEqual(storage.migrated, { data: oldRoot });
   const newRoot = storage.dataRoot;
 
-  // The session is found by ID in the new root and resolves to the copied file.
   const resumed = new SessionRegistry({ root: newRoot, ownerId: "owner-two" });
   const resumeLease = await resumed.acquireResume({ taskId: "task-two", session: "session-one", cwd, model });
   assert.equal(resumeLease.sessionFile, join(newRoot, "tasks", "task-one", "session.jsonl"));
   await resumed.release(resumeLease, { neverLaunched: true });
   assert.notDeepEqual(await readdir(join(newRoot, "session-catalog")), oldCatalog, "the catalog is keyed by the new path");
 
-  // The schedule restores in the new root with its template there.
   const after = new ScheduleManager({ directory: project(newRoot), cwd, fleet: {}, ...timers });
   await after.start();
   const [restored] = after.list();
@@ -122,7 +118,6 @@ test("copied managed sessions and fork schedules stay usable from the new root",
   assert.deepEqual(await after.prepareTemplate(restored), { entries: [] });
   await after.shutdown();
 
-  // The old root is unchanged and still points at itself.
   assert.deepEqual(await readdir(join(oldRoot, "session-catalog")), oldCatalog);
   const oldSchedules = JSON.parse(await readFile(join(project(oldRoot), "schedules.json"), "utf8"));
   assert.equal(oldSchedules.schedules[0].templatePath, created.templatePath);

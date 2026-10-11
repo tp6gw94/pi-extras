@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
-# Install pi-extras into a throwaway HOME and check what pi loads.
-#
-#	scripts/acceptance.sh <pi bin dir> <git ref> [out dir]
-#	scripts/acceptance.sh ~/.local/pi-1.1.0/bin 3ca22a7a874229688fca40bd5c01727bdee2715a /tmp/pe-ev/1.1.0
-#
-# Needs tmux, git access to the repo, and node on PATH. Never touches the real ~/.pi.
-# Checks:
-#	1. pi install from git, then pi starts with all seven extensions and no unexpected warnings.
-#	2. A settings filter "!extensions/ralph/index.ts" leaves six extensions.
-#	3. pi config, driven in tmux, turns ralph off, and pi starts with six extensions.
 set -euo pipefail
 
-PI_BIN=$(cd "$1" && pwd)
-REF=$2
+PI_BIN=$(cd "${1:?usage: scripts/acceptance.sh <pi bin dir> <git ref> [out dir]}" && pwd)
+REF=${2:?usage: scripts/acceptance.sh <pi bin dir> <git ref> [out dir]}
 OUT=${3:-/tmp/pi-extras-acceptance}
 SRC="git:github.com/tp6gw94/pi-extras@$REF"
 ALL=(hooks inline-skills ralph resume-handoff rpc-subagents skill-name-normalizer ux)
@@ -24,29 +14,30 @@ SETTINGS=$HOME/.pi/agent/settings.json
 S=pi-extras-acc
 fail=0
 
-capture_start() { # out-file: start pi, wait for the footer, save the startup screen
+capture_start() {
+	local out=$1
 	tmux kill-session -t $S 2>/dev/null || true
 	tmux new-session -d -s $S -x 160 -y 50 -e HOME="$HOME" -e PATH="$PATH" -c "$T/project" "pi; sleep 600"
 	for _ in $(seq 1 40); do
 		sleep 1
 		tmux capture-pane -p -t $S -S -200 | grep -q '^\[Extensions\]' && break
 	done
-	sleep 3 # let startup warnings settle
-	tmux capture-pane -p -t $S -S -200 | grep -v '^\s*$' | grep -v '^─*$' >"$1"
+	sleep 3
+	tmux capture-pane -p -t $S -S -200 | grep -v '^\s*$' | grep -v '^─*$' >"$out"
 	tmux kill-session -t $S
 }
-loaded() { # file: the extension names in the [Extensions] block
-	sed -n '/^\[Extensions\]/,/^ [A-Z]/p' "$1" | grep -o 'pi-extras:[a-z-]*' | sed 's/pi-extras://' | sort | tr '\n' ' '
+loaded() {
+	local file=$1
+	sed -n '/^\[Extensions\]/,/^ [A-Z]/p' "$file" | grep -o 'pi-extras:[a-z-]*' | sed 's/pi-extras://' | sort | tr '\n' ' '
 }
-expect_loaded() { # label file names...
+expect_loaded() {
 	local label=$1 file=$2; shift 2
 	local want got
 	want=$(printf '%s\n' "$@" | sort | tr '\n' ' ')
 	got=$(loaded "$file")
 	if [ "$got" = "$want" ]; then echo "PASS $label: $got"; else echo "FAIL $label: got [$got] want [$want]"; fail=1; fi
-	# Only the two environment warnings of a bare box are allowed.
-	local extra
-	extra=$(grep -i 'warning\|error\|duplicate\|conflict' "$file" | grep -v 'No models available\|extended-keys is off' || true)
+	local bare_box_warnings='No models available\|extended-keys is off' extra
+	extra=$(grep -i 'warning\|error\|duplicate\|conflict' "$file" | grep -v "$bare_box_warnings" || true)
 	if [ -z "$extra" ]; then echo "PASS $label: no other warnings"; else echo "FAIL $label: $extra"; fail=1; fi
 }
 
@@ -68,8 +59,9 @@ cp "$OUT/settings-installed.json" "$SETTINGS"
 tmux new-session -d -s $S -x 140 -y 45 -e HOME="$HOME" -e PATH="$PATH" -c "$T/project" "pi config; sleep 600"
 sleep 5
 tmux capture-pane -p -t $S | grep -v '^\s*$' >"$OUT/3-config-before.txt"
-# Rows are sorted; ralph is the third extension. Move down two rows, toggle, close.
-for _ in 1 2; do tmux send-keys -t $S Down; sleep 0.3; done
+ralph_row=0
+for name in "${ALL[@]}"; do [ "$name" = ralph ] && break; ralph_row=$((ralph_row + 1)); done
+for ((i = 0; i < ralph_row; i++)); do tmux send-keys -t $S Down; sleep 0.3; done
 tmux send-keys -t $S Space; sleep 0.5
 tmux capture-pane -p -t $S | grep -v '^\s*$' >"$OUT/3-config-toggled.txt"
 tmux send-keys -t $S Escape; sleep 1.5

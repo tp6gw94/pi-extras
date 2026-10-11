@@ -8,7 +8,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const EVIDENCE = process.env.EVIDENCE ?? "/tmp/pi-inline-skills-20261008/evidence/implementation";
 
-/** PI_ROOT, else the nearest node_modules/@earendil-works/pi-coding-agent above this extension (the repo's dev install). */
 function findPiRoot() {
 	if (process.env.PI_ROOT) return process.env.PI_ROOT;
 	for (let dir = ROOT; ; dir = dirname(dir)) {
@@ -19,7 +18,6 @@ function findPiRoot() {
 }
 const PI_ROOT = findPiRoot();
 const piRequire = createRequire(join(PI_ROOT, "package.json"));
-// A global pi install nests pi-tui under PI_ROOT; a flat npm install hoists it. Resolve it the way pi does.
 const nestedTui = join(PI_ROOT, "node_modules/@earendil-works/pi-tui/dist/index.js");
 const TUI_PATH = existsSync(nestedTui) ? nestedTui : piRequire.resolve("@earendil-works/pi-tui");
 const PKG_PATH = join(PI_ROOT, "dist/index.js");
@@ -42,7 +40,6 @@ const extension = await jiti.import(join(ROOT, "index.ts"));
 
 const failures = [];
 function check(name, condition, detail = "") {
-	// Each check is also a node:test test, so `node --test` counts and reports them one by one.
 	test(name, () => {
 		if (!condition) throw new Error(detail || "check failed");
 	});

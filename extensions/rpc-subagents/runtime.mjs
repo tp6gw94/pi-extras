@@ -24,7 +24,6 @@ export function resolveCliEntrypoint(packageDir, argvEntry = process.argv[1]) {
   return cliPath;
 }
 
-/** Read <agentDir>/rpc-subagents/config.json (see storage.mjs). A missing file means the defaults. */
 export async function loadLocalConfig(configFile) {
   const config = await readJSON(configFile, {});
   if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("RPC subagents config.json must be an object");
@@ -37,11 +36,6 @@ export async function loadLocalConfig(configFile) {
   };
 }
 
-/**
- * Extensions an RPC child loads for providers: the opencode-provider and pi-claude-bridge installs
- * the agent dir has, then the project's explicit providerSources.
- * Relative providerSources are relative to configDir, the directory of config.json.
- */
 export function providerExtensionPaths({ extensionDir, configDir = extensionDir, agentDir, cwd, config }) {
   const defaults = ["extensions/opencode-provider", "npm/node_modules/pi-claude-bridge"]
     .map((name) => join(agentDir, name)).filter(existsSync);

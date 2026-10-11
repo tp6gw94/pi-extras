@@ -62,7 +62,6 @@ async function tree(directory) {
   return result;
 }
 
-/** An agent dir with pi-extras installed from git, as pi lays it out. */
 async function agentFixture(t, prefix) {
   const base = await temporary(t, prefix);
   const agentDir = join(base, "agent");
@@ -113,7 +112,6 @@ test("initialize copies data and config.json from the old <agentDir>/extensions/
   assert.equal(marker.config.from, join(f.oldDir, "config.json"));
   assert.deepEqual(await tree(f.oldDir), before, "the old location is left untouched");
 
-  // Once: a later start reads only the new location, even after its data is removed.
   await rm(join(f.newRoot, "data"), { recursive: true });
   await rm(join(f.newRoot, "config.json"));
   const again = await start(f);
