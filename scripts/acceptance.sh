@@ -6,16 +6,16 @@
 #
 # Needs tmux, git access to the repo, and node on PATH. Never touches the real ~/.pi.
 # Checks:
-#	1. pi install from git, then pi starts with all nine extensions and no unexpected warnings.
-#	2. A settings filter "!extensions/ralph/index.ts" leaves eight extensions.
-#	3. pi config, driven in tmux, turns ralph off, and pi starts with eight extensions.
+#	1. pi install from git, then pi starts with all eight extensions and no unexpected warnings.
+#	2. A settings filter "!extensions/ralph/index.ts" leaves seven extensions.
+#	3. pi config, driven in tmux, turns ralph off, and pi starts with seven extensions.
 set -euo pipefail
 
 PI_BIN=$(cd "$1" && pwd)
 REF=$2
 OUT=${3:-/tmp/pi-extras-acceptance}
 SRC="git:github.com/tp6gw94/pi-extras@$REF"
-ALL=(deepinfra-provider herdr-agent-state hooks inline-skills ralph resume-handoff rpc-subagents skill-name-normalizer ux)
+ALL=(deepinfra-provider hooks inline-skills ralph resume-handoff rpc-subagents skill-name-normalizer ux)
 T=$(mktemp -d /tmp/pi-extras-acc.XXXXXX)
 export HOME=$T/home PATH="$PI_BIN:$PATH"
 unset PI_CODING_AGENT_DIR
@@ -57,19 +57,19 @@ cp "$SETTINGS" "$OUT/settings-installed.json"
 
 capture_start "$OUT/1-all.txt"
 expect_loaded "1 install" "$OUT/1-all.txt" "${ALL[@]}"
-EIGHT=(deepinfra-provider herdr-agent-state hooks inline-skills resume-handoff rpc-subagents skill-name-normalizer ux)
+SEVEN=(deepinfra-provider hooks inline-skills resume-handoff rpc-subagents skill-name-normalizer ux)
 
 printf '{\n\t"packages": [\n\t\t{\n\t\t\t"source": "%s",\n\t\t\t"extensions": ["!extensions/ralph/index.ts"]\n\t\t}\n\t]\n}\n' "$SRC" >"$SETTINGS"
 cp "$SETTINGS" "$OUT/settings-filter.json"
 capture_start "$OUT/2-filter.txt"
-expect_loaded "2 settings filter" "$OUT/2-filter.txt" "${EIGHT[@]}"
+expect_loaded "2 settings filter" "$OUT/2-filter.txt" "${SEVEN[@]}"
 
 cp "$OUT/settings-installed.json" "$SETTINGS"
 tmux new-session -d -s $S -x 140 -y 45 -e HOME="$HOME" -e PATH="$PATH" -c "$T/project" "pi config; sleep 600"
 sleep 5
 tmux capture-pane -p -t $S | grep -v '^\s*$' >"$OUT/3-config-before.txt"
-# Rows are sorted; ralph is the fifth extension. Move down four rows, toggle, close.
-for _ in 1 2 3 4; do tmux send-keys -t $S Down; sleep 0.3; done
+# Rows are sorted; ralph is the fourth extension. Move down three rows, toggle, close.
+for _ in 1 2 3; do tmux send-keys -t $S Down; sleep 0.3; done
 tmux send-keys -t $S Space; sleep 0.5
 tmux capture-pane -p -t $S | grep -v '^\s*$' >"$OUT/3-config-toggled.txt"
 tmux send-keys -t $S Escape; sleep 1.5
@@ -77,7 +77,7 @@ tmux kill-session -t $S
 cp "$SETTINGS" "$OUT/settings-config.json"
 if grep -q '"-extensions/ralph/index.ts"' "$SETTINGS"; then echo 'PASS 3 pi config wrote "-extensions/ralph/index.ts"'; else echo "FAIL 3 pi config: $(cat "$SETTINGS")"; fail=1; fi
 capture_start "$OUT/3-config.txt"
-expect_loaded "3 pi config" "$OUT/3-config.txt" "${EIGHT[@]}"
+expect_loaded "3 pi config" "$OUT/3-config.txt" "${SEVEN[@]}"
 
 rm -rf "$T"
 exit $fail

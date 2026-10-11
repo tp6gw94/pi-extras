@@ -25,10 +25,9 @@ function headingLevels(text: string): number[] {
 }
 
 describe("package layout", () => {
-	it("has the nine extensions, each with an index.ts", () => {
+	it("has the eight extensions, each with an index.ts", () => {
 		assert.deepEqual(extensions, [
 			"deepinfra-provider",
-			"herdr-agent-state",
 			"hooks",
 			"inline-skills",
 			"ralph",
@@ -38,6 +37,11 @@ describe("package layout", () => {
 			"ux",
 		]);
 		for (const name of extensions) assert.ok(existsSync(join(root, "extensions", name, "index.ts")), name);
+	});
+
+	it("does not ship herdr-agent-state, which herdr installs and manages itself", () => {
+		assert.ok(!existsSync(join(root, "extensions", "herdr-agent-state")));
+		for (const file of ["README.md", "README.zh-TW.md", "scripts/acceptance.sh"]) assert.ok(!read(file).includes("herdr-agent-state"), file);
 	});
 
 	it("loads every extensions/<name>/index.ts through one manifest glob", () => {
@@ -59,6 +63,14 @@ describe("package layout", () => {
 			typebox: "*",
 		});
 		assert.equal(pkg.workspaces, undefined);
+	});
+
+	it("states the Node.js version in engines instead of installing a node binary package", () => {
+		assert.deepEqual(pkg.engines, { node: ">=22" });
+		assert.equal(pkg.devDependencies?.node, undefined);
+		const lock = JSON.parse(read("package-lock.json"));
+		assert.equal(lock.packages["node_modules/node"], undefined);
+		assert.deepEqual(lock.packages[""].engines, { node: ">=22" });
 	});
 
 	it("keeps the skills that ralph and rpc-subagents find next to their index.ts", () => {
