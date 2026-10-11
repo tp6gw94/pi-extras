@@ -116,8 +116,17 @@ export async function copyDataRoot(source, target) {
         if (renamed !== file) await rename(file, renamed);
       }
     }
-    try { await rmdir(target); } catch (error) { if (error.code !== "ENOENT") throw error; }
-    await rename(staging, target);
+    try {
+      try { await rmdir(target); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      await rename(staging, target);
+    } catch (error) {
+      if ((error.code === "ENOTEMPTY" || error.code === "EEXIST") && await hasEntries(target)) {
+        await rm(staging, { recursive: true, force: true });
+        return false;
+      }
+      throw error;
+    }
+    return true;
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
@@ -155,8 +164,7 @@ export async function prepareStorage({ agentDir, now = Date.now }) {
   if (!marker.data && !(await hasEntries(layout.dataRoot))) {
     for (const from of legacy.dataRoots) {
       if (!(await hasEntries(from))) continue;
-      await copyDataRoot(from, layout.dataRoot);
-      migrated.data = from;
+      if (await copyDataRoot(from, layout.dataRoot)) migrated.data = from;
       break;
     }
   }
