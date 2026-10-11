@@ -59,6 +59,7 @@ export class EventRenderer {
         const task = event.task;
         return `\n結果 ${safeText(task.status)}\n${safeText(task.text, 65536)}${task.truncated ? "\n[輸出已截短，完整事件保留於記錄檔]" : ""}${task.error ? `\n錯誤 ${safeText(task.error)}` : ""}${task.state.reason ? `\n原因 ${safeText(task.state.reason)}` : ""}\n`;
       }
+      if (event.type === "warning") return `\n警告 ${safeText(event.message)}\n`;
       if (event.type === "dialog_responded") return `\n對話 ${safeText(event.dialogId)} 已${event.cancelled ? "取消" : "回應"}\n`;
       return "";
     }

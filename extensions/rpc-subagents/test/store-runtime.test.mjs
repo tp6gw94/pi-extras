@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, stat, rm, symlink, realpath } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { atomicJSON, ProjectLock, TaskJournal } from "../store.mjs";
-import { CHILD_BINDING_ENV, createTaskPreparer, resolveCliEntrypoint, providerExtensionPaths } from "../runtime.mjs";
+import { BUNDLED_DEEPINFRA, CHILD_BINDING_ENV, bundledProviderPaths, createTaskPreparer, packageExtensionEnabled, resolveCliEntrypoint, providerExtensionPaths } from "../runtime.mjs";
 import { childEnvironment } from "../transport.mjs";
 import { normalizeTaskSpec } from "../domain.mjs";
 
@@ -19,12 +20,13 @@ async function prepareFixture(t) {
   const directory = await temporary(t);
   const agentDir = join(directory, "agent");
   const extensionDir = join(agentDir, "extensions", "rpc-subagents");
-  const providerDir = join(agentDir, "extensions", "deepinfra-provider");
+  const providerFile = join(directory, "package", "extensions", "deepinfra-provider", "index.ts");
   await mkdir(extensionDir, { recursive: true });
-  await mkdir(providerDir, { recursive: true });
+  await mkdir(dirname(providerFile), { recursive: true });
+  await writeFile(providerFile, "export default function () {}\n");
   await writeFile(join(extensionDir, "child.ts"), "export default function () {}\n");
-  const prepare = createTaskPreparer({ extensionDir, agentDir, cliPath: "/pi", config: { commandTimeoutMs: 45000 } });
-  return { directory, extensionDir, providerDir: realpathSync(providerDir), taskDirectory: join(directory, "tasks", "task-1"), prepare };
+  const prepare = createTaskPreparer({ extensionDir, agentDir, cliPath: "/pi", config: { commandTimeoutMs: 45000 }, deepinfraPath: providerFile });
+  return { directory, extensionDir, agentDir, providerFile, providerDir: realpathSync(providerFile), taskDirectory: join(directory, "tasks", "task-1"), prepare };
 }
 
 function taskSpec(directory, overrides = {}) {
@@ -101,15 +103,87 @@ test("CLI selection follows the current installed manifest, never a PATH shim or
   assert.throws(() => resolveCliEntrypoint(packageDir, oldShim), /outside/);
 });
 
-test("provider bootstrapping includes only present known providers and explicit project allowlist sources", async (t) => {
+test("the bundled deepinfra-provider is the sibling in this package, not one in the agent dir", () => {
+  const sibling = fileURLToPath(new URL("../../deepinfra-provider/index.ts", import.meta.url));
+  assert.equal(BUNDLED_DEEPINFRA, sibling);
+  assert.equal(existsSync(BUNDLED_DEEPINFRA), true);
+});
+
+test("provider bootstrapping includes the bundled providers, present known installs, and explicit project allowlist sources", async (t) => {
   const directory = await temporary(t); const agentDir = join(directory, "agent"); const extensionDir = join(agentDir, "extensions", "rpc-subagents");
-  const deepinfra = join(agentDir, "extensions", "deepinfra-provider"); const arbitrary = join(agentDir, "extensions", "arbitrary-extension"); const additional = join(directory, "extra-provider.ts");
+  const bundled = join(directory, "package", "extensions", "deepinfra-provider", "index.ts");
+  const legacyDeepinfra = join(agentDir, "extensions", "deepinfra-provider"); const arbitrary = join(agentDir, "extensions", "arbitrary-extension"); const additional = join(directory, "extra-provider.ts");
   const claudeBridge = join(agentDir, "npm", "node_modules", "pi-claude-bridge"); const otherPackage = join(agentDir, "npm", "node_modules", "other-package");
-  await mkdir(extensionDir, { recursive: true }); await mkdir(deepinfra); await mkdir(arbitrary); await writeFile(additional, "");
+  await mkdir(extensionDir, { recursive: true }); await mkdir(legacyDeepinfra); await mkdir(arbitrary); await writeFile(additional, "");
+  await mkdir(dirname(bundled), { recursive: true }); await writeFile(bundled, "");
   await mkdir(claudeBridge, { recursive: true }); await mkdir(otherPackage);
-  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: [additional] } } } }), [deepinfra, claudeBridge, additional]);
-  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/other", config: {} }), [deepinfra, claudeBridge]);
+  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: [additional] } } }, bundled: [bundled] }), [bundled, claudeBridge, additional]);
+  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/other", config: {}, bundled: [bundled] }), [bundled, claudeBridge]);
+  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/other", config: {} }), [claudeBridge], "the old <agentDir>/extensions/deepinfra-provider is not loaded");
+  assert.deepEqual(providerExtensionPaths({ extensionDir, configDir: directory, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: ["extra-provider.ts"] } } } }), [claudeBridge, additional], "relative sources are relative to configDir");
   assert.throws(() => providerExtensionPaths({ extensionDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: ["/missing"] } } } }), /does not exist/);
+});
+
+test("the bundled deepinfra-provider is skipped with a warning when it is missing or filtered out", async (t) => {
+  const directory = await temporary(t);
+  const file = join(directory, "deepinfra-provider", "index.ts");
+  await mkdir(dirname(file)); await writeFile(file, "");
+  const seen = [];
+  const isEnabled = (value) => async (path, cwd) => { seen.push([path, cwd]); return value; };
+  assert.deepEqual(await bundledProviderPaths({ cwd: "/p", deepinfraPath: file, isEnabled: isEnabled(true) }), { paths: [file], warnings: [] });
+  assert.deepEqual(seen, [[file, "/p"]]);
+  assert.deepEqual(await bundledProviderPaths({ cwd: "/p", deepinfraPath: file, isEnabled: isEnabled(undefined) }), { paths: [file], warnings: [] });
+  assert.deepEqual(await bundledProviderPaths({ cwd: "/p", deepinfraPath: file }), { paths: [file], warnings: [] });
+  const filtered = await bundledProviderPaths({ cwd: "/p", deepinfraPath: file, isEnabled: isEnabled(false) });
+  assert.deepEqual(filtered.paths, []);
+  assert.match(filtered.warnings[0], /turned off by a package extension filter.*starts without/);
+  const missing = await bundledProviderPaths({ cwd: "/p", deepinfraPath: join(directory, "nope", "index.ts"), isEnabled: isEnabled(true) });
+  assert.deepEqual(missing.paths, []);
+  assert.match(missing.warnings[0], /deepinfra-provider is missing.*starts without/);
+  const unreadable = await bundledProviderPaths({ cwd: "/p", deepinfraPath: file, isEnabled: async () => { throw new Error("bad settings"); } });
+  assert.deepEqual(unreadable.paths, [file]);
+  assert.match(unreadable.warnings[0], /bad settings/);
+});
+
+test("a filtered or missing deepinfra-provider still prepares a child launch and reports the warning", async (t) => {
+  const f = await prepareFixture(t);
+  const sessionFile = join(f.taskDirectory, "session.jsonl");
+  const launch = { directory: f.taskDirectory, taskId: "task-1", ownerId: "owner-1", nonce: "nonce-1", session: { kind: "fresh", sessionFile } };
+  for (const [name, options] of [["filtered", { deepinfraPath: f.providerFile, isProviderEnabled: async () => false }], ["missing", { deepinfraPath: join(f.directory, "missing.ts") }]]) {
+    const warnings = [];
+    const prepare = createTaskPreparer({ extensionDir: f.extensionDir, agentDir: f.agentDir, cliPath: "/pi", config: {}, warn: (message) => warnings.push(message), ...options });
+    const directory = join(f.directory, "tasks", name);
+    const prepared = await prepare(taskSpec(f.directory), { ...launch, directory, session: { kind: "fresh", sessionFile: join(directory, "session.jsonl") } });
+    const extensions = prepared.args.flatMap((arg, i) => prepared.args[i - 1] === "--extension" ? [arg] : []);
+    assert.deepEqual(extensions, ["builtin:codemode", join(f.extensionDir, "child.ts")], name);
+    assert.equal(warnings.length, 1, name);
+    assert.deepEqual(prepared.warnings, warnings, name);
+  }
+});
+
+test("package extension filters decide whether the bundled provider is on, through pi's own package resolution", async (t) => {
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const directory = await temporary(t);
+  const agentDir = join(directory, "agent"); const cwd = join(directory, "project");
+  const pkg = join(directory, "pi-extras");
+  await mkdir(agentDir, { recursive: true }); await mkdir(cwd);
+  for (const name of ["deepinfra-provider", "rpc-subagents"]) {
+    await mkdir(join(pkg, "extensions", name), { recursive: true });
+    await writeFile(join(pkg, "extensions", name, "index.ts"), "export default function () {}\n");
+  }
+  await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "pi-extras", keywords: ["pi-package"], pi: { extensions: ["./extensions/*/index.ts"] } }));
+  const path = join(pkg, "extensions", "deepinfra-provider", "index.ts");
+  const enabled = () => packageExtensionEnabled({ agentDir, cwd, path, DefaultPackageManager: pi.DefaultPackageManager, SettingsManager: pi.SettingsManager });
+  const settings = (value) => writeFile(join(agentDir, "settings.json"), JSON.stringify(value));
+  assert.equal(await enabled(), undefined, "no package provides it");
+  await settings({ packages: [pkg] });
+  assert.equal(await enabled(), true);
+  await settings({ packages: [{ source: pkg, extensions: ["!extensions/deepinfra-provider/index.ts"] }] });
+  assert.equal(await enabled(), false, "hand-written ! filter");
+  await settings({ packages: [{ source: pkg, extensions: ["-extensions/deepinfra-provider/index.ts"] }] });
+  assert.equal(await enabled(), false, "pi config's - filter");
+  await settings({ packages: [{ source: pkg, extensions: ["!extensions/ralph/index.ts"] }] });
+  assert.equal(await enabled(), true, "a filter for another extension");
 });
 
 test("task preparation builds exact argv for default, custom, and empty tool sets", async (t) => {
@@ -202,6 +276,6 @@ test("task preparation without a launch binding stays compatible with existing c
   assert.equal(prepared.binding, undefined);
   assert.equal(prepared.env[CHILD_BINDING_ENV.taskId], undefined);
   assert.equal(prepared.env[CHILD_BINDING_ENV.async], undefined);
-  assert.deepEqual(Object.keys(prepared).sort(), ["args", "binding", "cliPath", "commandTimeoutMs", "cwd", "env", "sessionFile", "webTools"]);
+  assert.deepEqual(Object.keys(prepared).sort(), ["args", "binding", "cliPath", "commandTimeoutMs", "cwd", "env", "sessionFile", "warnings", "webTools"]);
   assert.equal(prepared.args[prepared.args.indexOf("--tools") + 1], "read,write,edit,bash,codemode,rpc_subagents_parent");
 });

@@ -25,7 +25,7 @@ function load(env, context = {}, api = {}) {
   const tools = []; const commands = []; const commandHandlers = new Map(); const events = []; const handlers = new Map();
   const forbidden = () => { throw new Error("Factory attempted to initialize runtime resources"); };
   const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, safeText,
-    getPackageDir: forbidden, getAgentDir: forbidden, loadLocalConfig: forbidden, resolveDataRoot: forbidden, setTimeout: forbidden, setInterval: forbidden, ...context });
+    getPackageDir: forbidden, getAgentDir: forbidden, loadLocalConfig: forbidden, prepareStorage: forbidden, setTimeout: forbidden, setInterval: forbidden, ...context });
   factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name, command) => { commands.push(name); commandHandlers.set(name, command.handler); },
     on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...api });
   return { tools, commands, commandHandlers, events, handlers };
@@ -71,7 +71,7 @@ test("adapter factory registers unique codemode tools with directly accessible s
 test("output command toggles installed TUI preview, resets on session start, and rejects unavailable modes", async () => {
   let expanded = false;
   const registry = load({}, {
-    loadLocalConfig: async () => ({}), resolveDataRoot: () => "/data", getPackageDir: () => "/pi", getAgentDir: () => "/agent",
+    loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: "/data", configFile: "/config.json", configDir: "/", migrated: {} }), getPackageDir: () => "/pi", getAgentDir: () => "/agent",
     resolveCliEntrypoint: () => "/pi/cli", createTaskPreparer: () => () => {},
     FleetManager: class { subscribe() { return () => {}; } list() { return []; } async shutdown() {} },
     ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
@@ -127,7 +127,7 @@ test("schedule_list on a new cwd reads an unchanged snapshot without constructin
   await manager.create({ task: { prompt: "read only", cwd: directory, model: { provider: "test", id: "model" } }, trigger: { type: "at", at: "+1h" } });
   await manager.shutdown();
   const before = await readFile(join(store, "schedules.json"), "utf8");
-  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), resolveDataRoot: () => join(directory, "data"), getPackageDir: () => directory, getAgentDir: () => directory,
+  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: class { subscribe() { return () => {}; } list() { return []; } },
     ScheduleManager: class { constructor() { throw new Error("Read-only list tried to create an owner"); } },
@@ -176,7 +176,7 @@ test("pending child asks wake the parent exactly once, forward explicit replies,
     steer(taskId, message) { calls.push(["steer", taskId, message]); return Promise.resolve({ taskId, disposition: "queued" }); }
     shutdown() { return Promise.resolve(); }
   }
-  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), resolveDataRoot: () => join(directory, "data"), getPackageDir: () => directory, getAgentDir: () => directory,
+  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
     HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules },
@@ -254,7 +254,7 @@ test("wake bookkeeping follows currently pending request keys on a retained task
     steer() { return Promise.resolve({}); }
     shutdown() { return Promise.resolve(); }
   }
-  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), resolveDataRoot: () => join(directory, "data"), getPackageDir: () => directory, getAgentDir: () => directory,
+  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
     HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules },

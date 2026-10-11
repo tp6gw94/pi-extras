@@ -1,6 +1,7 @@
 import { existsSync, realpathSync, statSync, readFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { join, resolve, dirname, relative, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readJSON } from "./store.mjs";
 import { writeChildSession } from "./snapshot.mjs";
 import { boundedInteger, normalizeTools } from "./domain.mjs";
@@ -24,8 +25,9 @@ export function resolveCliEntrypoint(packageDir, argvEntry = process.argv[1]) {
   return cliPath;
 }
 
-export async function loadLocalConfig(extensionDir) {
-  const config = await readJSON(join(extensionDir, "config.json"), {});
+/** Read <agentDir>/rpc-subagents/config.json (see storage.mjs). A missing file means the defaults. */
+export async function loadLocalConfig(configFile) {
+  const config = await readJSON(configFile, {});
   if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("RPC subagents config.json must be an object");
   return {
     concurrency: boundedInteger(config.concurrency ?? 4, "concurrency", 1, 32),
@@ -36,29 +38,70 @@ export async function loadLocalConfig(extensionDir) {
   };
 }
 
-export function providerExtensionPaths({ extensionDir, agentDir, cwd, config }) {
-  const defaults = ["extensions/deepinfra-provider", "extensions/opencode-provider", "npm/node_modules/pi-claude-bridge"]
-    .map((name) => join(agentDir, name)).filter(existsSync);
+/** deepinfra-provider ships in the same package; it is found next to this extension, never in the agent dir. */
+export const BUNDLED_DEEPINFRA = fileURLToPath(new URL("../deepinfra-provider/index.ts", import.meta.url));
+
+/**
+ * The providers from this package that an RPC child loads. deepinfra-provider is skipped, with a
+ * warning, when the file is missing or when isEnabled reports that the user's package extension
+ * filters turned it off; the child still starts. isEnabled returns false (off), true (on), or
+ * undefined (pi-extras is not loaded through a package, so no filter applies).
+ */
+export async function bundledProviderPaths({ cwd, deepinfraPath = BUNDLED_DEEPINFRA, isEnabled } = {}) {
+  const warnings = [];
+  let present = false;
+  try { present = typeof deepinfraPath === "string" && statSync(deepinfraPath).isFile(); } catch {}
+  if (!present) {
+    warnings.push(`deepinfra-provider is missing (${deepinfraPath}); the RPC child starts without the deepinfra provider.`);
+    return { paths: [], warnings };
+  }
+  let enabled;
+  try { enabled = await isEnabled?.(deepinfraPath, cwd); }
+  catch (error) {
+    warnings.push(`Could not read package extension filters (${error instanceof Error ? error.message : String(error)}); the RPC child loads deepinfra-provider anyway.`);
+  }
+  if (enabled === false) {
+    warnings.push("deepinfra-provider is turned off by a package extension filter; the RPC child starts without the deepinfra provider.");
+    return { paths: [], warnings };
+  }
+  return { paths: [realpathSync(deepinfraPath)], warnings };
+}
+
+/**
+ * Whether the user's package settings leave the extension file at `path` on, using pi's own package
+ * resolution, so the filters `pi config` writes ("-extensions/<name>/index.ts") and hand-written
+ * "!extensions/<name>/index.ts" entries both count. pi's classes are passed in by the caller.
+ * Returns undefined when no configured package provides the file (for example `pi -e`).
+ */
+export async function packageExtensionEnabled({ agentDir, cwd, path, DefaultPackageManager, SettingsManager }) {
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve(async () => "skip");
+  const target = realpathSync(path);
+  for (const resource of resolved.extensions) {
+    let candidate;
+    try { candidate = realpathSync(resource.path); } catch { continue; }
+    if (candidate === target) return resource.enabled;
+  }
+  return undefined;
+}
+
+/**
+ * Extensions an RPC child loads for providers: the bundled ones, the opencode-provider and
+ * pi-claude-bridge installs the agent dir has, then the project's explicit providerSources.
+ * Relative providerSources are relative to configDir, the directory of config.json.
+ */
+export function providerExtensionPaths({ extensionDir, configDir = extensionDir, agentDir, cwd, config, bundled = [] }) {
+  const defaults = [...bundled, ...["extensions/opencode-provider", "npm/node_modules/pi-claude-bridge"]
+    .map((name) => join(agentDir, name))].filter(existsSync);
   const additional = config.projects?.[cwd]?.providerSources ?? [];
   if (!Array.isArray(additional) || additional.some((item) => typeof item !== "string")) throw new Error("Project providerSources must be an array of explicit local paths");
-  const paths = [...defaults, ...additional.map((source) => resolve(extensionDir, source))].map((source) => {
+  const paths = [...defaults, ...additional.map((source) => resolve(configDir, source))].map((source) => {
     if (!existsSync(source)) throw new Error(`Provider bootstrap source does not exist: ${source}`);
     const path = realpathSync(source);
     if (path === realpathSync(extensionDir)) throw new Error("RPC subagents cannot bootstrap itself in a child");
     return path;
   });
   return [...new Set(paths)];
-}
-
-// Prefer the legacy sibling rpc-fleet/data when present so existing managed sessions, catalogs, and
-// schedule templates keep their absolute paths. A clean install has no legacy sibling and uses the
-// extension's own data directory. Callers resolve this lazily, never at registration.
-export function resolveDataRoot(extensionDir) {
-  const legacy = join(dirname(extensionDir), "rpc-fleet", "data");
-  try {
-    if (existsSync(legacy) && statSync(legacy).isDirectory()) return legacy;
-  } catch {}
-  return join(extensionDir, "data");
 }
 
 export async function canonicalCwd(cwd) {
@@ -119,11 +162,13 @@ export function resolveWebEntrypoint(agentDir) {
   }
 }
 
-export function createTaskPreparer({ extensionDir, agentDir, cliPath, config }) {
+export function createTaskPreparer({ extensionDir, configDir = extensionDir, agentDir, cliPath, config, deepinfraPath = BUNDLED_DEEPINFRA, isProviderEnabled, warn }) {
   const bridgeExtension = join(extensionDir, "child.ts");
   return async (spec, { directory, template, taskId, ownerId, nonce, session } = {}) => {
     await canonicalCwd(spec.cwd);
-    const providers = providerExtensionPaths({ extensionDir, agentDir, cwd: spec.cwd, config });
+    const bundled = await bundledProviderPaths({ cwd: spec.cwd, deepinfraPath, isEnabled: isProviderEnabled });
+    for (const message of bundled.warnings) { try { warn?.(message); } catch {} }
+    const providers = providerExtensionPaths({ extensionDir, configDir, agentDir, cwd: spec.cwd, config, bundled: bundled.paths });
     if (!existsSync(bridgeExtension) || !statSync(bridgeExtension).isFile()) throw new Error("RPC subagents child bridge is unavailable");
     const binding = resolveLaunchBinding({ taskId, ownerId, nonce });
     const tools = normalizeTools(spec.tools);
@@ -161,6 +206,6 @@ export function createTaskPreparer({ extensionDir, agentDir, cliPath, config }) 
       env[CHILD_BINDING_ENV.nonce] = binding.nonce;
       env[CHILD_BINDING_ENV.async] = spec.async ? "1" : "0";
     }
-    return { cliPath, cwd: spec.cwd, sessionFile, args, env, binding, webTools: launch ? launch.approved : [], commandTimeoutMs: config.commandTimeoutMs };
+    return { cliPath, cwd: spec.cwd, sessionFile, args, env, binding, webTools: launch ? launch.approved : [], commandTimeoutMs: config.commandTimeoutMs, warnings: bundled.warnings };
   };
 }

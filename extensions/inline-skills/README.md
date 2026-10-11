@@ -4,7 +4,7 @@
 
 ## 啟用
 
-在 Pi 執行 `/reload`。Extension 位於 `~/.pi/agent/extensions/inline-skills/index.ts`，由個人 extension 目錄自動載入。
+inline-skills 隨 pi-extras 套件安裝與載入，安裝方式見 [pi-extras README 的安裝說明](../../README.zh-TW.md#安裝)（[English](../../README.md#install)）。安裝或更新套件後，在 Pi 執行 `/reload`。
 
 如果其他 extension 已替換主編輯器，本 extension 會顯示警告並停止安裝，不覆蓋它。
 
@@ -42,10 +42,10 @@ flowchart LR
 
 ## 執行測試
 
-在目前安裝的 Pi 1.1.0 環境執行：
+在 pi-extras 的 repo 根目錄執行（`npm test` 也會執行它）：
 
 ```bash
-node ~/.pi/agent/extensions/inline-skills/tests/run.mjs
+node extensions/inline-skills/tests/run.mjs
 ```
 
-測試使用真實編輯器與 input handler，涵蓋選取、取消、路徑附加和錯誤恢復。測試檔的套件路徑對應目前的本機安裝；可透過 `PI_ROOT` 環境變數指定其他 Pi 安裝目錄，透過 `EVIDENCE` 指定測試證據目錄。
+測試使用真實編輯器與 input handler，涵蓋選取、取消、路徑附加和錯誤恢復。測試預設使用 repo 的開發安裝（`node_modules/@earendil-works/pi-coding-agent`）；可透過 `PI_ROOT` 環境變數指定其他 Pi 安裝目錄，透過 `EVIDENCE` 指定測試證據目錄。

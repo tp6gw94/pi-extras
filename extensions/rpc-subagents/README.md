@@ -2,14 +2,14 @@
 
 這份指南供已使用 Pi、想管理子代理任務的使用者閱讀。此擴充功能在主 Pi 程序內管理獨立的 `pi --mode rpc` 子程序，沒有 SDK 執行或備援。
 
-已實測同步與背景任務、codemode chain 與平行、一般 fork、排程觸發與中止，以及同行程 fleet UI。Herdr 可開啟執行中任務的唯讀 viewer，重播並追蹤同一份 RPC 事件，第二次開啟會重用 pane 且不搶焦點。測試範圍與尚未活體驗證的情境列於 [驗證紀錄](VALIDATION.md)；本文件不重複列出可能過期的總數。
+已實測同步與背景任務、codemode chain 與平行、一般 fork、排程觸發與中止，以及同行程 fleet UI。Herdr 可開啟執行中任務的唯讀 viewer，重播並追蹤同一份 RPC 事件，第二次開啟會重用 pane 且不搶焦點。本文件不重複列出可能過期的測試總數。
 
 ## 載入擴充功能
 
-1. 保留此目錄於 `~/.pi/agent/extensions/rpc-subagents`。
-2. 若要使用 cron，先在此目錄執行 `npm install --ignore-scripts`。依賴固定為 `croner@9.1.0`。runtime 驗證已安裝此版本並保留 lockfile。
-3. 在主 Pi 執行 `/reload`。此操作會中止舊 runtime 的 RPC 任務，再載入排程。
-4. 執行 `/rpc-subagents` 開啟任務與排程清單。
+rpc-subagents 隨 pi-extras 套件安裝與載入，安裝方式見 [pi-extras README 的安裝說明](../../README.zh-TW.md#安裝)（[English](../../README.md#install)）。cron 需要的 `croner@9.1.0` 由套件一併安裝。
+
+1. 安裝或更新套件後，在主 Pi 執行 `/reload`。此操作會中止舊 runtime 的 RPC 任務，再載入排程。
+2. 執行 `/rpc-subagents` 開啟任務與排程清單。
 
 TUI 的即時輸出預覽預設收合；按 `Ctrl+O` 可展開或再次收合，同時保留 Pi 原本的工具輸出展開／收合功能。也可執行 `/rpc-subagents-output` 單獨切換子代理預覽。最多預覽三個進行中的任務，每個顯示保留文字的尾端約四行，依終端高度縮減；沒有進行中任務時，僅在展開狀態顯示最近結束的任務。內容已達保留上限時會標示截短，完整輸出請開啟 viewer。`/reload` 後恢復收合。
 
@@ -25,7 +25,22 @@ pi --tools read,bash,edit,write,codemode,rpc_subagents_run,rpc_subagents_status,
 
 ## 儲存位置與舊版資料路徑
 
-runtime 資料（tasks、projects、schedules、templates）放在 `data/`。程式碼更名為 `rpc-subagents` 後，若同一層仍有舊的 `rpc-fleet/data`，擴充功能會繼續把它當作儲存根目錄，既有受管理 session、catalog 與 schedule template 的絕對路徑因此不變，不需搬移、symlink 或改寫 catalog。全新安裝沒有舊目錄時，才使用 `rpc-subagents/data`。這個判斷在第一次需要 runtime 時才進行，不在註冊階段讀取檔案系統。舊的 `rpc-fleet` 目錄只保留 `data/`，不應再載入其中的程式碼；`rpc-fleet` 舊名稱只存在於這個儲存路徑，工具、command 與 skill 都不提供舊名稱別名。
+資料與設定放在 pi 的 agent 目錄（`getAgentDir()`，預設 `~/.pi/agent`，可由 `PI_CODING_AGENT_DIR` 改變）下的 `rpc-subagents/`，不放在擴充功能或套件目錄內，因此重新安裝或更新 pi-extras 不會動到它們。
+
+| 路徑 | 內容 |
+| --- | --- |
+| `<agentDir>/rpc-subagents/data/` | runtime 資料：tasks、projects、schedules、templates、session catalog |
+| `<agentDir>/rpc-subagents/config.json` | 選用的本機設定 |
+| `<agentDir>/rpc-subagents/migration.json` | 從舊位置複製的紀錄（來源、目的與時間） |
+
+舊版把這些檔案放在擴充功能目錄 `<agentDir>/extensions/rpc-subagents/`（`data/` 與 `config.json`），更早的版本則用 `<agentDir>/extensions/rpc-fleet/data`。第一次需要 runtime 時（主 Pi 的 `session_start`），若新位置沒有資料，而舊位置有，擴充功能會把舊資料複製一次到新位置；兩個舊位置都有資料時，沿用舊版的優先順序，取 `rpc-fleet/data`。`config.json` 獨立判斷：新位置沒有 `config.json` 而舊位置有時才複製。複製時：
+
+- 受管理 session、session catalog、session lease、schedule template 與 task 狀態裡指向舊資料目錄的絕對路徑改為新目錄，catalog 依新路徑重新命名，原本吻合的檔案識別也一併更新，舊的 session 可繼續接續，fork 排程可繼續觸發。事件記錄與 session 內容逐位元組複製。
+- 舊 `config.json` 裡 `providerSources` 的相對路徑原本以舊擴充功能目錄為基準，複製時改為絕對路徑，指向原本的位置。
+- 先複製到暫存目錄再改名，失敗時不留下部分資料，也不寫入 `migration.json`；主 Pi 在 TUI 顯示排程未啟動的警告。
+- 舊位置的檔案不修改、不刪除。確認新位置正常後可自行刪除。
+
+複製完成後寫入 `migration.json`，之後只讀寫新位置；即使之後刪除新位置的資料，也不會再次複製。新位置已有資料時不複製，也不讀取舊位置。在 TUI 中，複製完成時會顯示一次通知。
 
 ## 載入 agent 操作 skill
 
@@ -140,7 +155,7 @@ return [fetched.webTools, renamed.webTools];
 
 子程序直接以 Node 啟動目前安裝的 Pi CLI。父 Pi 若由 `safe-pi` 啟動，子程序會繼承既有沙箱及啟動時的 `--append-path` 授權，不需要重新執行 wrapper 或重播參數。父程序直接使用 Pi 時，擴充功能不額外建立沙箱。
 
-已用實際 `safe-pi` 與正式 RPC transport 測試：兩個 append 目錄（含空白路徑）在父、子 Pi 都可寫入，未授權的合成目錄則都回報 `EPERM`。子程序變更 cwd 後結果相同；指定未授權 cwd 時會啟動失敗。這項測試只驗證上述檔案權限，未涵蓋網路政策；完整 manager 在沙箱內的額外測試遭中止，未列為通過。詳見 [驗證紀錄](VALIDATION.md)。
+已用實際 `safe-pi` 與正式 RPC transport 測試：兩個 append 目錄（含空白路徑）在父、子 Pi 都可寫入，未授權的合成目錄則都回報 `EPERM`。子程序變更 cwd 後結果相同；指定未授權 cwd 時會啟動失敗。這項測試只驗證上述檔案權限，未涵蓋網路政策；完整 manager 在沙箱內的額外測試遭中止，未列為通過。
 
 ## 子任務提問與回報
 
@@ -268,20 +283,23 @@ opener 不可用時，回傳 `status: "unavailable"`、原因與已 quote 的獨
 
 這些 bootstrap 來源必須能在不等待啟動期使用者對話的情況下完成 `session_start`。
 
-已存在的 `~/.pi/agent/extensions/deepinfra-provider`、`opencode-provider` 與 npm 安裝的 `~/.pi/agent/npm/node_modules/pi-claude-bridge` 會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
+child 會載入同一個 pi-extras 套件裡的 `deepinfra-provider`：路徑由擴充功能自己的位置（`import.meta.url`）推得 `../deepinfra-provider/index.ts`，不讀取 agent 目錄裡的舊安裝。若該檔案不存在，或你已用套件的 extension filter 關掉 `deepinfra-provider`（例如 `"!extensions/deepinfra-provider/index.ts"`，或 `pi config` 寫入的 `"-extensions/deepinfra-provider/index.ts"`），child 不載入它，照常啟動；主 Pi 在 TUI 顯示一次警告，任務事件記錄也寫入一筆 `warning`。是否關掉由 pi 自己的套件解析判斷，套用全域與任務 cwd 的專案設定。
 
-若需要其他 provider，複製 `config.example.json` 為本目錄的 `config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 rpc-subagents 目錄為基準。擴充功能不掃描任意 extension 來猜測 provider，也不安裝來源或修改使用者設定。
+agent 目錄裡已存在的 `extensions/opencode-provider` 與 npm 安裝的 `npm/node_modules/pi-claude-bridge` 也會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
+
+若需要其他 provider，參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。擴充功能不掃描任意 extension 來猜測 provider，也不安裝來源或修改使用者設定。
 
 ## 執行靜態與單元檢查
 
+在 pi-extras 的 repo 根目錄執行：
+
 ```sh
+RPC_SUBAGENTS_PI_PACKAGE=/absolute/path/to/@earendil-works/pi-coding-agent npm test
+npm run typecheck
 RPC_SUBAGENTS_PI_PACKAGE=/absolute/path/to/@earendil-works/pi-coding-agent \
-  npm test --prefix ~/.pi/agent/extensions/rpc-subagents
-npm run check --prefix ~/.pi/agent/extensions/rpc-subagents
-RPC_SUBAGENTS_PI_PACKAGE=/absolute/path/to/@earendil-works/pi-coding-agent \
-  node ~/.pi/agent/extensions/rpc-subagents/test/typecheck.mjs
+  node extensions/rpc-subagents/test/typecheck.mjs
 ```
 
 型別檢查需要 PATH 上已有 `tsc`，只讀取指定 Pi 的宣告檔，不執行 Pi。指定 `RPC_SUBAGENTS_PI_PACKAGE` 的測試會使用該安裝的純 context projection 與 TUI 寬度工具，不建立 Pi session 或執行模型。未指定 package 時這些測試明確略過；cron DST 測試在缺少依賴時明確略過。測試使用假 RPC process 與可控時計，不呼叫 provider API 或 Herdr CLI。
 
-完整狀態、儲存與限制見 [參考文件](REFERENCE.md)。實測範圍與證據見 [驗證紀錄](VALIDATION.md)。
+完整狀態、儲存與限制見 [參考文件](REFERENCE.md)。
