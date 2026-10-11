@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { TaskResult, ScheduleRecord, Dialog, CoordinationRequest } from "./domain.d.ts";
+import { terminalTaskStates } from "./domain.mjs";
 import { safeText, singleLineText } from "./viewer.mjs";
 
 export type FleetUIModel = {
@@ -22,8 +23,12 @@ const stateLabels: Record<string, string> = {
   queued: "\uf017", starting: "\uf135", running: "\uf04b", waiting_input: "\uf075", cancelling: "\uf110",
   completed: "\uf00c", failed: "\uf057", cancelled: "\uf05e", interrupted: "\uf04d", active: "\uf205", paused: "\uf04c", missed: "\uf071",
 };
-const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const label = (status: string) => stateLabels[status] ?? singleLineText(status);
+export const STATUS_WIDTH = Math.max(...Object.values(stateLabels).map((text) => visibleWidth(text)));
+const statusCell = (status: string) => {
+  const text = row(label(status));
+  return text + " ".repeat(Math.max(0, STATUS_WIDTH - visibleWidth(text)));
+};
 const elapsed = (task: TaskResult) => `${Math.max(0, Math.floor(((task.finishedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
 const timeoutLabel = (task: TaskResult) => task.timeoutMs === undefined ? "" : ` \uf252${task.timeoutMs / 1000}s`;
 const tpsLabel = (task: TaskResult) => {
@@ -31,6 +36,8 @@ const tpsLabel = (task: TaskResult) => {
   const known = typeof tps === "number" && Number.isFinite(tps) && tps > 0;
   return `\uf0e7 ${known ? tps.toFixed(1) : "—"} tok/s`;
 };
+const tpsSuffix = (task: TaskResult) => terminalTaskStates.has(task.status) ? "" : ` ${tpsLabel(task)}`;
+const formatTime = (time: number) => new Date(time).toLocaleString("sv-SE");
 const shortId = (id: string) => id.slice(0, 4);
 const clean = (text: unknown) => safeText(text);
 const row = (text: unknown) => singleLineText(text);
@@ -58,10 +65,10 @@ export function installFleetWidget(ctx: ExtensionContext, model: FleetUIModel): 
           if (!expanded) cache.clear();
         }
         const tasks = model.tasks();
-        const active = tasks.filter((task) => !terminal.has(task.status));
+        const active = tasks.filter((task) => !terminalTaskStates.has(task.status));
         const previews = expanded ? active.slice(0, 3) : [];
         if (expanded && !active.length) {
-          const latest = tasks.filter((task) => terminal.has(task.status))
+          const latest = tasks.filter((task) => terminalTaskStates.has(task.status))
             .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt))[0];
           if (latest) previews.push(latest);
         }
@@ -69,12 +76,12 @@ export function installFleetWidget(ctx: ExtensionContext, model: FleetUIModel): 
           .sort((a, b) => a.nextAt! - b.nextAt!)[0];
         if (!active.length && !next && !previews.length) return [];
         const usable = Math.max(1, width);
-        const lines = [theme.fg("accent", `RPC subagents  \uf0ae ${active.length}  ${expanded ? "\uf078 展開" : "\uf054 收合"} Ctrl+O  /rpc-subagents`)];
+        const lines = [theme.fg("accent", `RPC subagents  \uf0ae ${active.length}  ${expanded ? "\uf078 expanded" : "\uf054 collapsed"} Ctrl+O  /rpc-subagents`)];
         for (const task of active.slice(0, 3)) {
-          lines.push(`${shortId(task.taskId)} ${row(task.name)} ${row(task.model.provider)}/${row(task.model.id)} ${row(task.thinking ?? "unknown")} ${row(label(task.status))} ${elapsed(task)}${timeoutLabel(task)} ${row(task.currentTools.join(", "))} ${tpsLabel(task)}`);
+          lines.push(`${shortId(task.taskId)} ${row(task.name)} ${row(task.model.provider)}/${row(task.model.id)} ${row(task.thinking ?? "unknown")} ${row(label(task.status))} ${elapsed(task)}${timeoutLabel(task)} ${row(task.currentTools.join(", "))}${tpsSuffix(task)}`);
         }
-        if (active.length > 3) lines.push(`另有 ${active.length - 3} 個任務`);
-        if (next) lines.push(`下次排程 ${shortId(next.scheduleId)} ${row(next.name)} ${new Date(next.nextAt!).toLocaleString("zh-TW")}`);
+        if (active.length > 3) lines.push(`${active.length - 3} more tasks`);
+        if (next) lines.push(`Next schedule ${shortId(next.scheduleId)} ${row(next.name)} ${formatTime(next.nextAt!)}`);
         const maxHeight = Math.max(0, Math.min(20, tui.terminal.rows - 8));
         if (expanded) lines.splice(maxHeight);
         let budget = Math.max(0, Math.min(15, maxHeight - lines.length));
@@ -89,10 +96,10 @@ export function installFleetWidget(ctx: ExtensionContext, model: FleetUIModel): 
             const tail = text.slice(-Math.max(4096, usable * 8)).replace(/^[\uDC00-\uDFFF]/, "");
             const wrapped = tail.split(/[\n\u2028\u2029]/).slice(-4)
               .flatMap((line) => wrapTextWithAnsi(line, usable));
-            preview = { text: task.text, width: usable, lines: text.trim() ? wrapped.slice(-4) : ["（尚無輸出）"] };
+            preview = { text: task.text, width: usable, lines: text.trim() ? wrapped.slice(-4) : ["(no output yet)"] };
             cache.set(task.taskId, preview);
           }
-          lines.push(theme.fg("muted", `${shortId(task.taskId)} 輸出 ${row(label(task.status))}${task.truncated ? "（保留內容已截短）" : ""} ${tpsLabel(task)}`));
+          lines.push(theme.fg("muted", `${shortId(task.taskId)} output ${row(label(task.status))}${task.truncated ? " (retained text truncated)" : ""}${tpsSuffix(task)}`));
           const output = preview.lines.slice(-(height - 1));
           lines.push(...output);
           budget -= output.length + 1;
@@ -109,7 +116,7 @@ export function installFleetWidget(ctx: ExtensionContext, model: FleetUIModel): 
 type ScreenChoice = { kind: "task" | "schedule"; id: string; action: "cancel" | "view" | "respond" | "pause" | "resume" | "abort" };
 
 export async function showFleetScreen(ctx: ExtensionContext, model: FleetUIModel, actions: FleetActions) {
-  if (ctx.mode !== "tui") throw new Error("RPC subagents 互動畫面只支援 TUI 模式。");
+  if (ctx.mode !== "tui") throw new Error("The RPC subagents screen is only available in TUI mode.");
   let selectedId: string | undefined;
   let tab: "task" | "schedule" = "task";
   for (;;) {
@@ -162,17 +169,17 @@ export async function showFleetScreen(ctx: ExtensionContext, model: FleetUIModel
           const rows = Math.max(4, Math.min(24, tui.terminal.rows - 6));
           const list = entries();
           const item = selected();
-          const lines = [theme.fg("accent", `RPC subagents  ${tab === "task" ? "任務" : "排程"}`)];
-          if (!item) lines.push("目前沒有項目。");
+          const lines = [theme.fg("accent", `RPC subagents  ${tab === "task" ? "Tasks" : "Schedules"}`)];
+          if (!item) lines.push("Nothing here yet.");
           else if (detail) {
             let text: string;
             if (tab === "task") {
               const task = item as TaskResult;
               const requests = task.state.status === "waiting_input" ? task.state.requests ?? [] : [];
-              text = `${clean(task.taskId)} 最新回應觀測視窗 ${tpsLabel(task)}\n${clean(task.name)}\n模型 ${clean(task.model.provider)}/${clean(task.model.id)} ${row(task.thinking ?? "unknown")}\n${label(task.status)} ${elapsed(task)}${timeoutLabel(task)}\n目錄 ${clean(task.cwd)}\n工具 ${clean(task.currentTools.join(", "))}\n${task.capabilities ? `能力 ${clean(task.capabilities.reachable.join(", "))}\n` : ""}${task.sessionId ? `工作階段 ${clean(task.sessionId)}${task.sessionReusable === true ? " 可續用" : " 不可續用"}\n` : ""}${task.error ? `錯誤 ${clean(task.error)}\n` : ""}${requests.length ? `待回覆請求 ${requests.map((request) => `${clean(request.requestId)} ${clean(request.question)}`).join("\n")}\n` : ""}${task.state.status === "waiting_input" && task.state.dialogs.length ? `待回應對話 ${task.state.dialogs.map((dialog) => `${clean(dialog.id)} ${clean(dialog.title ?? dialog.method)}`).join("\n")}\n` : ""}\n${safeText(task.text, 65536)}${task.truncated ? "\n[內容已截短，完整資料請開啟 viewer]" : ""}`;
+              text = `${clean(task.taskId)} latest response${tpsSuffix(task)}\n${clean(task.name)}\nModel ${clean(task.model.provider)}/${clean(task.model.id)} ${row(task.thinking ?? "unknown")}\n${label(task.status)} ${elapsed(task)}${timeoutLabel(task)}\nDirectory ${clean(task.cwd)}\nTools ${clean(task.currentTools.join(", "))}\n${task.capabilities ? `Capabilities ${clean(task.capabilities.reachable.join(", "))}\n` : ""}${task.sessionId ? `Session ${clean(task.sessionId)}${task.sessionReusable === true ? " (resumable)" : " (not resumable)"}\n` : ""}${task.error ? `Error ${clean(task.error)}\n` : ""}${requests.length ? `Pending requests ${requests.map((request) => `${clean(request.requestId)} ${clean(request.question)}`).join("\n")}\n` : ""}${task.state.status === "waiting_input" && task.state.dialogs.length ? `Pending dialogs ${task.state.dialogs.map((dialog) => `${clean(dialog.id)} ${clean(dialog.title ?? dialog.method)}`).join("\n")}\n` : ""}\n${safeText(task.text, 65536)}${task.truncated ? "\n[Text truncated; open the viewer for the full log]" : ""}`;
             } else {
               const schedule = item as ScheduleRecord;
-              text = `${clean(schedule.scheduleId)}\n${clean(schedule.name)}\n${label(schedule.state.status)}\n${clean(JSON.stringify(schedule.trigger))}\n下次 ${schedule.nextAt === null ? "無" : new Date(schedule.nextAt).toLocaleString("zh-TW")}\n${label("running")} ${schedule.activeTaskIds.map(clean).join(", ")}\n${schedule.error ? `錯誤 ${clean(schedule.error)}\n` : ""}\n${schedule.history.slice(-20).map((run) => `${new Date(run.at).toLocaleString("zh-TW")} ${label(run.status)} ${run.taskId ? row(run.taskId) : ""}`).join("\n")}`;
+              text = `${clean(schedule.scheduleId)}\n${clean(schedule.name)}\n${label(schedule.state.status)}\n${clean(JSON.stringify(schedule.trigger))}\nNext ${schedule.nextAt === null ? "none" : formatTime(schedule.nextAt)}\n${label("running")} ${schedule.activeTaskIds.map(clean).join(", ")}\n${schedule.error ? `Error ${clean(schedule.error)}\n` : ""}\n${schedule.history.slice(-20).map((run) => `${formatTime(run.at)} ${label(run.status)} ${run.taskId ? row(run.taskId) : ""}`).join("\n")}`;
             }
             const wrapped = text.split(/[\n\u2028\u2029]/).flatMap((line) => wrapTextWithAnsi(line, usable));
             scroll = Math.min(scroll, Math.max(0, wrapped.length - rows));
@@ -181,12 +188,12 @@ export async function showFleetScreen(ctx: ExtensionContext, model: FleetUIModel
             const start = Math.max(0, index - Math.floor(rows / 2));
             for (let i = start; i < Math.min(list.length, start + rows); i++) {
               const entry = list[i];
-              const text = tab === "task" ? `${shortId((entry as TaskResult).taskId)} ${row(entry.name)} ${row(label((entry as TaskResult).status))} ${elapsed(entry as TaskResult)}${timeoutLabel(entry as TaskResult)} ${row((entry as TaskResult).model.id)} ${row((entry as TaskResult).thinking ?? "unknown")} ${tpsLabel(entry as TaskResult)}`
-                : `${shortId((entry as ScheduleRecord).scheduleId)} ${row(entry.name)} ${row(label(entry.state.status))} ${(entry as ScheduleRecord).nextAt ? new Date((entry as ScheduleRecord).nextAt!).toLocaleString("zh-TW") : ""}`;
+              const text = tab === "task" ? `${statusCell((entry as TaskResult).status)} ${shortId((entry as TaskResult).taskId)} ${row(entry.name)} ${elapsed(entry as TaskResult)}${timeoutLabel(entry as TaskResult)} ${row((entry as TaskResult).model.id)} ${row((entry as TaskResult).thinking ?? "unknown")}${tpsSuffix(entry as TaskResult)}`
+                : `${shortId((entry as ScheduleRecord).scheduleId)} ${row(entry.name)} ${row(label(entry.state.status))} ${(entry as ScheduleRecord).nextAt ? formatTime((entry as ScheduleRecord).nextAt!) : ""}`;
               lines.push((i === index ? theme.fg("accent", "> ") : "  ") + text);
             }
           }
-          lines.push(theme.fg("muted", tab === "task" ? "Tab 切換  ↑↓ 選擇或捲動  Enter 詳情  c 取消  v Herdr  r 回應  Esc 返回" : "Tab 切換  ↑↓ 選擇或捲動  Enter 詳情  p 暫停或恢復  c 取消  a 取消並中止任務  Esc 返回"));
+          lines.push(theme.fg("muted", tab === "task" ? "Tab switch  ↑↓ select or scroll  Enter details  c cancel  v Herdr  r respond  Esc back" : "Tab switch  ↑↓ select or scroll  Enter details  p pause/resume  c cancel  a cancel and abort tasks  Esc back"));
           return lines.map((line) => truncateToWidth(line, usable));
         },
         invalidate() {},
@@ -202,12 +209,12 @@ export async function showFleetScreen(ctx: ExtensionContext, model: FleetUIModel
           if (task) await actions.viewTask(task);
         } else if (choice.action === "respond") {
           const task = model.tasks().find((task) => task.taskId === choice.id);
-          if (task?.state.status !== "waiting_input") { ctx.ui.notify("此任務沒有待回應對話。", "info"); continue; }
+          if (task?.state.status !== "waiting_input") { ctx.ui.notify("This task has no pending dialog.", "info"); continue; }
           const dialog = task.state.dialogs[0];
           if (dialog) await actions.respond(task.taskId, dialog.id, await answerDialog(ctx, dialog));
           else {
             const request = task.state.requests?.[0];
-            if (!request) { ctx.ui.notify("此任務沒有待回應對話。", "info"); continue; }
+            if (!request) { ctx.ui.notify("This task has no pending dialog.", "info"); continue; }
             await actions.reply(task.taskId, request.requestId, await answerRequest(ctx, request));
           }
         }
@@ -219,12 +226,12 @@ export async function showFleetScreen(ctx: ExtensionContext, model: FleetUIModel
 }
 
 async function answerRequest(ctx: ExtensionContext, request: CoordinationRequest) {
-  const value = await ctx.ui.input(`子任務協調請求 ${clean(request.requestId)}`, row(request.question));
+  const value = await ctx.ui.input(`Subagent coordination request ${clean(request.requestId)}`, row(request.question));
   return value === undefined ? { cancelled: true } : { value };
 }
 
 async function answerDialog(ctx: ExtensionContext, dialog: Dialog) {
-  const title = `子任務請求 ${clean(dialog.title ?? dialog.method)}`;
+  const title = `Subagent request ${clean(dialog.title ?? dialog.method)}`;
   if (dialog.method === "confirm") return { confirmed: await ctx.ui.confirm(title, clean(dialog.message)) };
   let value: string | undefined;
   if (dialog.method === "select") {

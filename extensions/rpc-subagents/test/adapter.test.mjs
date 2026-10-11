@@ -80,7 +80,7 @@ test("output command toggles installed TUI preview, resets on session start, and
   });
   const command = registry.commandHandlers.get("rpc-subagents-output");
   const ctx = { mode: "tui", hasUI: true, cwd: "/project", ui: { notify() {}, setWidget() {} } };
-  await assert.rejects(command("", ctx), /尚未啟動/);
+  await assert.rejects(command("", ctx), /has not started yet/);
   for (const mode of ["rpc", "json", "print"]) await assert.rejects(command("", { ...ctx, mode }), /TUI/);
   await registry.handlers.get("session_start")({}, ctx);
   await command("", ctx);
@@ -91,7 +91,7 @@ test("output command toggles installed TUI preview, resets on session start, and
   await registry.handlers.get("session_start")({}, ctx);
   assert.equal(expanded, false);
   await registry.handlers.get("session_shutdown")({}, ctx);
-  await assert.rejects(command("", ctx), /尚未啟動/);
+  await assert.rejects(command("", ctx), /has not started yet/);
 });
 
 test("task output schema accepts new metadata and legacy results without it", {
