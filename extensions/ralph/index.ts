@@ -3,10 +3,13 @@ import { fileURLToPath } from "node:url"
 import { Type } from "typebox"
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
-	ReplacedSessionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
+
+type NewSessionOptions = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>
+type ReplacedSessionContext = Parameters<NonNullable<NewSessionOptions["withSession"]>>[0]
 
 const RUN_STATE_TYPE = "ralph:run-state"
 const RUN_STATE_VERSION = 1
@@ -378,14 +381,14 @@ const ralphReportTool = {
 	async execute(_toolCallId: string, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) {
 		if (!isRecord(params) || typeof params.stage !== "string" || !/\S/u.test(params.stage)) {
 			return {
-				content: [{ type: "text", text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
+				content: [{ type: "text" as const, text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
 				details: undefined,
 			}
 		}
 		const stage = sanitizeProgressText(params.stage)
 		if (!stage) {
 			return {
-				content: [{ type: "text", text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
+				content: [{ type: "text" as const, text: "ralph_report rejected: stage must be a non-empty, non-whitespace string." }],
 				details: undefined,
 			}
 		}
@@ -393,7 +396,7 @@ const ralphReportTool = {
 		const state = latestRunState(ctx)
 		if (!state?.active || state.status !== "running") {
 			return {
-				content: [{ type: "text", text: "No active Ralph loop to report progress to." }],
+				content: [{ type: "text" as const, text: "No active Ralph loop to report progress to." }],
 				details: undefined,
 			}
 		}
@@ -402,7 +405,7 @@ const ralphReportTool = {
 		appendRunStateToContext(ctx, nextState)
 		updateStatus(ctx, nextState)
 		return {
-			content: [{ type: "text", text: `Ralph stage updated: ${nextState.stage}` }],
+			content: [{ type: "text" as const, text: `Ralph stage updated: ${nextState.stage}` }],
 			details: undefined,
 		}
 	},
