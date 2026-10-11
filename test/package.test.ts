@@ -24,8 +24,9 @@ function headingLevels(text: string): number[] {
 }
 
 describe("package layout", () => {
-	it("has the seven extensions, each with an index.ts", () => {
+	it("has the eight extensions, each with an index.ts", () => {
 		assert.deepEqual(extensions, [
+			"annotation",
 			"hooks",
 			"inline-skills",
 			"ralph",

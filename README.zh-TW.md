@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-pi-extras 是一個 [pi](https://github.com/earendil-works/pi) 套件，裡面有七個 extension。安裝一次，pi 就會載入其中每個 extension。你可以在 pi 的設定裡關掉個別的 extension。
+pi-extras 是一個 [pi](https://github.com/earendil-works/pi) 套件，裡面有八個 extension。安裝一次，pi 就會載入其中每個 extension。你可以在 pi 的設定裡關掉個別的 extension。
 
 pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上測試過。
 
@@ -10,15 +10,41 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 
 | Extension | 用途 | 文件 |
 | --- | --- | --- |
+| `annotation` | 在 fullscreen 模式選取文字時，旁邊跳出一個框，把選取的內容以 `> ` 引用加上你的留言插入編輯器。 | [Annotation](#annotation) |
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
 | `ralph` | 用 `/ralph` 對同一個任務跑有上限的多輪全新 pi session，用 `/ralph-stop` 停止。 | |
 | `resume-handoff` | 用 `/resume-handoff` 從檢查過的交接檔案開新 session。 | |
 | `rpc-subagents` | 以 `pi --mode rpc` 子程序執行子代理任務與排程，用 `/rpc-subagents` 列出它們。資料與 `config.json` 放在 `~/.pi/agent/rpc-subagents/`。 | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | `~/.pi/agent/skills` 與 `~/.agents/skills` 裡的 skill 名稱不合規時，給它一個合規的名稱。 | |
-| `ux` | 把上一則 prompt 釘選在編輯器上方，並用 `alt+q` 或 `/quote` 把剪貼簿引用進 prompt。 | [README](extensions/ux/README.zh-TW.md) |
+| `ux` | 把上一則 prompt 釘選在編輯器上方。 | [README](extensions/ux/README.zh-TW.md) |
 
 每個 extension 放在 `extensions/<名稱>/`，測試與它附帶的 skill 也在同一個目錄。
+
+## Annotation
+
+annotation 讓你在下一則 prompt 裡引用對話紀錄的一部分。在 pi 的 fullscreen 模式（預設模式）用滑鼠選取文字，放開按鍵時，選取範圍下方的那一行會跳出一個框，從放開滑鼠的那一欄開始。靠近畫面底部時，框會改跳到選取範圍上方。
+
+- 輸入留言後按 Enter。annotation 會把選取的內容以引用插入編輯器，每一行前面加上 `> `，接著是你的留言，最後是一行空白行。它不會送出 prompt，你可以繼續編輯。不輸入留言直接按 Enter，就只插入引用。
+- 按 Esc 關閉框，捨棄留言。
+
+不論哪種方式，選取都會被清除。選取兩行並留言 `What does add return?` 時，編輯器會得到：
+
+```text
+> function add(a, b) {
+>   return a + b;
+
+What does add return?
+```
+
+選取即複製照常運作。pi 的 `fullscreenCopyOnSelect` 設定開著時（預設），選取的內容也會進剪貼簿。關掉時，框照樣跳出，但不會複製任何東西。
+
+annotation 有這些限制：
+
+- 只在 fullscreen 模式有作用。在 regular 模式（`--tui-mode regular`），選取由終端機負責，annotation 什麼都不做。
+- 它用到 pi-tui `TuiAltScreen` 的私有成員：`copySelectionToClipboard`、`getActiveSelectionText`、`clearTextSelection` 與 `handleSelectionMouseEvent`。pi 更新若改了其中任何一個名字，測試會失敗。執行時如果缺少前三個之一，annotation 會自行關閉並顯示一次警告，pi 照常運作。如果只缺 `handleSelectionMouseEvent`，框會出現在畫面底部正中央。
+- 和一般貼上一樣，超過 10 行或 1000 個字元的引用會收合成 pi 的貼上標記，例如 `[paste #1 +24 lines]`。送出 prompt 時，pi 會把標記展開。
+- annotation 看不到編輯器的游標。如果編輯器文字不是以換行結尾，引用會從新的一行開始。
 
 ## 安裝
 
@@ -34,7 +60,7 @@ pi install git:github.com/tp6gw94/pi-extras
 pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-pi 啟動時，會在 `[Extensions]` 底下列出七個 extension：
+pi 啟動時，會在 `[Extensions]` 底下列出八個 extension：
 
 ```text
 [Extensions]

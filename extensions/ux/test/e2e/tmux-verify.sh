@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Needs: tmux, xclip, xsel, an X server on $DISPLAY (Xvfb works), pi on PATH,
-# and a logged-in model. Not part of `npm test` because it calls a real model.
+# Needs: tmux, pi on PATH, and a logged-in model. Not part of `npm test` because it calls a real model.
 #
-#	Xvfb :77 &
-#	DISPLAY=:77 PI_UX_MODEL="--provider openai-codex --model gpt-5.5" test/e2e/tmux-verify.sh
+#	PI_UX_MODEL="--provider openai-codex --model gpt-5.5" test/e2e/tmux-verify.sh
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -11,7 +9,6 @@ EV=${EV:-/tmp/pi-ux-ev}
 WORK=${WORK:-/tmp/pi-ux-e2e}
 S=piux-verify
 MODEL=${PI_UX_MODEL:-}
-: "${DISPLAY:?set DISPLAY to an X server for the clipboard checks}"
 
 mkdir -p "$EV" "$WORK"
 rm -rf "$WORK/.sessions"
@@ -19,7 +16,7 @@ fail=0
 
 start() {
 	tmux kill-session -t "$S" 2>/dev/null || true
-	tmux new-session -d -s "$S" -x 110 -y 32 -e "DISPLAY=$DISPLAY" -e "PATH=$PATH" \
+	tmux new-session -d -s "$S" -x 110 -y 32 -e "PATH=$PATH" \
 		"cd '$WORK' && pi --session-dir '$WORK/.sessions' --extension '$ROOT/index.ts' \
 		--extension '$ROOT/test/e2e/inject-ext.ts' $MODEL $*; sleep 600"
 	sleep 8
@@ -58,28 +55,7 @@ cap 05-inject >/dev/null
 expect "extension message answered" 05-inject 'injected-ok'
 expect "pin kept after extension message" 05-inject '^❯ Write the numbers 1 to 60'
 
-printf 'const x = 1;\nfunction add(a, b) {\n  return a + b;\n}\n' | xclip -selection clipboard -i
-type_text "Explain this code:"; keys M-q; sleep 2
-cap 06-quote-shortcut >/dev/null
-expect "alt+q keeps typed text" 06-quote-shortcut '^Explain this code:$'
-expect "alt+q inserts quote" 06-quote-shortcut '^> function add\(a, b\) \{$'
-
-keys C-c; sleep 0.4; type_text "/quote"; send 2
-cap 08-quote-command >/dev/null
-expect "/quote inserts quote" 08-quote-command '^> const x = 1;$'
-
-keys C-c; sleep 0.4; type_text "Before: after"; keys Left Left Left Left Left Left; keys M-q; sleep 2
-cap 09-quote-mid-cursor >/dev/null
-expect "quote lands at the cursor" 09-quote-mid-cursor '^ after$'
-
-pkill -x xclip || true; xsel -bc
-keys C-c; sleep 0.4; type_text "keep me"; keys M-q; sleep 3
-cap 10-empty-shortcut >/dev/null
-expect "empty clipboard warns" 10-empty-shortcut 'clipboard is empty.*Nothing inserted'
-expect "empty clipboard keeps editor" 10-empty-shortcut '^keep me$'
-reject "empty clipboard inserts nothing" 10-empty-shortcut '^> '
-
-keys C-c; sleep 0.4; type_text "Reply with exactly: resumed-ok"; send
+type_text "Reply with exactly: resumed-ok"; send
 keys C-d; sleep 2
 start --continue
 cap 07-resume >/dev/null

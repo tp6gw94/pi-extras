@@ -9,7 +9,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 
 type Handler = (...args: any[]) => any;
 
-function fakePi(clipboard: string | undefined) {
+function fakePi() {
 	const on: Record<string, Handler> = {};
 	const shortcuts: Record<string, Handler> = {};
 	const commands: Record<string, Handler> = {};
@@ -24,10 +24,6 @@ function fakePi(clipboard: string | undefined) {
 		registerCommand: (name: string, o: { handler: Handler }) => {
 			commands[name] = o.handler;
 		},
-		exec: async (command: string) =>
-			command === "xclip" && clipboard !== undefined
-				? { stdout: clipboard, stderr: "", code: 0, killed: false }
-				: { stdout: "", stderr: "not found", code: 127, killed: false },
 	};
 	return { pi, on, shortcuts, commands };
 }
@@ -67,43 +63,16 @@ describe("extension wiring (fake pi)", () => {
 	});
 	after(() => rmSync(agentDir, { recursive: true, force: true }));
 
-	it("registers alt+p, alt+q and /quote by default", () => {
-		const f = fakePi("x");
+	it("registers only alt+p by default: no quote shortcut, no /quote", () => {
+		const f = fakePi();
 		piUx(f.pi);
-		assert.deepEqual(Object.keys(f.shortcuts).sort(), ["alt+p", "alt+q"]);
-		assert.ok(f.commands.quote);
+		assert.deepEqual(Object.keys(f.shortcuts), ["alt+p"]);
+		assert.deepEqual(Object.keys(f.commands), []);
 		assert.ok(f.on.input && f.on.session_start);
 	});
 
-	it("quote inserts with pasteToEditor, never setEditorText, and keeps typed text", async () => {
-		const f = fakePi("line one\nline two\n");
-		piUx(f.pi);
-		const { ctx, calls } = fakeCtx("Explain this:");
-		await f.shortcuts["alt+q"]!(ctx);
-		assert.deepEqual(calls.pasted, ["\n> line one\n> line two\n\n"]);
-		assert.deepEqual(calls.setText, []);
-		assert.equal(calls.widgets.length, 1, "a redraw is requested after the paste");
-		const c2 = fakeCtx("");
-		await f.commands.quote!("", c2.ctx);
-		assert.deepEqual(c2.calls.pasted, ["> line one\n> line two\n\n"]);
-		assert.deepEqual(c2.calls.setText, []);
-	});
-
-	it("an empty or unreadable clipboard notifies and inserts nothing", async () => {
-		for (const clip of ["", undefined]) {
-			const f = fakePi(clip);
-			piUx(f.pi);
-			const { ctx, calls } = fakeCtx("typed");
-			await f.shortcuts["alt+q"]!(ctx);
-			assert.deepEqual(calls.pasted, []);
-			assert.deepEqual(calls.setText, []);
-			assert.equal(calls.notes.length, 1);
-			assert.match(calls.notes[0]!, /Nothing inserted/);
-		}
-	});
-
 	it("pins interactive input above the editor and ignores extension input", () => {
-		const f = fakePi("x");
+		const f = fakePi();
 		piUx(f.pi);
 		const { ctx, calls } = fakeCtx();
 		assert.deepEqual(f.on.input!({ type: "input", text: "my prompt", source: "interactive" }, ctx), { action: "continue" });
@@ -116,7 +85,7 @@ describe("extension wiring (fake pi)", () => {
 	});
 
 	it("the toggle shortcut re-renders expanded and collapsed", () => {
-		const f = fakePi("x");
+		const f = fakePi();
 		piUx(f.pi);
 		const { ctx, calls } = fakeCtx();
 		f.on.input!({ type: "input", text: "line 1\nline 2", source: "interactive" }, ctx);
@@ -127,7 +96,7 @@ describe("extension wiring (fake pi)", () => {
 	});
 
 	it("session_start restores the last user prompt from the branch", () => {
-		const f = fakePi("x");
+		const f = fakePi();
 		piUx(f.pi);
 		const { ctx, calls } = fakeCtx("", [
 			{ type: "message", message: { role: "user", content: "resumed prompt" } },
@@ -141,14 +110,34 @@ describe("extension wiring (fake pi)", () => {
 	});
 
 	it("reads keys from <agent-dir>/pi-ux.json", () => {
-		writeFileSync(join(agentDir, "pi-ux.json"), '{"keys":{"togglePrompt":"ctrl+alt+p","quoteClipboard":"ctrl+alt+p"}}');
+		writeFileSync(join(agentDir, "pi-ux.json"), '{"keys":{"togglePrompt":"ctrl+alt+p"}}');
 		try {
-			const f = fakePi("x");
+			const f = fakePi();
 			piUx(f.pi);
 			assert.deepEqual(Object.keys(f.shortcuts), ["ctrl+alt+p"]);
 			const { ctx, calls } = fakeCtx();
 			f.on.session_start!({ type: "session_start", reason: "startup" }, ctx);
-			assert.match(calls.notes[0]!, /already used by togglePrompt/);
+			assert.deepEqual(calls.notes, []);
+		} finally {
+			rmSync(join(agentDir, "pi-ux.json"));
+		}
+	});
+
+	it("still loads a pi-ux.json with the old quoteClipboard key, keeps its other keys and says once that the key is obsolete", () => {
+		writeFileSync(join(agentDir, "pi-ux.json"), '{"keys":{"togglePrompt":"ctrl+alt+p","quoteClipboard":"alt+q"}}');
+		try {
+			const f = fakePi();
+			piUx(f.pi);
+			assert.deepEqual(Object.keys(f.shortcuts), ["ctrl+alt+p"], "togglePrompt from the file, not the alt+p default");
+			assert.deepEqual(Object.keys(f.commands), []);
+			const { ctx, calls } = fakeCtx();
+			f.on.session_start!({ type: "session_start", reason: "startup" }, ctx);
+			f.on.session_start!({ type: "session_start", reason: "new" }, ctx);
+			assert.equal(calls.notes.length, 1, "one notice across sessions");
+			assert.match(calls.notes[0]!, /keys\.quoteClipboard in pi-ux\.json is obsolete/);
+			f.on.input!({ type: "input", text: "still pinned", source: "interactive" }, ctx);
+			f.shortcuts["ctrl+alt+p"]!(ctx);
+			assert.deepEqual(renderWidget(calls.widgets.at(-1)), ["▾ Last prompt (ctrl+alt+p to collapse)", "│ still pinned"]);
 		} finally {
 			rmSync(join(agentDir, "pi-ux.json"));
 		}

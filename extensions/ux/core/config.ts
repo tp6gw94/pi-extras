@@ -3,17 +3,18 @@ export const CONFIG_FILE_NAME = "pi-ux.json";
 /**
  * Shortcut actions and their default keys.
  *
- * pi (keybindings.ts @28dcce2) leaves alt+p and alt+q free on macOS and Linux, where the previous
- * model is shift+ctrl+p and restoring queued messages is alt+up. Only pi's Windows keybinding mode
- * (native Windows, or WSL via WSL_DISTRO_NAME or WSL_INTEROP) binds alt+p and alt+q. pi-ux does no
- * platform check itself: pi's extension runner compares each shortcut with its active keys, skips
- * one that hits a reserved key (alt+p there) and lets pi-ux override the rest (alt+q there), with a
- * startup warning either way. The README tells Windows-mode users to change pi-ux.json.
+ * pi (keybindings.ts @28dcce2) leaves alt+p free on macOS and Linux, where the previous model is
+ * shift+ctrl+p. Only pi's Windows keybinding mode (native Windows, or WSL via WSL_DISTRO_NAME or
+ * WSL_INTEROP) binds alt+p. pi-ux does no platform check itself: pi's extension runner compares each
+ * shortcut with its active keys and skips one that hits a reserved key (alt+p there), with a startup
+ * warning. The README tells Windows-mode users to change pi-ux.json.
  */
 export const DEFAULT_KEYS = {
 	togglePrompt: "alt+p",
-	quoteClipboard: "alt+q",
 } as const;
+
+/** Actions pi-ux no longer has. A config that still sets one loads normally and gets one notice. */
+export const OBSOLETE_KEY_ACTIONS = ["quoteClipboard"] as const;
 
 export type KeyAction = keyof typeof DEFAULT_KEYS;
 export const TOP_LEVEL_KEYS = ["keys"] as const;
@@ -40,18 +41,24 @@ export function isValidKey(key: string): boolean {
 	return mods.every((m) => MODIFIERS.has(m)) && new Set(mods).size === mods.length;
 }
 
-export function parseConfig(text: string | undefined): { config: UxConfig; errors: string[] } {
+export function obsoleteKeyNotice(keys: readonly string[]): string {
+	const list = keys.map((k) => `keys.${k}`).join(", ");
+	return `pi-ux: ${list} in pi-ux.json is obsolete and ignored. The clipboard quote shortcut and /quote were removed; select text in fullscreen mode to quote it with the annotation extension. Delete the key to hide this notice.`;
+}
+
+export function parseConfig(text: string | undefined): { config: UxConfig; errors: string[]; obsolete: string[] } {
 	const config: UxConfig = { keys: { ...DEFAULT_KEYS } };
 	const errors: string[] = [];
-	if (text === undefined) return { config, errors };
+	const obsolete: string[] = [];
+	if (text === undefined) return { config, errors, obsolete };
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text);
 	} catch (err) {
-		return { config, errors: [`invalid JSON: ${(err as Error).message}`] };
+		return { config, errors: [`invalid JSON: ${(err as Error).message}`], obsolete };
 	}
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-		return { config, errors: ["top level must be an object"] };
+		return { config, errors: ["top level must be an object"], obsolete };
 	}
 	const obj = raw as Record<string, unknown>;
 	for (const k of Object.keys(obj)) {
@@ -62,6 +69,10 @@ export function parseConfig(text: string | undefined): { config: UxConfig; error
 			errors.push('"keys" must be an object');
 		} else {
 			for (const [action, value] of Object.entries(obj.keys as Record<string, unknown>)) {
+				if ((OBSOLETE_KEY_ACTIONS as readonly string[]).includes(action)) {
+					obsolete.push(action);
+					continue;
+				}
 				if (!(KEY_ACTIONS as string[]).includes(action)) {
 					errors.push(`keys.${action}: unknown action ignored`);
 					continue;
@@ -73,5 +84,5 @@ export function parseConfig(text: string | undefined): { config: UxConfig; error
 			}
 		}
 	}
-	return { config, errors };
+	return { config, errors, obsolete };
 }

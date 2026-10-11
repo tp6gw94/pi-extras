@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CLIPBOARD_TOOLS } from "../core/clipboard.ts";
 import { CONFIG_FILE_NAME, DEFAULT_KEYS, KEY_ACTIONS, parseConfig, TOP_LEVEL_KEYS } from "../core/config.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,7 +34,6 @@ for (const [lang, { file, other }] of Object.entries(readmes)) {
 			const { config, errors } = parseConfig(exampleConfig(text));
 			assert.deepEqual(errors, []);
 			assert.equal(config.keys.togglePrompt, "alt+o");
-			assert.equal(config.keys.quoteClipboard, undefined);
 		});
 
 		it("documents every config key the loader reads", () => {
@@ -55,30 +53,20 @@ for (const [lang, { file, other }] of Object.entries(readmes)) {
 			assert.ok(text.includes("`null`"), "disabling a shortcut is not documented");
 		});
 
-		it("says the defaults only collide in pi's Windows keybinding mode", () => {
-			for (const needle of ["`shift+ctrl+p`", "`alt+up`", "`WSL_DISTRO_NAME`", "`WSL_INTEROP`"]) {
+		it("says the default only collides in pi's Windows keybinding mode", () => {
+			for (const needle of ["`shift+ctrl+p`", "`WSL_DISTRO_NAME`", "`WSL_INTEROP`"]) {
 				assert.ok(text.includes(needle), `${needle} missing`);
 			}
 		});
 
-		it("says /quote replaces typed text and the shortcut keeps it", () => {
-			assert.ok(text.includes("`/quote` replaces what you typed") || text.includes("`/quote` 會取代你打好的字"));
-		});
-
-		it("lists the clipboard tools in the order pi-ux tries them", () => {
-			let from = 0;
-			for (const tool of CLIPBOARD_TOOLS) {
-				const cmd = `\`${[tool.command, ...tool.args].join(" ")}\``;
-				const at = text.indexOf(cmd, from);
-				assert.ok(at >= 0, `${cmd} missing or out of order`);
-				from = at;
-			}
-		});
-
-		it("explains the paste marker and pi's own prompt jumping", () => {
-			assert.ok(text.includes("[paste #1 +"), "paste marker not shown");
+		it("explains pi's own prompt jumping", () => {
 			assert.ok(text.includes("`ctrl+shift+up`") && text.includes("OSC 133"));
-			assert.ok(text.includes("`/quote`"));
+		});
+
+		it("no longer offers the clipboard quote and points to annotation", () => {
+			for (const gone of ["`/quote`", "`alt+q`", "pbpaste", "xclip"]) assert.ok(!text.includes(gone), `${gone} still documented`);
+			assert.ok(text.includes("`quoteClipboard`"), "the obsolete key is not mentioned");
+			assert.ok(text.includes("annotation"));
 		});
 
 		it(`links to ${other}`, () => {

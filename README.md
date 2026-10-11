@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-extras is one [pi](https://github.com/earendil-works/pi) package with seven extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
+pi-extras is one [pi](https://github.com/earendil-works/pi) package with eight extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
 
 pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on Node.js 22.
 
@@ -10,15 +10,41 @@ pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on No
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
+| `annotation` | Opens a box next to text you select in fullscreen mode and inserts it into the editor as a `> ` quote with your note. | [Annotation](#annotation) |
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |
 | `resume-handoff` | Starts a new session from a checked handoff file with `/resume-handoff`. | |
 | `rpc-subagents` | Runs subagent tasks and schedules as `pi --mode rpc` child processes, with `/rpc-subagents` to list them. Keeps its data and `config.json` in `~/.pi/agent/rpc-subagents/`. | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | Gives skills in `~/.pi/agent/skills` and `~/.agents/skills` a valid name when their own name is not one. | |
-| `ux` | Pins your last prompt above the editor and quotes the clipboard into the prompt with `alt+q` or `/quote`. | [README](extensions/ux/README.md) |
+| `ux` | Pins your last prompt above the editor. | [README](extensions/ux/README.md) |
 
 Each extension lives in `extensions/<name>/`, with its tests and any skills it ships.
+
+## Annotation
+
+annotation lets you quote part of the transcript in your next prompt. In pi's fullscreen mode, which is the default, select text with the mouse. When you release the button, a box opens on the row below the selection, at the column where you released. Near the bottom of the screen, the box opens above the selection instead.
+
+- Type a note and press Enter. annotation inserts the selection into the editor as a quote, with every line prefixed by `> `, then your note, then a blank line. It does not send the prompt, so you can keep editing. Press Enter without a note to insert only the quote.
+- Press Esc to close the box and discard the note.
+
+Either way, the selection is cleared. For a selection of two lines and the note `What does add return?`, the editor gets:
+
+```text
+> function add(a, b) {
+>   return a + b;
+
+What does add return?
+```
+
+Copy-on-select keeps working. With pi's `fullscreenCopyOnSelect` setting on, which is the default, the selection also goes to the clipboard. With it off, the box opens and nothing is copied.
+
+annotation has these limits:
+
+- It only works in fullscreen mode. In the regular mode (`--tui-mode regular`), the terminal owns the selection, and annotation does nothing.
+- It uses private members of pi-tui's `TuiAltScreen`: `copySelectionToClipboard`, `getActiveSelectionText`, `clearTextSelection` and `handleSelectionMouseEvent`. The tests fail when a pi update renames one of them. If one of the first three is missing at runtime, annotation turns itself off and shows one warning, and pi keeps working. If only `handleSelectionMouseEvent` is missing, the box opens at the bottom center of the screen.
+- Like any paste, a quote longer than 10 lines or 1000 characters collapses into pi's paste marker, such as `[paste #1 +24 lines]`. pi expands the marker when you send the prompt.
+- annotation cannot see the editor cursor. If the editor text does not end with a newline, the quote starts on a new line.
 
 ## Install
 
@@ -34,7 +60,7 @@ To install it for the current project only, add `--local`. pi then writes the pa
 pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-When pi starts, it lists the seven extensions under `[Extensions]`:
+When pi starts, it lists the eight extensions under `[Extensions]`:
 
 ```text
 [Extensions]
