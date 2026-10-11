@@ -12,6 +12,7 @@ unset PI_CODING_AGENT_DIR
 mkdir -p "$HOME" "$T/project" "$OUT"
 SETTINGS=$HOME/.pi/agent/settings.json
 S=pi-extras-acc
+startup_settle_seconds=3
 fail=0
 
 capture_start() {
@@ -22,7 +23,7 @@ capture_start() {
 		sleep 1
 		tmux capture-pane -p -t $S -S -200 | grep -q '^\[Extensions\]' && break
 	done
-	sleep 3
+	sleep "$startup_settle_seconds"
 	tmux capture-pane -p -t $S -S -200 | grep -v '^\s*$' | grep -v '^─*$' >"$out"
 	tmux kill-session -t $S
 }

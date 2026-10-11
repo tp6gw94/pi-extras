@@ -17,6 +17,8 @@ const taskSpec = (extra = {}) => {
   return { ...base, ...(extra.session === undefined ? { context: "fresh" } : {}), ...extra };
 };
 
+const expectRejection = (promise) => assert.rejects(promise);
+
 async function setup(t, overrides = {}) {
   const root = await mkdtemp(join(tmpdir(), "rpc-subagents-coordination-"));
   const children = [];
@@ -317,9 +319,7 @@ test("steer fences after the state query when the task stops first", async (t) =
   const child = children[0];
   let held;
   child.onCommand = (command) => { if (command.type === "get_state") { held = command; return true; } };
-  // Attach the rejection check right away: the steer can reject before the test awaits it,
-  // and node:test reports an unhandled rejection in that window.
-  const steering = assert.rejects(fleet.steer(accepted.taskId, "race"));
+  const steering = expectRejection(fleet.steer(accepted.taskId, "race"));
   await eventually(() => held, "held steer state query");
   const stopping = fleet.cancel(accepted.taskId);
   await tick();
