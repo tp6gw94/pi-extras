@@ -38,6 +38,35 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 #composer { position: absolute; z-index: 5; width: 380px; max-width: calc(100vw - 16px); background: var(--card); border: 1px solid var(--accent); border-radius: 8px; padding: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
 #composer .quote { max-height: 90px; }
 #composer .hint { font-size: 12px; margin-top: 4px; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 8px; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 14px 0 6px; line-height: 1.3; }
+.markdown h1 { font-size: 1.35em; }
+.markdown h2 { font-size: 1.2em; }
+.markdown h3 { font-size: 1.08em; }
+.markdown h4, .markdown h5, .markdown h6 { font-size: 1em; }
+.markdown ul, .markdown ol { margin: 0 0 8px; padding-left: 24px; }
+.markdown li > p { margin: 0 0 2px; }
+.markdown li > ul, .markdown li > ol { margin-bottom: 2px; }
+.markdown blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.markdown a { color: var(--accent); }
+.markdown hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.markdown .inline-code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--tool); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.markdown .image-ref { color: var(--muted); font-style: italic; }
+.table-wrap { overflow-x: auto; margin: 0 0 8px; }
+.markdown table { border-collapse: collapse; }
+.markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
+.code-wrap { position: relative; margin: 0 0 8px; }
+.code-lang { position: absolute; top: 4px; right: 8px; font-size: 11px; color: var(--muted); user-select: none; pointer-events: none; }
+pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; white-space: pre; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.diagram { margin: 0 0 8px; }
+.diagram .code-wrap { margin: 0; }
+.diagram-frame { display: block; width: 100%; height: 0; border: 0; visibility: hidden; }
+.diagram-frame.ready { visibility: visible; }
+.diagram-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; user-select: none; }
+.diagram-actions button { font-size: 12px; padding: 2px 8px; }
+.diagram-note { font-size: 12px; color: var(--muted); }
 ::highlight(annotate-pending) { background-color: rgba(47, 111, 222, .3); }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { position: static; max-height: none; } }
 </style>
@@ -61,6 +90,7 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 <textarea id="note" rows="3" aria-label="Note" placeholder="Note"></textarea>
 <p class="hint">Enter adds · Shift+Enter new line · Esc discards</p>
 </div>
+<script nonce="__NONCE__">__MARKDOWN_JS__</script>
 <script nonce="__NONCE__">
 (() => {
 	"use strict";
@@ -85,6 +115,14 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 	let nextSeq = 1;
 	let messageCount = 0;
 	let rounds = 0;
+	const markdown = createMarkdown(document);
+	const FRAME_TIMEOUT_MS = 10000;
+	const MAX_RENDERING = 2;
+	const MAX_FRAME_SIZE = 4000;
+	let diagrams = [];
+	let queue = [];
+	let rendering = 0;
+	const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver(onVisible, { rootMargin: "200px 0px" }) : null;
 	const highlights = typeof CSS !== "undefined" && CSS.highlights && typeof Highlight === "function" ? CSS.highlights : null;
 
 	function markPending(range) {
@@ -125,10 +163,142 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 		return fetch(sessionPath + "/api/" + endpoint, options);
 	}
 
+	function clamp(value) {
+		return Math.max(1, Math.min(MAX_FRAME_SIZE, Math.round(value)));
+	}
+
+	function pump() {
+		while (rendering < MAX_RENDERING && queue.length > 0) startDiagram(queue.shift());
+	}
+
+	function onVisible(entries) {
+		for (const entry of entries) {
+			if (!entry.isIntersecting) continue;
+			const diagram = diagrams.find((candidate) => candidate.box === entry.target);
+			if (!diagram || diagram.state !== "idle") continue;
+			observer.unobserve(diagram.box);
+			diagram.state = "queued";
+			queue.push(diagram);
+		}
+		pump();
+	}
+
+	function startDiagram(diagram) {
+		if (diagram.state !== "queued" || !diagrams.includes(diagram)) return;
+		diagram.state = "rendering";
+		rendering += 1;
+		const frame = el("iframe", "diagram-frame");
+		frame.setAttribute("sandbox", "allow-scripts");
+		frame.setAttribute("referrerpolicy", "no-referrer");
+		frame.setAttribute("title", "Mermaid diagram");
+		frame.setAttribute("src", "/frame");
+		frame.addEventListener("load", () => {
+			if (diagram.state === "rendering" && frame.contentWindow) frame.contentWindow.postMessage({ source: diagram.source }, "*");
+		});
+		diagram.frame = frame;
+		diagram.timer = setTimeout(() => failDiagram(diagram), FRAME_TIMEOUT_MS);
+		diagram.view.append(frame);
+	}
+
+	function finishDiagram(diagram) {
+		clearTimeout(diagram.timer);
+		if (diagram.state === "rendering") rendering = Math.max(0, rendering - 1);
+	}
+
+	function failDiagram(diagram) {
+		if (diagram.state !== "rendering") return;
+		finishDiagram(diagram);
+		diagram.state = "failed";
+		if (diagram.frame) diagram.frame.remove();
+		diagram.frame = null;
+		diagram.code.hidden = false;
+		diagram.toggle.hidden = true;
+		diagram.note.textContent = "The diagram could not be rendered; showing its source.";
+		diagram.note.hidden = false;
+		pump();
+	}
+
+	function showDiagram(diagram, height) {
+		finishDiagram(diagram);
+		diagram.state = "done";
+		diagram.frame.style.height = height + "px";
+		diagram.frame.className = "diagram-frame ready";
+		diagram.code.hidden = true;
+		diagram.toggle.hidden = false;
+		diagram.toggle.textContent = "Show source";
+		pump();
+	}
+
+	window.addEventListener("message", (event) => {
+		const diagram = diagrams.find((candidate) => candidate.frame && candidate.frame.contentWindow === event.source);
+		if (!diagram || diagram.state !== "rendering") return;
+		const data = event.data;
+		if (!data || typeof data !== "object") return;
+		const width = data.width;
+		const height = data.height;
+		if (typeof width !== "number" || typeof height !== "number" || !Number.isFinite(width) || !Number.isFinite(height)) return;
+		if (width <= 0 || height <= 0) return failDiagram(diagram);
+		showDiagram(diagram, clamp(height));
+	});
+
+	function diagramBlock(info) {
+		const box = el("div", "diagram");
+		const view = el("div", "diagram-view");
+		const toggle = el("button", "diagram-toggle", "Show source");
+		toggle.type = "button";
+		toggle.hidden = true;
+		const quote = el("button", "diagram-quote", "Quote whole diagram");
+		quote.type = "button";
+		const note = el("span", "diagram-note");
+		note.hidden = true;
+		const actions = el("div", "diagram-actions");
+		actions.append(toggle, quote, note);
+		box.append(view, info.wrap, actions);
+		const diagram = { box, view, code: info.wrap, toggle, note, source: info.text, state: "idle", frame: null, timer: undefined };
+		toggle.addEventListener("click", () => {
+			if (diagram.state !== "done") return;
+			const showSource = diagram.code.hidden;
+			diagram.code.hidden = !showSource;
+			diagram.frame.hidden = showSource;
+			toggle.textContent = showSource ? "Show diagram" : "Show source";
+		});
+		quote.addEventListener("click", () => {
+			if (finished) return;
+			openComposer({ text: markdown.fenced("mermaid", diagram.source), range: null, rect: quote.getBoundingClientRect() });
+		});
+		diagrams.push(diagram);
+		if (observer) observer.observe(box);
+		else {
+			diagram.state = "queued";
+			queue.push(diagram);
+		}
+		return box;
+	}
+
+	function wrapCode(info) {
+		return info.lang.toLowerCase() === "mermaid" ? diagramBlock(info) : info.wrap;
+	}
+
+	function resetDiagrams() {
+		for (const diagram of diagrams) {
+			clearTimeout(diagram.timer);
+			if (observer) observer.unobserve(diagram.box);
+		}
+		diagrams = [];
+		queue = [];
+		rendering = 0;
+	}
+
 	function itemBlock(item) {
 		const block = el("article", "message " + item.kind);
 		block.setAttribute("data-id", item.id);
-		const body = el("div", "text", item.text);
+		let body;
+		if (item.kind === "tool") {
+			body = el("div", "text", item.text);
+		} else {
+			body = el("div", "text");
+			body.append(markdown.render(item.text, { wrapCode }).root);
+		}
 		if (item.kind === "tool") {
 			const details = el("details");
 			details.append(el("summary", "label", item.label), body);
@@ -147,6 +317,7 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 		const follow = !reset && nearBottom();
 		if (reset) {
 			clearPending();
+			resetDiagrams();
 			conversation.replaceChildren();
 			messageCount = 0;
 		} else {
@@ -155,6 +326,7 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 		}
 		for (const item of items) conversation.append(itemBlock(item));
 		messageCount += items.length;
+		pump();
 		if (messageCount === 0) conversation.append(el("p", "hint", "This conversation has no messages yet."));
 		if (follow && items.length > 0) window.scrollTo(0, document.documentElement.scrollHeight);
 	}
@@ -186,19 +358,29 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 		sendButton.disabled = finished || sending || annotations.length === 0;
 	}
 
+	function codeAncestor(node) {
+		for (let current = node; current && current !== conversation; current = current.parentNode) {
+			if (typeof current.annotateSource === "string") return current;
+		}
+		return null;
+	}
+
 	function currentSelection() {
 		const selection = window.getSelection();
 		if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
 		const range = selection.getRangeAt(0);
 		if (!conversation.contains(range.commonAncestorContainer)) return null;
-		const text = selection.toString();
-		if (text.trim() === "") return null;
+		const raw = selection.toString();
+		if (raw.trim() === "") return null;
+		const code = codeAncestor(range.startContainer);
+		const text = code && code === codeAncestor(range.endContainer) ? markdown.fenced(code.annotateLang, raw) : raw;
 		return { text, range, rect: range.getBoundingClientRect() };
 	}
 
 	function openComposer(found) {
 		pending = found.text;
-		markPending(found.range);
+		if (found.range) markPending(found.range);
+		else clearPending();
 		composerQuote.textContent = found.text;
 		composer.hidden = false;
 		const width = composer.offsetWidth;

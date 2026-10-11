@@ -34,6 +34,23 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 
 伺服器執行中再執行 `/annotate`，只會再印一次同樣的網址並打開它，不會啟動第二個伺服器。`/annotation-end` 會停止伺服器並釋放 port。session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或離開 pi。沒有閒置逾時。切換 session 之後，舊分頁會顯示 session 已切換；請在新的 session 重新執行 `/annotate`。
 
+### Markdown 與圖表
+
+你的訊息與 assistant 的回覆會以 markdown 顯示：標題、段落、粗體、斜體、刪除線、行內程式碼、清單（巢狀與編號）、引用區塊、表格、分隔線、連結與程式碼區塊。程式碼區塊會保留縮排、使用等寬字型，並在角落標出語言。工具輸出仍然是收合的純文字。
+
+- 只有 `http`、`https` 與 `mailto` 連結會變成連結，會在新分頁開啟並帶 `rel="noopener noreferrer"`。其他連結會顯示成原本的 markdown 文字。圖片一律不載入，頁面改顯示 `image: <替代文字>`；圖片網址是安全連結時會是一個連結。
+- 頁面用 DOM 節點組出 markdown，從不把訊息文字當 HTML 解析，所以訊息裡的 HTML 會照字面顯示。
+
+` ```mermaid ` 程式碼區塊會用 [mermaid](https://mermaid.js.org/) 畫成圖表。圖表捲動到畫面裡才會畫，同時最多畫兩張。每張圖表在自己的 sandbox iframe 裡畫（`sandbox="allow-scripts"`，沒有 `allow-same-origin`），iframe 從同一個伺服器的 `/frame` 載入；頁面把圖表原始碼傳給它，iframe 只回傳尺寸。iframe 碰不到頁面、token 或網路：它的 Content Security Policy 只允許伺服器上的 script，並擋掉連線、圖片與表單，mermaid 也以 `securityLevel: "strict"` 執行。圖表 10 秒內畫不出來時，頁面會改顯示它的原始碼程式碼區塊。`/frame` 與 `/frame/mermaid.js` 不需要 token，也不含任何對話內容。
+
+引用程式碼與圖表：
+
+- 起點和終點都在同一個程式碼區塊裡的選取，會引用成帶該區塊語言的程式碼區塊，例如 ` ```ts `。其他地方的選取則引用畫面上看得到的文字，不含 markdown 語法。
+- 每張圖表下面的 **Show source** 可以在圖表與原始碼之間切換。在原始碼裡的選取會包在 ` ```mermaid ` 裡引用。
+- **Quote whole diagram** 會打開筆記框，把整張圖表的原始碼包在 ` ```mermaid ` 裡當成一則引用。
+
+`mermaid` 這個 dependency 會讓安裝變大。頁面只用到它 5.5 MB 的瀏覽器版本（`mermaid/dist/mermaid.min.js`），而且只在圖表 iframe 裡載入，但安裝這個套件會帶進約 117 個套件，`node_modules` 約 200 MB。
+
 ### Port 與網址
 
 每個 pi 程序有自己的伺服器，只聽 `127.0.0.1`。預設 port 是 4747，有設定 `PI_ANNOTATE_PORT` 時用它。如果那個 port 被占用，會依序嘗試接下來九個 port（預設是 4748 到 4756），再不行就用隨機的空閒 port。所以同時開好幾個 pi，會分別拿到 4747、4748，依此類推。
@@ -134,7 +151,7 @@ npm run typecheck
 
 - `npm test` 會跑每個 extension 的測試，包括 `.ts` 與 `.mjs`。`rpc-subagents` 裡需要已安裝 pi 的測試會略過，除非你把 `RPC_SUBAGENTS_PI_PACKAGE` 設成全域安裝的 pi，例如 `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`。
 - `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。
-- `annotation` 的測試涵蓋引用格式、對話快照、頁面腳本（內容一律當成文字顯示，不當 HTML），以及對真的本機伺服器做的 HTTP 測試（token、Host 與 session 檢查、送出序號、long-poll 即時更新、port 遞補）。`extensions/annotation/test/e2e/tmux-annotate.sh` 會在 tmux 裡用假的模型跑真的 pi，執行 `/annotate` 並檢查編輯器、即時更新、`/tree`、`/annotation-end` 與切換 session；請把 `PI_BIN` 設成 pi 執行檔。`extensions/annotation/test/e2e/browser.mjs` 用 headless Chromium 操作頁面；它需要 `playwright-core`，這不是本套件的 dependency。
+- `annotation` 的測試涵蓋引用格式、對話快照、頁面腳本（內容一律當成文字顯示，不當 HTML），以及對真的本機伺服器做的 HTTP 測試（token、Host 與 session 檢查、送出序號、long-poll 即時更新、port 遞補）。`extensions/annotation/test/e2e/tmux-annotate.sh` 會在 tmux 裡用假的模型跑真的 pi，執行 `/annotate` 並檢查編輯器、即時更新、`/tree`、`/annotation-end` 與切換 session；請把 `PI_BIN` 設成 pi 執行檔。markdown 測試涵蓋每種語法、無害化的 XSS 內容與程式碼區塊引用，伺服器測試涵蓋 `/frame` 路由、它們的 CSP 與路徑穿越。`extensions/annotation/test/e2e/browser.mjs` 用 headless Chromium 操作頁面；它需要 `playwright-core`，這不是本套件的 dependency。`extensions/annotation/test/e2e/tmux-markdown.sh` 讓 pi 回覆一段 markdown，並執行 `extensions/annotation/test/e2e/markdown.mjs` 檢查顯示結果、圖表 iframe、引用、即時更新、逾時退回、CSP 違規與網路請求；需要設定 `PI_BIN`、`PLAYWRIGHT_CORE` 與 `CHROME_BIN`。
 - `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
 
-pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。`croner` 是唯一的執行期 dependency。
+pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。執行期 dependency 是 `croner`（給 `rpc-subagents` 的 cron 用）與 `mermaid`（給 `annotation` 的圖表用），兩者都鎖定確切版本。
