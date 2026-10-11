@@ -64,7 +64,7 @@ function renderWidget(w: any, width = 60): string[] {
 describe("extension wiring (fake pi)", () => {
 	let piUx: (pi: any) => void;
 	before(async () => {
-		piUx = (await import("../ux-pi/index.ts")).default;
+		piUx = (await import("../index.ts")).default;
 	});
 	after(() => rmSync(agentDir, { recursive: true, force: true }));
 

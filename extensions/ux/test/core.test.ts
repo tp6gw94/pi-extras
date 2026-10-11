@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { CLIPBOARD_TOOLS, clipboardFailureMessage, readClipboard, type ExecFn } from "../ux-core/clipboard.ts";
-import { DEFAULT_KEYS, isValidKey, parseConfig } from "../ux-core/config.ts";
-import { lastUserPrompt, PromptPin } from "../ux-core/prompt-state.ts";
-import { formatQuote } from "../ux-core/quote.ts";
-import { collapsedLine, ELLIPSIS, expandedLines, oneLine, stripControls } from "../ux-core/summary.ts";
+import { CLIPBOARD_TOOLS, clipboardFailureMessage, readClipboard, type ExecFn } from "../core/clipboard.ts";
+import { DEFAULT_KEYS, isValidKey, parseConfig } from "../core/config.ts";
+import { lastUserPrompt, PromptPin } from "../core/prompt-state.ts";
+import { formatQuote } from "../core/quote.ts";
+import { collapsedLine, ELLIPSIS, expandedLines, oneLine, stripControls } from "../core/summary.ts";
 
 describe("collapsed summary", () => {
 	it("is one line: newlines and runs of spaces collapse", () => {

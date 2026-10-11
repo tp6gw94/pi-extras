@@ -24,7 +24,7 @@ fail=0
 start() {
 	tmux kill-session -t "$S" 2>/dev/null || true
 	tmux new-session -d -s "$S" -x 110 -y 32 -e "DISPLAY=$DISPLAY" -e "PATH=$PATH" \
-		"cd '$WORK' && pi --session-dir '$WORK/.sessions' --extension '$ROOT/ux-pi/index.ts' \
+		"cd '$WORK' && pi --session-dir '$WORK/.sessions' --extension '$ROOT/index.ts' \
 		--extension '$ROOT/test/e2e/inject-ext.ts' $MODEL $*; sleep 600"
 	sleep 8
 }

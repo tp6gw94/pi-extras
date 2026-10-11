@@ -3,11 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, KeyId } from "@earendil-works/pi-tui";
-import { clipboardFailureMessage, readClipboard, type ExecFn } from "../ux-core/clipboard.ts";
-import { CONFIG_FILE_NAME, KEY_ACTIONS, parseConfig, type UxConfig } from "../ux-core/config.ts";
-import { lastUserPrompt, PromptPin } from "../ux-core/prompt-state.ts";
-import { formatQuote } from "../ux-core/quote.ts";
-import { collapsedLine, expandedLines } from "../ux-core/summary.ts";
+import { clipboardFailureMessage, readClipboard, type ExecFn } from "./core/clipboard.ts";
+import { CONFIG_FILE_NAME, KEY_ACTIONS, parseConfig, type UxConfig } from "./core/config.ts";
+import { lastUserPrompt, PromptPin } from "./core/prompt-state.ts";
+import { formatQuote } from "./core/quote.ts";
+import { collapsedLine, expandedLines } from "./core/summary.ts";
 
 export const WIDGET_KEY = "pi-ux:prompt";
 
