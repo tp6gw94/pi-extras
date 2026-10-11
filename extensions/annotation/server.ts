@@ -1,17 +1,21 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import type { Annotation } from "./quote.ts";
-import type { Snapshot } from "./snapshot.ts";
+import type { SnapshotItem } from "./snapshot.ts";
 
 export const TOKEN_HEADER = "x-annotate-token";
 export const MAX_BODY_BYTES = 1024 * 1024;
-export const IDLE_MS = 30 * 60 * 1000;
 export const MAX_ITEMS = 500;
+export const DEFAULT_PORT = 4747;
+export const PORT_ATTEMPTS = 10;
+export const MAX_LONG_POLLS = 4;
+export const LONG_POLL_MS = 25_000;
+export const MAX_UPDATES = 200;
 export const SESSION_SWITCHED = "Session switched, run /annotate again.";
 
-export type CloseReason = "sent" | "idle" | "session" | "replaced";
+export type CloseReason = "end" | "session" | "replaced";
 
 export class SessionSwitchedError extends Error {
 	constructor() {
@@ -19,13 +23,21 @@ export class SessionSwitchedError extends Error {
 	}
 }
 
+export interface Update {
+	version: number;
+	reset: boolean;
+	items: SnapshotItem[];
+}
+
 export interface AnnotateServerOptions {
-	snapshot: Snapshot;
+	sessionId: string;
+	items: SnapshotItem[];
 	isCurrent(): boolean;
-	onSend(items: Annotation[]): number;
+	onSend(items: Annotation[], seq: number): number;
 	onClose?(reason: CloseReason): void;
-	idleMs?: number;
-	closeDelayMs?: number;
+	port?: number;
+	longPollMs?: number;
+	maxLongPolls?: number;
 	maxBodyBytes?: number;
 }
 
@@ -33,12 +45,28 @@ export interface AnnotateServer {
 	readonly url: string;
 	readonly port: number;
 	readonly token: string;
+	readonly sessionId: string;
 	readonly closed: boolean;
-	setSnapshot(snapshot: Snapshot): void;
+	readonly version: number;
+	update(items: SnapshotItem[]): Update | undefined;
 	close(reason: CloseReason): void;
 }
 
 const PAGE = new URL("./page.html", import.meta.url);
+
+export function preferredPort(env: NodeJS.ProcessEnv): number {
+	const raw = env.PI_ANNOTATE_PORT?.trim();
+	if (!raw || !/^\d+$/.test(raw)) return DEFAULT_PORT;
+	const port = Number(raw);
+	return port >= 1 && port <= 65535 ? port : DEFAULT_PORT;
+}
+
+export function diffItems(previous: readonly SnapshotItem[], next: readonly SnapshotItem[]): { reset: boolean; items: SnapshotItem[] } | undefined {
+	const prefix = previous.length <= next.length && previous.every((item, index) => item.id === next[index]!.id && item.text === next[index]!.text);
+	if (!prefix) return { reset: true, items: [...next] };
+	if (next.length === previous.length) return undefined;
+	return { reset: false, items: next.slice(previous.length) };
+}
 
 function sameToken(given: string | undefined, token: string): boolean {
 	if (typeof given !== "string") return false;
@@ -57,11 +85,14 @@ function baseHeaders(): Record<string, string> {
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void {
+	if (res.headersSent || res.destroyed) return;
 	res.writeHead(status, { ...baseHeaders(), "Content-Type": "application/json; charset=utf-8", ...extra });
 	res.end(JSON.stringify(body));
 }
 
-export function parseItems(body: unknown): Annotation[] | string {
+export function parseSend(body: unknown): { seq: number; items: Annotation[] } | string {
+	const seq = (body as { seq?: unknown } | null)?.seq;
+	if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 1) return "seq must be a positive integer";
 	const items = (body as { items?: unknown } | null)?.items;
 	if (!Array.isArray(items) || items.length === 0) return "items must be a non-empty array";
 	if (items.length > MAX_ITEMS) return `at most ${MAX_ITEMS} items`;
@@ -73,7 +104,7 @@ export function parseItems(body: unknown): Annotation[] | string {
 		if (typeof note !== "string") return "note must be a string";
 		out.push({ quote, note });
 	}
-	return out;
+	return { seq, items: out };
 }
 
 function isJson(req: IncomingMessage): boolean {
@@ -81,32 +112,66 @@ function isJson(req: IncomingMessage): boolean {
 	return typeof type === "string" && type.split(";")[0]!.trim().toLowerCase() === "application/json";
 }
 
+function listen(server: Server, port: number): Promise<boolean> {
+	return new Promise((resolve, reject) => {
+		const onError = (error: NodeJS.ErrnoException) => {
+			server.off("listening", onListening);
+			if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve(false);
+			else reject(error);
+		};
+		const onListening = () => {
+			server.off("error", onError);
+			resolve(true);
+		};
+		server.once("error", onError);
+		server.once("listening", onListening);
+		server.listen(port, "127.0.0.1");
+	});
+}
+
 export async function startAnnotateServer(options: AnnotateServerOptions): Promise<AnnotateServer> {
 	const template = readFileSync(PAGE, "utf8");
 	const token = randomBytes(24).toString("base64url");
-	const idleMs = options.idleMs ?? IDLE_MS;
-	const closeDelayMs = options.closeDelayMs ?? 250;
+	const sessionId = options.sessionId;
+	const longPollMs = options.longPollMs ?? LONG_POLL_MS;
+	const maxLongPolls = options.maxLongPolls ?? MAX_LONG_POLLS;
 	const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY_BYTES;
-	let snapshot = options.snapshot;
-	let used = false;
+	let items = [...options.items];
+	let version = 1;
+	let updates: Update[] = [];
+	let lastSeq = 0;
 	let closed = false;
 	let port = 0;
-	let idleTimer: NodeJS.Timeout | undefined;
 	const sockets = new Set<Socket>();
-
-	const touch = () => {
-		if (idleTimer) clearTimeout(idleTimer);
-		idleTimer = setTimeout(() => close("idle"), idleMs);
-		idleTimer.unref?.();
-	};
+	const waiters = new Set<() => void>();
 
 	const close = (reason: CloseReason) => {
 		if (closed) return;
 		closed = true;
-		if (idleTimer) clearTimeout(idleTimer);
+		for (const wake of [...waiters]) wake();
 		server.close();
 		for (const socket of sockets) socket.destroy();
 		options.onClose?.(reason);
+	};
+
+	const update = (next: SnapshotItem[]): Update | undefined => {
+		if (closed) return undefined;
+		const diff = diffItems(items, next);
+		if (!diff) return undefined;
+		items = [...next];
+		version += 1;
+		const entry: Update = { version, reset: diff.reset, items: diff.items };
+		updates.push(entry);
+		if (updates.length > MAX_UPDATES) updates = updates.slice(-MAX_UPDATES);
+		for (const wake of [...waiters]) wake();
+		return entry;
+	};
+
+	const changesAfter = (after: number): Update => {
+		const pending = updates.filter((entry) => entry.version > after);
+		const known = after >= 1 && after <= version && (after === version || (updates.length > 0 && updates[0]!.version <= after + 1));
+		if (!known || pending.some((entry) => entry.reset)) return { version, reset: true, items };
+		return { version, reset: false, items: pending.flatMap((entry) => entry.items) };
 	};
 
 	const servePage = (res: ServerResponse) => {
@@ -117,6 +182,11 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			"Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
 		});
 		res.end(template.replaceAll("__NONCE__", nonce));
+	};
+
+	const switchedPage = (res: ServerResponse) => {
+		res.writeHead(410, { ...baseHeaders(), "Content-Type": "text/plain; charset=utf-8" });
+		res.end(`${SESSION_SWITCHED}\n`);
 	};
 
 	const readBody = (req: IncomingMessage, res: ServerResponse, done: (text: string) => void) => {
@@ -151,26 +221,46 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			return;
 		}
 		readBody(req, res, (text) => {
-			if (used || closed) return sendJson(res, 410, { error: "this page was already sent; run /annotate again" });
+			if (closed) return sendJson(res, 410, { error: SESSION_SWITCHED });
 			let body: unknown;
 			try {
 				body = JSON.parse(text);
 			} catch {
 				return sendJson(res, 400, { error: "invalid JSON" });
 			}
-			const items = parseItems(body);
-			if (typeof items === "string") return sendJson(res, 400, { error: items });
-			if (!options.isCurrent()) return sendJson(res, 409, { error: SESSION_SWITCHED });
+			const parsed = parseSend(body);
+			if (typeof parsed === "string") return sendJson(res, 400, { error: parsed });
+			if (!options.isCurrent()) return sendJson(res, 410, { error: SESSION_SWITCHED });
+			if (parsed.seq !== lastSeq + 1) return sendJson(res, 409, { error: `expected seq ${lastSeq + 1}`, expectedSeq: lastSeq + 1 });
 			let inserted: number;
 			try {
-				inserted = options.onSend(items);
+				inserted = options.onSend(parsed.items, parsed.seq);
 			} catch (error) {
-				if (error instanceof SessionSwitchedError) return sendJson(res, 409, { error: SESSION_SWITCHED });
+				if (error instanceof SessionSwitchedError) return sendJson(res, 410, { error: SESSION_SWITCHED });
 				return sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
 			}
-			used = true;
-			sendJson(res, 200, { ok: true, inserted });
-			setTimeout(() => close("sent"), closeDelayMs).unref?.();
+			lastSeq = parsed.seq;
+			sendJson(res, 200, { ok: true, inserted, seq: parsed.seq, nextSeq: lastSeq + 1 });
+		});
+	};
+
+	const handleEvents = (url: URL, req: IncomingMessage, res: ServerResponse) => {
+		const after = Number(url.searchParams.get("after"));
+		if (!Number.isInteger(after) || after < 0) return sendJson(res, 400, { error: "after must be a version number" });
+		if (after !== version) return sendJson(res, 200, changesAfter(after));
+		if (waiters.size >= maxLongPolls) return sendJson(res, 429, { error: `at most ${maxLongPolls} live connections` });
+		let timer: NodeJS.Timeout | undefined;
+		const finish = () => {
+			waiters.delete(finish);
+			if (timer) clearTimeout(timer);
+			if (closed) return;
+			if (!options.isCurrent()) return sendJson(res, 410, { error: SESSION_SWITCHED });
+			sendJson(res, 200, changesAfter(after));
+		};
+		waiters.add(finish);
+		timer = setTimeout(finish, longPollMs);
+		res.on("close", () => {
+			if (waiters.delete(finish) && timer) clearTimeout(timer);
 		});
 	};
 
@@ -185,30 +275,37 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			req.resume();
 			return;
 		}
-		touch();
 		const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
-		if (url.pathname === "/") {
+		const parts = url.pathname.split("/").filter((part) => part !== "");
+		if (parts.length === 0 || parts.length === 2 || parts.length > 3 || (parts.length === 3 && parts[1] !== "api")) {
+			sendJson(res, 404, { error: "not found" });
+			req.resume();
+			return;
+		}
+		const pathSession = decodeURIComponent(parts[0]!);
+		if (parts.length === 1) {
 			if (req.method !== "GET") return sendJson(res, 405, { error: "method not allowed" });
-			if (used || !sameToken(url.searchParams.get("token") ?? undefined, token)) return sendJson(res, 403, { error: "bad or expired token" });
+			if (pathSession !== sessionId || !options.isCurrent()) return switchedPage(res);
 			return servePage(res);
 		}
-		if (url.pathname === "/api/snapshot" || url.pathname === "/api/send") {
-			const given = req.headers[TOKEN_HEADER];
-			if (!sameToken(Array.isArray(given) ? given[0] : given, token)) {
-				sendJson(res, 403, { error: "missing or wrong X-Annotate-Token" });
-				req.resume();
-				return;
-			}
-			if (used) {
-				sendJson(res, 410, { error: "this page was already sent; run /annotate again" });
-				req.resume();
-				return;
-			}
-			if (url.pathname === "/api/snapshot") {
-				if (req.method !== "GET") return sendJson(res, 405, { error: "method not allowed" });
-				if (!options.isCurrent()) return sendJson(res, 409, { error: SESSION_SWITCHED });
-				return sendJson(res, 200, snapshot);
-			}
+		const endpoint = parts[2];
+		if (endpoint !== "snapshot" && endpoint !== "events" && endpoint !== "send") {
+			sendJson(res, 404, { error: "not found" });
+			req.resume();
+			return;
+		}
+		if (pathSession !== sessionId || !options.isCurrent()) {
+			sendJson(res, 410, { error: SESSION_SWITCHED });
+			req.resume();
+			return;
+		}
+		const given = req.headers[TOKEN_HEADER];
+		if (!sameToken(Array.isArray(given) ? given[0] : given, token)) {
+			sendJson(res, 403, { error: "missing or wrong X-Annotate-Token" });
+			req.resume();
+			return;
+		}
+		if (endpoint === "send") {
 			if (req.method !== "POST") {
 				sendJson(res, 405, { error: "method not allowed" });
 				req.resume();
@@ -216,36 +313,41 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			}
 			return handleSend(req, res);
 		}
-		sendJson(res, 404, { error: "not found" });
-		req.resume();
+		if (req.method !== "GET") {
+			sendJson(res, 405, { error: "method not allowed" });
+			req.resume();
+			return;
+		}
+		if (endpoint === "snapshot") return sendJson(res, 200, { sessionId, version, nextSeq: lastSeq + 1, items });
+		return handleEvents(url, req, res);
 	});
 	server.on("connection", (socket) => {
 		sockets.add(socket);
+		socket.unref();
 		socket.on("close", () => sockets.delete(socket));
 	});
 
-	await new Promise<void>((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", () => {
-			server.off("error", reject);
-			resolve();
-		});
-	});
+	const first = options.port ?? DEFAULT_PORT;
+	let bound = false;
+	for (let candidate = first; candidate < first + PORT_ATTEMPTS && candidate <= 65535 && !bound; candidate++) {
+		bound = await listen(server, candidate);
+	}
+	if (!bound && !(await listen(server, 0))) throw new Error("annotate: could not bind a port on 127.0.0.1");
 	server.unref();
 	port = (server.address() as AddressInfo).port;
-	touch();
 
 	return {
-		url: `http://127.0.0.1:${port}/?token=${token}`,
+		url: `http://127.0.0.1:${port}/${encodeURIComponent(sessionId)}#t=${token}`,
 		port,
 		token,
+		sessionId,
 		get closed() {
 			return closed;
 		},
-		setSnapshot(next) {
-			snapshot = next;
-			touch();
+		get version() {
+			return version;
 		},
+		update,
 		close,
 	};
 }

@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const [mode, url, outDir, readyFile, goFile] = process.argv.slice(2);
-if (!["annotate", "switched"].includes(mode) || !url || !outDir) {
-	console.error("usage: node browser.mjs annotate|switched <url> <screenshot dir> [ready file] [go file]");
+const [mode, url, outDir, ...files] = process.argv.slice(2);
+if (!["live", "switched"].includes(mode) || !url || !outDir) {
+	console.error("usage: node browser.mjs live <url> <screenshot dir> <round 2 ready file> <round 3 ready file> <tree go file>");
+	console.error("       node browser.mjs switched <url> <screenshot dir> <ready file> <go file>");
 	console.error("env: PLAYWRIGHT_CORE (path to an installed playwright-core package), CHROME_BIN (Chrome or Chromium executable)");
 	process.exit(2);
 }
@@ -66,19 +67,39 @@ async function dragSelect(selector, needle) {
 	return page.locator("#composer-quote").textContent();
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const waitForFile = async (file, ms) => {
+	for (let i = 0; i < ms / 100 && !existsSync(file); i++) await sleep(100);
+	if (!existsSync(file)) throw new Error(`timed out waiting for ${file}`);
+};
+const messages = () => page.locator("#conversation article").count();
+const listState = async (round) => ({
+	count: await page.locator("#list > li").count(),
+	round: (await page.locator("#status").textContent()).includes(`(round ${round})`),
+	sendDisabled: await page.locator("#send").isDisabled(),
+	messages: await messages(),
+});
+const sendRound = async (round) => {
+	await page.locator("#send").click();
+	await page.waitForFunction((round) => document.getElementById("status").textContent.includes(`(round ${round})`), round);
+	return listState(round);
+};
+
 await page.goto(url);
 await page.locator("#conversation .message").first().waitFor();
-await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Snapshot"));
+await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Live"));
 result.checks.xssInert = await page.evaluate(() => ({
 	images: document.querySelectorAll("#conversation img").length,
 	pwned: typeof window.__pwned,
 	literal: document.getElementById("conversation").textContent.includes("<img src=x onerror=window.__pwned=1>"),
 }));
-result.checks.tokenRemoved = !page.url().includes("token") && (await page.evaluate(() => location.href)) === new URL("/", url).href;
+result.checks.href = await page.evaluate(() => location.href);
+result.checks.tokenRemoved = result.checks.href === url.split("#")[0] && !result.checks.href.includes("t=");
 result.checks.toolCollapsed = await page.evaluate(() => [...document.querySelectorAll("#conversation details")].every((d) => !d.open));
-await shot(mode === "annotate" ? "01-page" : "s1-page");
+await shot(mode === "live" ? "01-page" : "s1-page");
 
-if (mode === "annotate") {
+if (mode === "live") {
+	const [round2Ready, round3Ready, treeGo] = files;
 	result.selected = [];
 	result.selected.push(await dragSelect("#conversation .assistant .text", "The cache is LRU."));
 	await page.keyboard.type("why LRU?");
@@ -107,21 +128,52 @@ if (mode === "annotate") {
 	await shot("03-list");
 	await page.locator("#list > li").nth(2).getByRole("button", { name: "Delete" }).click();
 	result.checks.listCount = await page.locator("#list > li").count();
-	await page.locator("#send").click();
-	await page.locator(".done").waitFor();
-	result.doneText = await page.locator(".done").textContent();
-	await shot("04-done");
+	result.checks.afterRound1 = await sendRound(1);
+	await shot("04-round1-sent");
+	result.selected.push(await dragSelect("#conversation .assistant .text", "It evicts the oldest entry first."));
+	await page.keyboard.type("round two");
+	await page.keyboard.press("Enter");
+	result.checks.afterRound2 = await sendRound(2);
+	await shot("05-round2-sent");
+	writeFileSync(round2Ready, "ready");
+	await page.waitForFunction(() => document.getElementById("conversation").textContent.includes("Old keys leave in order."), null, { timeout: 60_000 });
+	await page.waitForFunction(() => document.querySelectorAll("#conversation article").length === 6);
+	result.checks.liveUpdate = {
+		messages: await messages(),
+		last: await page.locator("#conversation article").last().locator(".text").textContent(),
+		status: (await page.locator("#status").textContent()).startsWith("Live · 6 messages"),
+	};
+	await shot("06-live-update");
+	result.selected.push(await dragSelect("#conversation .assistant .text", "Old keys leave in order."));
+	await page.keyboard.type("round three");
+	await shot("07-round3-composer");
+	await page.keyboard.press("Enter");
+	result.checks.afterRound3 = await sendRound(3);
+	await shot("08-round3-sent");
+	writeFileSync(round3Ready, "ready");
+	await waitForFile(treeGo, 60_000);
+	await page.waitForFunction(() => document.querySelectorAll("#conversation article").length === 2, null, { timeout: 15_000 });
+	result.checks.treeReset = {
+		messages: await messages(),
+		status: (await page.locator("#status").textContent()).includes("conversation changed"),
+	};
+	await shot("09-tree-reset");
 } else {
-	await dragSelect("#conversation .assistant .text", "The cache is LRU.");
+	const [readyFile, goFile] = files;
+	errors.length = 0;
+	await dragSelect("#conversation .assistant .text", "Checking the cache stats.");
 	await page.keyboard.type("too late");
 	await page.keyboard.press("Enter");
 	writeFileSync(readyFile, "ready");
-	for (let i = 0; i < 300 && !existsSync(goFile); i++) await new Promise((resolve) => setTimeout(resolve, 100));
-	await page.locator("#send").click();
-	await page.waitForFunction(() => document.getElementById("status").className === "error");
+	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Disconnected"), null, { timeout: 30_000 });
+	result.disconnectedText = await page.locator("#status").textContent();
+	await shot("s2-disconnected");
+	await waitForFile(goFile, 60_000);
+	if (!(await page.locator("#send").isDisabled())) await page.locator("#send").click().catch(() => {});
+	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Session switched"), null, { timeout: 15_000 });
 	result.statusText = await page.locator("#status").textContent();
 	result.sendDisabled = await page.locator("#send").isDisabled();
-	await shot("s2-switched");
+	await shot("s3-switched");
 }
 
 await browser.close();

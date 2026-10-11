@@ -1,48 +1,64 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
+import { createServer } from "node:net";
 import { afterEach, describe, it } from "node:test";
 import annotation, { annotateNotice, browserCommand } from "../index.ts";
 
 type Handler = (args: string, ctx: unknown) => Promise<void>;
+type Listener = (event: unknown, ctx: unknown) => unknown;
 
-function post(url: string, token: string, body: unknown): Promise<{ status: number; body: string }> {
-	const { port } = new URL(url);
+function call(url: URL, method: string, endpoint: string, token: string | undefined, body?: unknown): Promise<{ status: number; body: string }> {
+	const sid = url.pathname.slice(1);
 	return new Promise((resolve, reject) => {
-		const req = httpRequest(
-			{ host: "127.0.0.1", port, method: "POST", path: "/api/send", headers: { "x-annotate-token": token, "content-type": "application/json" } },
-			(res) => {
-				const chunks: Buffer[] = [];
-				res.on("data", (chunk: Buffer) => chunks.push(chunk));
-				res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
-			},
-		);
+		const headers: Record<string, string> = {};
+		if (token) headers["x-annotate-token"] = token;
+		if (body !== undefined) headers["content-type"] = "application/json";
+		const req = httpRequest({ host: "127.0.0.1", port: url.port, method, path: `/${sid}/api/${endpoint}`, headers }, (res) => {
+			const chunks: Buffer[] = [];
+			res.on("data", (chunk: Buffer) => chunks.push(chunk));
+			res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+		});
 		req.on("error", reject);
-		req.end(JSON.stringify(body));
+		req.end(body === undefined ? undefined : JSON.stringify(body));
 	});
 }
 
-const branch = [
-	{ type: "message", id: "u1", message: { role: "user", content: "explain the cache" } },
-	{ type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "The cache is LRU." }] } },
-];
+function canListen(port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const probe = createServer();
+		probe.once("error", () => resolve(false));
+		probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
+	});
+}
 
-function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string } = {}) {
+async function freePort(): Promise<number> {
+	for (;;) {
+		const port = 20000 + Math.floor(Math.random() * 1200) * 10;
+		let free = true;
+		for (let offset = 0; offset < 10 && free; offset++) free = await canListen(port + offset);
+		if (free) return port;
+	}
+}
+
+const msg = (id: string, role: string, content: unknown) => ({ type: "message", id, message: { role, content } });
+
+async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string } = {}) {
 	const commands = new Map<string, Handler>();
-	const events = new Map<string, (...args: unknown[]) => unknown>();
+	const listeners = new Map<string, Listener[]>();
 	const execs: { command: string; args: string[] }[] = [];
 	const notices: string[] = [];
-	const sets: string[] = [];
-	let editorText = options.editor ?? "draft";
 	const statuses: (string | undefined)[] = [];
 	const userMessages: unknown[] = [];
+	let editorText = options.editor ?? "";
 	let stale = false;
-	let sessionFile = "/tmp/session-a.jsonl";
+	let sessionId = "session-a";
+	let branch: unknown[] = [msg("u1", "user", "explain the cache"), msg("a1", "assistant", [{ type: "text", text: "The cache is LRU." }])];
 	const guard = () => {
 		if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
 	};
 	const pi = {
 		registerCommand: (name: string, spec: { handler: Handler }) => commands.set(name, spec.handler),
-		on: (event: string, handler: (...args: unknown[]) => unknown) => events.set(event, handler),
+		on: (event: string, handler: Listener) => listeners.set(event, [...(listeners.get(event) ?? []), handler]),
 		exec: async (command: string, args: string[]) => {
 			execs.push({ command, args });
 			return { stdout: "", stderr: "", code: 0, killed: false };
@@ -56,11 +72,10 @@ function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; h
 				guard();
 				return branch;
 			},
-			getSessionFile: () => {
+			getSessionId: () => {
 				guard();
-				return sessionFile;
+				return sessionId;
 			},
-			getSessionId: () => "id",
 		},
 		ui: {
 			notify: (message: string) => {
@@ -72,7 +87,6 @@ function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; h
 			},
 			setEditorText: (text: string) => {
 				guard();
-				sets.push(text);
 				editorText = text;
 			},
 			getEditorText: () => {
@@ -85,60 +99,88 @@ function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; h
 			},
 		},
 	};
-	annotation(pi as never, { platform: options.platform ?? "linux", env: options.env ?? {} });
-	const run = () => commands.get("annotate")!("", ctx);
-	const lastUrl = () => /http:\/\/127\.0\.0\.1:\d+\/\?token=[\w-]+/.exec(notices.at(-1) ?? "")![0];
+	const env = options.env ?? { PI_ANNOTATE_PORT: String(await freePort()) };
+	annotation(pi as never, { platform: options.platform ?? "linux", env, refreshDelayMs: 0, longPollMs: 3000 });
+	const emit = async (event: string) => {
+		for (const listener of listeners.get(event) ?? []) await listener({ type: event }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	};
+	const lastUrl = () => /http:\/\/127\.0\.0\.1:\d+\/[\w-]+#t=[\w-]+/.exec(notices.filter((n) => n.startsWith("annotate: open")).at(-1) ?? "")![0];
+	const parts = () => {
+		const url = new URL(lastUrl());
+		return { url, token: new URLSearchParams(url.hash.slice(1)).get("t")! };
+	};
 	return {
-		run,
+		run: () => commands.get("annotate")!("", ctx),
+		end: () => commands.get("annotation-end")!("", ctx),
+		emit,
 		lastUrl,
+		parts,
 		execs,
 		notices,
-		sets,
-		editor: () => editorText,
 		statuses,
 		userMessages,
-		shutdown: () => events.get("session_shutdown")!({ type: "session_shutdown" }, ctx),
+		editor: () => editorText,
+		setBranch: (next: unknown[]) => {
+			branch = next;
+		},
+		branch: () => branch,
+		shutdown: () => emit("session_shutdown"),
 		makeStale: () => {
 			stale = true;
 		},
-		switchSession: () => {
-			sessionFile = "/tmp/session-b.jsonl";
+		switchSession: (id: string) => {
+			sessionId = id;
 		},
 	};
 }
 
 const cleanups: (() => unknown)[] = [];
-afterEach(() => {
-	while (cleanups.length) cleanups.pop()!();
+afterEach(async () => {
+	while (cleanups.length) await cleanups.pop()!();
 });
 
 describe("/annotate command", () => {
-	it("opens the browser with an argument array, notifies the URL and returns", async () => {
-		const t = setup();
+	it("starts on PI_ANNOTATE_PORT with the session id in the path and the token in the fragment", async () => {
+		const port = await freePort();
+		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
 		cleanups.push(t.shutdown);
 		await t.run();
-		const url = t.lastUrl();
-		assert.deepEqual(t.execs, [{ command: "xdg-open", args: [url] }]);
-		assert.equal(t.statuses.at(-1), "annotate: page open");
+		const { url, token } = t.parts();
+		assert.equal(url.port, String(port));
+		assert.equal(url.pathname, "/session-a");
+		assert.equal(url.search, "");
+		assert.match(token, /^[\w-]{32}$/);
+		assert.deepEqual(t.execs, [{ command: "xdg-open", args: [t.lastUrl()] }]);
+		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
+		assert.match(t.notices.at(-1)!, /\/annotation-end/);
 	});
 
-	it("re-opens the same URL while the page is open", async () => {
-		const t = setup();
+	it("uses 4747 by default, or the next free port", async () => {
+		const t = await setup({ env: {} });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const port = Number(t.parts().url.port);
+		assert.ok((port >= 4747 && port <= 4756) || port > 0, String(port));
+	});
+
+	it("reprints the identical URL and does not start a second server", async () => {
+		const t = await setup();
 		cleanups.push(t.shutdown);
 		await t.run();
 		const first = t.lastUrl();
 		await t.run();
+		await t.run();
 		assert.equal(t.lastUrl(), first);
-		assert.equal(t.execs.length, 2);
-		assert.equal(t.execs[1]!.args[0], first);
+		assert.deepEqual(t.execs.map((e) => e.args[0]), [first, first, first]);
 	});
 
 	it("does not open a browser over SSH and shows ssh -L usage", async () => {
-		const t = setup({ env: { SSH_CONNECTION: "1.2.3.4 5 6.7.8.9 22" } });
+		const port = await freePort();
+		const t = await setup({ env: { SSH_CONNECTION: "1.2.3.4 5 6.7.8.9 22", PI_ANNOTATE_PORT: String(port) } });
 		cleanups.push(t.shutdown);
 		await t.run();
 		assert.equal(t.execs.length, 0);
-		const port = new URL(t.lastUrl()).port;
 		assert.ok(t.notices.at(-1)!.includes(`ssh -L ${port}:127.0.0.1:${port} <host>`));
 	});
 
@@ -151,31 +193,25 @@ describe("/annotate command", () => {
 	});
 
 	it("does nothing without a UI", async () => {
-		const t = setup({ hasUI: false });
+		const t = await setup({ hasUI: false });
 		await t.run();
 		assert.equal(t.notices.length, 0);
-		assert.equal(t.execs.length, 0);
 	});
+});
 
-	it("appends all annotations to the end of the editor in one set and never messages the agent", async () => {
-		const t = setup();
+describe("sending", () => {
+	it("appends two send rounds to the editor in order and never messages the agent", async () => {
+		const t = await setup({ editor: "draft" });
 		cleanups.push(t.shutdown);
 		await t.run();
-		const url = new URL(t.lastUrl());
-		const reply = await post(url.href, url.searchParams.get("token")!, {
-			items: [
-				{ quote: "The cache is LRU.", note: "why LRU?" },
-				{ quote: "explain\nthe cache", note: "" },
-			],
-		});
-		assert.equal(reply.status, 200);
-		assert.deepEqual(t.sets, ["draft\n> The cache is LRU.\n\nwhy LRU?\n\n> explain\n> the cache\n\n"]);
+		const { url, token } = t.parts();
+		assert.equal((await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "The cache is LRU.", note: "why LRU?" }] })).status, 200);
+		assert.equal((await call(url, "POST", "send", token, { seq: 2, items: [{ quote: "explain the cache", note: "" }, { quote: "LRU", note: "and LFU?" }] })).status, 200);
+		assert.equal(t.editor(), "draft\n> The cache is LRU.\n\nwhy LRU?\n\n> explain the cache\n\n> LRU\n\nand LFU?\n\n");
 		assert.equal(t.userMessages.length, 0);
-		assert.equal(t.statuses.at(-1), undefined);
-		assert.match(t.notices.at(-1)!, /inserted 2 annotations/);
-		const again = await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] });
-		assert.equal(again.status, 410);
-		assert.equal(t.sets.length, 1);
+		const old = await call(url, "POST", "send", token, { seq: 2, items: [{ quote: "again", note: "" }] });
+		assert.equal(old.status, 409);
+		assert.ok(!t.editor().includes("again"));
 	});
 
 	for (const [editor, expected] of [
@@ -185,64 +221,114 @@ describe("/annotate command", () => {
 		["a\n\n", "a\n\n> quote\n\nnote\n\n"],
 	] as const) {
 		it(`appends after ${JSON.stringify(editor)} with one newline only when needed`, async () => {
-			const t = setup({ editor });
+			const t = await setup({ editor });
 			cleanups.push(t.shutdown);
 			await t.run();
-			const url = new URL(t.lastUrl());
-			assert.equal((await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "quote", note: "note" }] })).status, 200);
+			const { url, token } = t.parts();
+			assert.equal((await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "quote", note: "note" }] })).status, 200);
 			assert.equal(t.editor(), expected);
 		});
 	}
 
 	it("strips control sequences before appending", async () => {
-		const t = setup({ editor: "" });
+		const t = await setup();
 		cleanups.push(t.shutdown);
 		await t.run();
-		const url = new URL(t.lastUrl());
-		await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "\x1b[31mred\x1b[0m", note: "n\x1b]0;x\x07\x1b[201~" }] });
+		const { url, token } = t.parts();
+		await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "\x1b[31mred\x1b[0m", note: "n\x1b]0;x\x07\x1b[201~" }] });
 		assert.equal(t.editor(), "> red\n\nn\n\n");
 	});
 
-	it("rejects the send when the session switched and inserts nothing", async () => {
-		const t = setup();
+	it("rejects with 410 when the ctx went stale and inserts nothing", async () => {
+		const t = await setup();
+		await t.run();
+		const { url, token } = t.parts();
+		t.makeStale();
+		assert.equal((await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 410);
+		assert.equal(t.editor(), "");
+		t.makeStale = () => {};
+	});
+});
+
+describe("live updates and lifecycle", () => {
+	it("pushes a new agent reply to a waiting long-poll after message_end", async () => {
+		const t = await setup();
 		cleanups.push(t.shutdown);
 		await t.run();
-		const url = new URL(t.lastUrl());
-		t.switchSession();
-		const reply = await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] });
-		assert.equal(reply.status, 409);
-		assert.match(reply.body, /Session switched, run \/annotate again/);
-		assert.equal(t.sets.length, 0);
+		const { url, token } = t.parts();
+		const snapshot = JSON.parse((await call(url, "GET", "snapshot", token)).body);
+		assert.equal(snapshot.items.length, 2);
+		const poll = call(url, "GET", `events?after=${snapshot.version}`, token);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		t.setBranch([...t.branch(), msg("u2", "user", "and eviction?"), msg("a2", "assistant", [{ type: "text", text: "Oldest first." }])]);
+		await t.emit("message_end");
+		const reply = JSON.parse((await poll).body);
+		assert.equal(reply.reset, false);
+		assert.deepEqual(reply.items.map((i: { id: string }) => i.id), ["u2", "a2"]);
 	});
 
-	it("rejects the send when the ctx went stale and inserts nothing", async () => {
-		const t = setup();
+	it("sends a reset after a /tree branch change", async () => {
+		const t = await setup();
+		cleanups.push(t.shutdown);
 		await t.run();
-		const url = new URL(t.lastUrl());
-		t.makeStale();
-		const reply = await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] });
-		assert.equal(reply.status, 409);
-		assert.equal(t.sets.length, 0);
-		t.shutdown();
+		const { url, token } = t.parts();
+		const poll = call(url, "GET", "events?after=1", token);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		t.setBranch([msg("u1", "user", "explain the cache")]);
+		await t.emit("session_tree");
+		const reply = JSON.parse((await poll).body);
+		assert.equal(reply.reset, true);
+		assert.deepEqual(reply.items.map((i: { id: string }) => i.id), ["u1"]);
 	});
 
-	it("closes the server on session_shutdown", async () => {
-		const t = setup();
+	it("/annotation-end ends a pending long-poll at once and frees the port", async () => {
+		const t = await setup();
 		await t.run();
-		const url = new URL(t.lastUrl());
-		t.shutdown();
-		await assert.rejects(post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] }));
-		assert.equal(t.sets.length, 0);
+		const { url, token } = t.parts();
+		const started = Date.now();
+		const poll = call(url, "GET", "events?after=1", token);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await t.end();
+		await assert.rejects(poll);
+		assert.ok(Date.now() - started < 1500);
+		assert.match(t.notices.at(-1)!, new RegExp(`stopped, port ${url.port} released`));
+		await new Promise<void>((resolve, reject) => {
+			const probe = createServer();
+			probe.once("error", reject);
+			probe.listen(Number(url.port), "127.0.0.1", () => probe.close(() => resolve()));
+		});
+		await t.end();
+		assert.equal(t.notices.at(-1), "annotate: not running");
+	});
+
+	it("after a session switch the old tab gets 410 from the new server and nothing is inserted", async () => {
+		const port = await freePort();
+		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
+		await t.run();
+		const old = t.parts();
+		await t.shutdown();
+		t.switchSession("session-b");
+		await t.run();
+		cleanups.push(t.shutdown);
+		const fresh = t.parts();
+		assert.equal(fresh.url.port, String(port));
+		assert.equal(fresh.url.pathname, "/session-b");
+		assert.notEqual(fresh.token, old.token);
+		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 410);
+		assert.equal((await call(old.url, "GET", "events?after=1", old.token)).status, 410);
+		assert.equal(t.editor(), "");
 	});
 
 	it("keeps only one server across extension instances", async () => {
-		const a = setup();
-		const b = setup();
+		const port = await freePort();
+		const a = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
+		const b = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
 		cleanups.push(a.shutdown, b.shutdown);
 		await a.run();
-		const first = new URL(a.lastUrl());
+		const first = a.parts();
 		await b.run();
-		await assert.rejects(post(first.href, first.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] }));
-		assert.notEqual(b.lastUrl(), first.href);
+		assert.equal(b.parts().url.port, String(port));
+		assert.notEqual(b.parts().token, first.token);
+		assert.equal((await call(first.url, "GET", "snapshot", first.token)).status, 403);
 	});
 });

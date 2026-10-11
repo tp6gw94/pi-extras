@@ -28,6 +28,22 @@ export default function (pi: ExtensionAPI) {
 			}, 150);
 		},
 	});
+	pi.registerCommand("probe-tree", {
+		description: "test: move the session leaf to the last entry whose text contains the argument",
+		handler: async (args, ctx) => {
+			const needle = args.trim();
+			const entry = ctx.sessionManager
+				.getBranch()
+				.filter((item) => item.type === "message" && JSON.stringify(item.message).includes(needle))
+				.at(-1);
+			if (!entry) {
+				ctx.ui.notify(`probe-tree: no entry for ${needle}`, "error");
+				return;
+			}
+			const result = await ctx.navigateTree(entry.id, { summarize: false });
+			ctx.ui.notify(`probe-tree: ${result.cancelled ? "cancelled" : "moved"} to ${entry.id}`, "info");
+		},
+	});
 	pi.on("session_shutdown", () => {
 		if (timer) clearInterval(timer);
 	});
