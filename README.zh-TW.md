@@ -38,8 +38,8 @@ pi 啟動時，會在 `[Extensions]` 底下列出七個 extension：
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
-tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
+  tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff, tp6gw94/pi-extras:rpc-subagents,
+tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
 ## 關掉某個 extension
