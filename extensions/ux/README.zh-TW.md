@@ -11,27 +11,29 @@ pi-ux 在 `@earendil-works/pi-coding-agent` 1.0.4 與 Node.js 22 上測試過，
 
 ## 以 pi package 安裝
 
-要在所有專案安裝 pi-ux，執行：
+pi-ux 是 [pi-extras](../../README.zh-TW.md) 裡的一個 extension。要在所有專案安裝 pi-extras，執行：
 
 ```sh
-pi install git:github.com/tp6gw94/pi-ux
+pi install git:github.com/tp6gw94/pi-extras
 ```
 
 只想裝在目前的專案，加上 `--local`。pi 會把套件寫進 `.pi/settings.json`：
 
 ```sh
-pi install --local git:github.com/tp6gw94/pi-ux
+pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-不安裝、只在一個 session 試用，就從 clone 下來的目錄載入 extension 檔案：
+pi-extras 預設載入所有 extension。要關掉其中幾個，請看[關掉某個 extension](../../README.zh-TW.md#關掉某個-extension)。
+
+不安裝、只在一個 session 試用 pi-ux，就從 clone 下來的 pi-extras 載入 extension 檔案：
 
 ```sh
-pi --extension ./ux-pi/index.ts
+pi --extension ./extensions/ux/index.ts
 ```
 
 ## 2 分鐘上手
 
-以下輸出來自 pi 1.0.4 在 110 欄寬 tmux pane 中的實際執行。`test/e2e/tmux-verify.sh` 會重跑同樣的流程。
+以下輸出來自 pi 1.0.4 在 110 欄寬 tmux pane 中的實際執行。`extensions/ux/test/e2e/tmux-verify.sh` 會重跑同樣的流程。
 
 ### 送出 prompt
 
@@ -187,10 +189,12 @@ pi-ux 不處理對話紀錄的導覽，因為 pi 本身就有。在預設的 ful
 
 ## 開發
 
+在 pi-extras 根目錄執行：
+
 ```sh
 npm install
 npm test
 npm run typecheck
 ```
 
-`npm test` 會跑單元測試與 README 檢查。`test/e2e/tmux-verify.sh` 會在 tmux 裡操作真實的 pi session，需要已登入的模型、`tmux`、`xclip`、`xsel`，以及 Xvfb 之類的 X server。擷取的畫面存在 `/tmp/pi-ux-ev`。
+`npm test` 會跑所有 pi-extras extension 的測試，包括 pi-ux 的單元測試與 README 檢查。`extensions/ux/test/e2e/tmux-verify.sh` 會在 tmux 裡操作真實的 pi session，需要已登入的模型、`tmux`、`xclip`、`xsel`，以及 Xvfb 之類的 X server。擷取的畫面存在 `/tmp/pi-ux-ev`。

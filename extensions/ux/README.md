@@ -11,27 +11,29 @@ pi-ux is tested with `@earendil-works/pi-coding-agent` 1.0.4 on Node.js 22 in bo
 
 ## Install it as a pi package
 
-To install pi-ux for every project, run:
+pi-ux is one of the extensions in [pi-extras](../../README.md). To install pi-extras for every project, run:
 
 ```sh
-pi install git:github.com/tp6gw94/pi-ux
+pi install git:github.com/tp6gw94/pi-extras
 ```
 
 To install it for the current project only, add `--local`. pi then writes the package to `.pi/settings.json`:
 
 ```sh
-pi install --local git:github.com/tp6gw94/pi-ux
+pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-To try it for one session without installing it, load the extension file from a clone:
+pi-extras loads all of its extensions by default. To turn some of them off, see [Turn an extension off](../../README.md#turn-an-extension-off).
+
+To try pi-ux for one session without installing it, load the extension file from a clone of pi-extras:
 
 ```sh
-pi --extension ./ux-pi/index.ts
+pi --extension ./extensions/ux/index.ts
 ```
 
 ## Try it in 2 minutes
 
-The output below comes from a real run with pi 1.0.4 in a 110-column tmux pane. The script `test/e2e/tmux-verify.sh` repeats the run.
+The output below comes from a real run with pi 1.0.4 in a 110-column tmux pane. The script `extensions/ux/test/e2e/tmux-verify.sh` repeats the run.
 
 ### Send a prompt
 
@@ -187,10 +189,12 @@ pi-ux does not navigate the transcript, because pi already does. In the default 
 
 ## Development
 
+Run these from the pi-extras root:
+
 ```sh
 npm install
 npm test
 npm run typecheck
 ```
 
-`npm test` runs the unit tests and the README checks. `test/e2e/tmux-verify.sh` drives a real pi session in tmux and needs a logged-in model, `tmux`, `xclip`, `xsel` and an X server such as Xvfb. It saves the captured panes in `/tmp/pi-ux-ev`.
+`npm test` runs the tests of every pi-extras extension, including the pi-ux unit tests and README checks. `extensions/ux/test/e2e/tmux-verify.sh` drives a real pi session in tmux and needs a logged-in model, `tmux`, `xclip`, `xsel` and an X server such as Xvfb. It saves the captured panes in `/tmp/pi-ux-ev`.

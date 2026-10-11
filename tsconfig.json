@@ -9,5 +9,5 @@
 		"skipLibCheck": true,
 		"noUncheckedIndexedAccess": true
 	},
-	"include": ["extensions/ux/**/*.ts", "extensions/hooks/**/*.ts"]
+	"include": ["extensions/ux/**/*.ts", "extensions/hooks/**/*.ts", "test/**/*.ts"]
 }

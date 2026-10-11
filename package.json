@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "typecheck": "tsc -p . && tsc -p tsconfig.extensions.json",
-    "test": "node --test --test-timeout=120000 \"extensions/*/test/**/*.test.ts\" \"extensions/*/test/**/*.test.mjs\" extensions/deepinfra-provider/test.mjs extensions/inline-skills/tests/run.mjs"
+    "test": "node --test --test-timeout=120000 test/*.test.ts \"extensions/*/test/**/*.test.ts\" \"extensions/*/test/**/*.test.mjs\" extensions/deepinfra-provider/test.mjs extensions/inline-skills/tests/run.mjs"
   },
   "dependencies": {
     "croner": "9.1.0"

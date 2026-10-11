@@ -10,29 +10,31 @@ pi-hooks 在 `@earendil-works/pi-coding-agent` 1.0.4、Node.js 22.19 以上測�
 
 ## 以 pi package 安裝
 
-要在所有專案使用 pi-hooks，執行：
+pi-hooks 是 [pi-extras](../../README.zh-TW.md) 裡的一個 extension。要在所有專案安裝 pi-extras，執行：
 
 ```sh
-pi install git:github.com/tp6gw94/pi-hooks
+pi install git:github.com/tp6gw94/pi-extras
 ```
 
 只想裝在目前的專案，加上 `--local`。pi 會把套件寫進 `.pi/settings.json`：
 
 ```sh
-pi install --local git:github.com/tp6gw94/pi-hooks
+pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-不安裝、只在一次 session 裡試用，就從 clone 下來的 repo 載入擴充套件檔案：
+pi-extras 預設載入所有 extension。要關掉其中幾個，請看[關掉某個 extension](../../README.zh-TW.md#關掉某個-extension)。
+
+不安裝、只在一個 session 試用 pi-hooks，就從 clone 下來的 pi-extras 載入 extension 檔案：
 
 ```sh
-pi --extension ./hooks-pi/index.ts
+pi --extension ./extensions/hooks/index.ts
 ```
 
 ## 5 分鐘設定 hooks
 
 這個快速入門要在一個 TypeScript 與 Python 混合的專案裡加上 format 與 lint hook。TypeScript 檔案經過 prettier 和 eslint，Python 檔案經過 `ruff format` 和 `ruff check`，Markdown 檔案不跑任何 hook。
 
-下面的指令與輸出來自一次真實執行，使用 pi 1.0.4 與 `openai-codex` 的 `gpt-5.5` 模型。`test/e2e/` 裡的腳本可以重建這個專案並重跑一次。
+下面的指令與輸出來自一次真實執行，使用 pi 1.0.4 與 `openai-codex` 的 `gpt-5.5` 模型。`extensions/hooks/test/e2e/` 裡的腳本可以重建這個專案並重跑一次。
 
 ### 建立設定檔
 
@@ -196,14 +198,16 @@ pi-hooks 把 `command` 裡每個 `{files}` 換成符合的檔案，以空白分�
 
 ## 開發
 
+在 pi-extras 根目錄執行：
+
 ```sh
 npm install
 npm run typecheck
 npm test
 ```
 
-`npm test` 執行單元測試。要用真實模型跑端對端情境，使用 `test/e2e/acceptance.sh`：
+`npm test` 執行所有 pi-extras extension 的測試，包括 pi-hooks 的單元測試。要用真實模型跑端對端情境，使用 `extensions/hooks/test/e2e/acceptance.sh`：
 
 ```sh
-test/e2e/acceptance.sh /tmp/pi-hooks-e2e -- --provider openai-codex --model gpt-5.5
+extensions/hooks/test/e2e/acceptance.sh /tmp/pi-hooks-e2e -- --provider openai-codex --model gpt-5.5
 ```

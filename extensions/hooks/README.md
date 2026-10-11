@@ -10,29 +10,31 @@ pi-hooks is tested with `@earendil-works/pi-coding-agent` 1.0.4 on Node.js 22.19
 
 ## Install it as a pi package
 
-To install pi-hooks for every project, run:
+pi-hooks is one of the extensions in [pi-extras](../../README.md). To install pi-extras for every project, run:
 
 ```sh
-pi install git:github.com/tp6gw94/pi-hooks
+pi install git:github.com/tp6gw94/pi-extras
 ```
 
 To install it for the current project only, add `--local`. pi then writes the package to `.pi/settings.json`:
 
 ```sh
-pi install --local git:github.com/tp6gw94/pi-hooks
+pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-To try it for one session without installing it, load the extension file from a clone:
+pi-extras loads all of its extensions by default. To turn some of them off, see [Turn an extension off](../../README.md#turn-an-extension-off).
+
+To try pi-hooks for one session without installing it, load the extension file from a clone of pi-extras:
 
 ```sh
-pi --extension ./hooks-pi/index.ts
+pi --extension ./extensions/hooks/index.ts
 ```
 
 ## Set up hooks in 5 minutes
 
 In this quickstart, we add format and lint hooks to a project that mixes TypeScript and Python. TypeScript files go through prettier and eslint. Python files go through `ruff format` and `ruff check`. Markdown files get no hooks.
 
-The commands and output below come from a real run with pi 1.0.4 and the `openai-codex` `gpt-5.5` model. The scripts in `test/e2e/` rebuild that project and repeat the run.
+The commands and output below come from a real run with pi 1.0.4 and the `openai-codex` `gpt-5.5` model. The scripts in `extensions/hooks/test/e2e/` rebuild that project and repeat the run.
 
 ### Create the config
 
@@ -196,14 +198,16 @@ If the project is not a git repository, pi-hooks uses the paths from the turn's 
 
 ## Development
 
+Run these from the pi-extras root:
+
 ```sh
 npm install
 npm run typecheck
 npm test
 ```
 
-`npm test` runs the unit tests. To run the end-to-end scenarios with a real model, use `test/e2e/acceptance.sh`:
+`npm test` runs the tests of every pi-extras extension, including the pi-hooks unit tests. To run the end-to-end scenarios with a real model, use `extensions/hooks/test/e2e/acceptance.sh`:
 
 ```sh
-test/e2e/acceptance.sh /tmp/pi-hooks-e2e -- --provider openai-codex --model gpt-5.5
+extensions/hooks/test/e2e/acceptance.sh /tmp/pi-hooks-e2e -- --provider openai-codex --model gpt-5.5
 ```
