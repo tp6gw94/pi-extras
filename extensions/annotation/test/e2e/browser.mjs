@@ -49,6 +49,12 @@ async function textRect(selector, needle) {
 	);
 }
 
+const pendingHighlight = () =>
+	page.evaluate(() => {
+		const highlight = CSS.highlights.get("annotate-pending");
+		return highlight ? [...highlight].map((range) => range.toString()) : null;
+	});
+
 async function dragSelect(selector, needle) {
 	const rect = await textRect(selector, needle);
 	if (!rect) throw new Error(`text not found: ${needle}`);
@@ -76,8 +82,11 @@ if (mode === "annotate") {
 	result.selected = [];
 	result.selected.push(await dragSelect("#conversation .assistant .text", "The cache is LRU."));
 	await page.keyboard.type("why LRU?");
+	result.checks.highlightWhileOpen = await pendingHighlight();
+	result.checks.focusInNote = await page.evaluate(() => document.activeElement.id === "note");
 	await shot("02-composer");
 	await page.keyboard.press("Enter");
+	result.checks.highlightAfterEnter = await pendingHighlight();
 	await page.locator("#conversation details summary").first().click();
 	result.checks.toolExpanded = await page.evaluate(() => document.querySelector("#conversation details").open);
 	result.selected.push(await dragSelect("#conversation details .text", "cache-hit-ratio 0.93"));
@@ -87,7 +96,9 @@ if (mode === "annotate") {
 	await page.keyboard.press("Enter");
 	result.selected.push(await dragSelect("#conversation .assistant .text", "oldest entry"));
 	await page.keyboard.type("discarded");
+	result.checks.highlightBeforeEsc = await pendingHighlight();
 	await page.keyboard.press("Escape");
+	result.checks.highlightAfterEsc = await pendingHighlight();
 	result.checks.escDiscarded = (await page.locator("#list > li").count()) === 2;
 	result.selected.push(await dragSelect("#conversation .assistant .text", "It evicts"));
 	await page.keyboard.type("to delete");

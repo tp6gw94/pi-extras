@@ -67,7 +67,7 @@ class FakeElement {
 	}
 }
 
-function loadPage(snapshot: unknown, sendStatus = 200) {
+function loadPage(snapshot: unknown, sendStatus = 200, globals: Record<string, unknown> = {}) {
 	const ids = ["conversation", "list", "send", "status", "composer", "composer-quote", "note", "count", "empty"];
 	const byId = new Map(ids.map((id) => [id, new FakeElement(id === "note" ? "textarea" : "div")]));
 	const main = new FakeElement("main");
@@ -104,7 +104,7 @@ function loadPage(snapshot: unknown, sendStatus = 200) {
 		getSelection: () => ({
 			isCollapsed: selectionText === "",
 			rangeCount: selectionText === "" ? 0 : 1,
-			getRangeAt: () => ({ commonAncestorContainer: {}, getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 50, right: 200 }) }),
+			getRangeAt: () => ({ commonAncestorContainer: {}, getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 50, right: 200 }), cloneRange: () => ({ clone: selectionText }) }),
 			toString: () => selectionText,
 			removeAllRanges: () => {
 				selectionText = "";
@@ -130,6 +130,7 @@ function loadPage(snapshot: unknown, sendStatus = 200) {
 		Object,
 		Math,
 		isNaN,
+		...globals,
 	});
 	vm.runInContext(script, context);
 	const flush = async () => {
@@ -244,6 +245,51 @@ describe("annotate page script", () => {
 		remove.dispatch("click");
 		assert.equal(page.byId.get("count")!.textContent, "0");
 		assert.equal(page.byId.get("send")!.disabled, true);
+	});
+
+	function highlightApi() {
+		const registry = new Map<string, { ranges: unknown[] }>();
+		class Highlight {
+			ranges: unknown[];
+			constructor(...ranges: unknown[]) {
+				this.ranges = ranges;
+			}
+		}
+		return { registry, globals: { CSS: { highlights: registry }, Highlight } };
+	}
+
+	it("keeps the selection highlighted while the note box is open and clears it on Enter and Esc", async () => {
+		const { registry, globals } = highlightApi();
+		const page = loadPage({ takenAt: "", items: [{ id: "a1", kind: "assistant", label: "Assistant", text: "alpha beta" }] }, 200, globals);
+		await page.flush();
+		const note = page.byId.get("note")!;
+		page.select("alpha");
+		await page.flush();
+		assert.deepEqual(JSON.parse(JSON.stringify(registry.get("annotate-pending")?.ranges)), [{ clone: "alpha" }]);
+		note.dispatch("keydown", { key: "Enter" });
+		assert.equal(registry.has("annotate-pending"), false);
+		page.select("beta");
+		await page.flush();
+		assert.equal(registry.has("annotate-pending"), true);
+		note.dispatch("keydown", { key: "Escape" });
+		assert.equal(registry.has("annotate-pending"), false);
+		page.select("beta");
+		await page.flush();
+		page.select("alpha");
+		await page.flush();
+		assert.deepEqual(JSON.parse(JSON.stringify(registry.get("annotate-pending")?.ranges)), [{ clone: "alpha" }]);
+	});
+
+	it("falls back silently when the highlight API is missing or throws", async () => {
+		for (const globals of [{}, { CSS: {} }, { CSS: { highlights: { set() { throw new Error("no"); }, delete() { throw new Error("no"); } } }, Highlight: class {} }]) {
+			const page = loadPage({ takenAt: "", items: [{ id: "a1", kind: "assistant", label: "Assistant", text: "alpha" }] }, 200, globals);
+			await page.flush();
+			page.select("alpha");
+			await page.flush();
+			assert.equal(page.byId.get("composer")!.hidden, false);
+			page.byId.get("note")!.dispatch("keydown", { key: "Enter" });
+			assert.equal(page.byId.get("count")!.textContent, "1");
+		}
 	});
 
 	it("shows the session-switched message on 409", async () => {

@@ -39,6 +39,7 @@ textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); 
 #composer .quote { max-height: 90px; }
 #composer .hint { font-size: 12px; margin-top: 4px; }
 main.finished { display: block; }
+::highlight(annotate-pending) { background-color: rgba(47, 111, 222, .3); }
 .done { max-width: 560px; margin: 80px auto; text-align: center; }
 .done h2 { font-size: 20px; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { position: static; max-height: none; } }
@@ -81,6 +82,21 @@ main.finished { display: block; }
 	const annotations = [];
 	let pending = null;
 	let finished = false;
+	const highlights = typeof CSS !== "undefined" && CSS.highlights && typeof Highlight === "function" ? CSS.highlights : null;
+
+	function markPending(range) {
+		if (!highlights) return;
+		try {
+			highlights.set("annotate-pending", new Highlight(range.cloneRange()));
+		} catch {}
+	}
+
+	function clearPending() {
+		if (!highlights) return;
+		try {
+			highlights.delete("annotate-pending");
+		} catch {}
+	}
 
 	function el(tag, className, text) {
 		const node = document.createElement(tag);
@@ -152,11 +168,12 @@ main.finished { display: block; }
 		if (!conversation.contains(range.commonAncestorContainer)) return null;
 		const text = selection.toString();
 		if (text.trim() === "") return null;
-		return { text, rect: range.getBoundingClientRect() };
+		return { text, range, rect: range.getBoundingClientRect() };
 	}
 
 	function openComposer(found) {
 		pending = found.text;
+		markPending(found.range);
 		composerQuote.textContent = found.text;
 		composer.hidden = false;
 		const width = composer.offsetWidth;
@@ -171,6 +188,7 @@ main.finished { display: block; }
 
 	function closeComposer() {
 		pending = null;
+		clearPending();
 		note.value = "";
 		composer.hidden = true;
 		const selection = window.getSelection();
@@ -190,6 +208,7 @@ main.finished { display: block; }
 	document.addEventListener("mousedown", (event) => {
 		if (!composer.hidden && !composer.contains(event.target) && note.value.trim() === "") {
 			pending = null;
+			clearPending();
 			composer.hidden = true;
 		}
 	});
@@ -209,6 +228,7 @@ main.finished { display: block; }
 
 	function showDone(count) {
 		finished = true;
+		clearPending();
 		const panel = el("section", "done");
 		panel.append(
 			el("h2", "", "Done"),
@@ -225,6 +245,7 @@ main.finished { display: block; }
 
 	function stop(message) {
 		finished = true;
+		clearPending();
 		composer.hidden = true;
 		sendButton.disabled = true;
 		setStatus(message, true);

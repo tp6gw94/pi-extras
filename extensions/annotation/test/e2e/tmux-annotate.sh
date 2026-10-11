@@ -207,6 +207,8 @@ if DRIVER == "browser":
     check("browser: the token is removed from the address bar", checks.get("tokenRemoved") is True)
     check("browser: tool output is collapsed until clicked", checks.get("toolCollapsed") is True and checks.get("toolExpanded") is True)
     check("browser: the composer quotes exactly the dragged text", result.get("selected", [])[:2] == ["The cache is LRU.", "cache-hit-ratio 0.93"], result.get("selected"))
+    check("browser: the selection stays highlighted while the note box has focus", checks.get("highlightWhileOpen") == ["The cache is LRU."] and checks.get("focusInNote") is True and checks.get("highlightBeforeEsc") == ["oldest entry"], checks)
+    check("browser: the highlight is gone after Enter and after Esc", checks.get("highlightAfterEnter") is None and checks.get("highlightAfterEsc") is None, checks)
     check("browser: Esc discards, Delete removes", checks.get("escDiscarded") is True and checks.get("listCount") == 2)
     check("browser: the page shows done", "Done" in (result.get("doneText") or ""), result.get("doneText"))
     check("browser: no page errors", result.get("errors") == [], result.get("errors"))
