@@ -264,9 +264,6 @@ export class FleetManager {
     });
     task.template = undefined;
     if (!this.alive(task)) return;
-    for (const message of Array.isArray(prepared?.warnings) ? prepared.warnings : []) {
-      await task.journal.append("fleet", { type: "warning", message: String(message) });
-    }
     if (!prepared || prepared.sessionFile !== lease.sessionFile) throw new Error("Prepared session file does not match the owned session lease");
     if (prepared.binding && (prepared.binding.taskId !== task.binding.taskId || prepared.binding.ownerId !== task.binding.ownerId || prepared.binding.nonce !== task.binding.nonce)) {
       throw new Error("Prepared launch binding does not match the owned task");

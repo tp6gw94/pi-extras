@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-extras is one [pi](https://github.com/earendil-works/pi) package with eight extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
+pi-extras is one [pi](https://github.com/earendil-works/pi) package with seven extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
 
 pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on Node.js 22.
 
@@ -10,7 +10,6 @@ pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on No
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
-| `deepinfra-provider` | Adds DeepInfra as a model provider, with its model list and priority service tier. Needs `DEEPINFRA_API_KEY`. | |
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |
@@ -35,11 +34,11 @@ To install it for the current project only, add `--local`. pi then writes the pa
 pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-When pi starts, it lists the eight extensions under `[Extensions]`:
+When pi starts, it lists the seven extensions under `[Extensions]`:
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:deepinfra-provider, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
+  tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
 tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
@@ -76,7 +75,7 @@ Personal settings live in `~/.pi/agent/settings.json`, and project settings in `
 	"packages": [
 		{
 			"source": "git:github.com/tp6gw94/pi-extras",
-			"extensions": ["!extensions/ralph/index.ts", "!extensions/deepinfra-provider/index.ts"]
+			"extensions": ["!extensions/ralph/index.ts", "!extensions/resume-handoff/index.ts"]
 		}
 	]
 }

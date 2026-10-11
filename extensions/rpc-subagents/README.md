@@ -283,9 +283,7 @@ opener 不可用時，回傳 `status: "unavailable"`、原因與已 quote 的獨
 
 這些 bootstrap 來源必須能在不等待啟動期使用者對話的情況下完成 `session_start`。
 
-child 會載入同一個 pi-extras 套件裡的 `deepinfra-provider`：路徑由擴充功能自己的位置（`import.meta.url`）推得 `../deepinfra-provider/index.ts`，不讀取 agent 目錄裡的舊安裝。若該檔案不存在，或你已用套件的 extension filter 關掉 `deepinfra-provider`（例如 `"!extensions/deepinfra-provider/index.ts"`，或 `pi config` 寫入的 `"-extensions/deepinfra-provider/index.ts"`），child 不載入它，照常啟動；主 Pi 在 TUI 顯示一次警告，任務事件記錄也寫入一筆 `warning`。是否關掉由 pi 自己的套件解析判斷，套用全域與任務 cwd 的專案設定。
-
-agent 目錄裡已存在的 `extensions/opencode-provider` 與 npm 安裝的 `npm/node_modules/pi-claude-bridge` 也會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
+agent 目錄裡已存在的 `extensions/opencode-provider` 與 npm 安裝的 `npm/node_modules/pi-claude-bridge` 會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
 
 若需要其他 provider，參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。擴充功能不掃描任意 extension 來猜測 provider，也不安裝來源或修改使用者設定。
 

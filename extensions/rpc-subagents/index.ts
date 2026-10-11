@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildSessionProjection, DefaultPackageManager, getAgentDir, getPackageDir, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { projectKey } from "./store.mjs";
 import { normalizeTaskSpec } from "./domain.mjs";
 import { COORDINATION_LIMITS } from "./coordination.mjs";
 import { captureBranch } from "./snapshot.mjs";
-import { canonicalCwd, createTaskPreparer, loadLocalConfig, packageExtensionEnabled, resolveCliEntrypoint } from "./runtime.mjs";
+import { canonicalCwd, createTaskPreparer, loadLocalConfig, resolveCliEntrypoint } from "./runtime.mjs";
 import { prepareStorage } from "./storage.mjs";
 import { HerdrOpener, createHerdrCliAdapter, viewerCommand } from "./herdr.mjs";
 import { installFleetWidget, showFleetScreen, type FleetUIModel, type FleetWidgetController } from "./ui.ts";
@@ -102,16 +102,9 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     if (copied.length && notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(`RPC subagents 已將舊位置的資料複製到新位置（只做一次，舊檔案保留不動）：${copied.join("；")}`), "info");
     const config = await loadLocalConfig(storage.configFile);
     const cliPath = resolveCliEntrypoint(getPackageDir());
-    const warned = new Set<string>();
-    const warn = (message: string) => {
-      if (warned.has(message)) return;
-      warned.add(message);
-      if (notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(`RPC subagents: ${message}`), "warning");
-    };
     const fleet = new FleetManager({ root, concurrency: config.concurrency, dialogTimeoutMs: config.dialogTimeoutMs,
       journalOptions: { maxBytes: config.maxEventBytes },
-      prepare: createTaskPreparer({ extensionDir, configDir: storage.configDir, agentDir, cliPath, config, warn,
-        isProviderEnabled: (path: string, cwd: string) => packageExtensionEnabled({ agentDir, cwd, path, DefaultPackageManager, SettingsManager }) }),
+      prepare: createTaskPreparer({ extensionDir, configDir: storage.configDir, agentDir, cliPath, config }),
     });
     const schedules = new Map<string, ScheduleManager>();
     const listeners = new Set<() => void>();

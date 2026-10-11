@@ -25,9 +25,8 @@ function headingLevels(text: string): number[] {
 }
 
 describe("package layout", () => {
-	it("has the eight extensions, each with an index.ts", () => {
+	it("has the seven extensions, each with an index.ts", () => {
 		assert.deepEqual(extensions, [
-			"deepinfra-provider",
 			"hooks",
 			"inline-skills",
 			"ralph",
@@ -39,9 +38,11 @@ describe("package layout", () => {
 		for (const name of extensions) assert.ok(existsSync(join(root, "extensions", name, "index.ts")), name);
 	});
 
-	it("does not ship herdr-agent-state, which herdr installs and manages itself", () => {
-		assert.ok(!existsSync(join(root, "extensions", "herdr-agent-state")));
-		for (const file of ["README.md", "README.zh-TW.md", "scripts/acceptance.sh"]) assert.ok(!read(file).includes("herdr-agent-state"), file);
+	it("does not ship herdr-agent-state or deepinfra-provider", () => {
+		for (const name of ["herdr-agent-state", "deepinfra-provider"]) {
+			assert.ok(!existsSync(join(root, "extensions", name)), name);
+			for (const file of ["README.md", "README.zh-TW.md", "scripts/acceptance.sh", "package.json"]) assert.ok(!read(file).includes(name), `${name} in ${file}`);
+		}
 	});
 
 	it("loads every extensions/<name>/index.ts through one manifest glob", () => {
