@@ -94,6 +94,8 @@ An empty list, `"extensions": []`, loads none of the extensions. Leave out `exte
 
 ## Development
 
+Development needs Node 22 or later (`.nvmrc` pins 22, so `nvm use` picks it).
+
 ```sh
 npm install
 npm test
@@ -101,7 +103,7 @@ npm run typecheck
 ```
 
 - `npm test` runs the tests of every extension, both `.ts` and `.mjs`. The `rpc-subagents` tests that need an installed pi skip unless you set `RPC_SUBAGENTS_PI_PACKAGE` to a global pi install, for example `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`.
-- `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`. `ralph` and the `skill-name-normalizer` tests are not type-checked yet.
+- `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`.
 - `scripts/acceptance.sh` installs pi-extras from git into a throwaway home directory and checks what pi loads, with all extensions, with a settings filter, and after `pi config`.
 
 pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions, so `package.json` lists them as `"*"` peer dependencies. `croner` is the only runtime dependency.
