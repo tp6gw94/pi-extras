@@ -78,7 +78,7 @@ export function installFleetWidget(ctx: ExtensionContext, model: FleetUIModel): 
         const usable = Math.max(1, width);
         const lines = [theme.fg("accent", `RPC subagents  \uf0ae ${active.length}  ${expanded ? "\uf078 expanded" : "\uf054 collapsed"} Ctrl+O  /rpc-subagents`)];
         for (const task of active.slice(0, 3)) {
-          lines.push(`${shortId(task.taskId)} ${row(task.name)} ${row(task.model.provider)}/${row(task.model.id)} ${row(task.thinking ?? "unknown")} ${row(label(task.status))} ${elapsed(task)}${timeoutLabel(task)} ${row(task.currentTools.join(", "))}${tpsSuffix(task)}`);
+          lines.push(`${statusCell(task.status)} ${shortId(task.taskId)} ${row(task.name)} ${row(task.model.provider)}/${row(task.model.id)} ${row(task.thinking ?? "unknown")} ${elapsed(task)}${timeoutLabel(task)} ${row(task.currentTools.join(", "))}${tpsSuffix(task)}`);
         }
         if (active.length > 3) lines.push(`${active.length - 3} more tasks`);
         if (next) lines.push(`Next schedule ${shortId(next.scheduleId)} ${row(next.name)} ${formatTime(next.nextAt!)}`);

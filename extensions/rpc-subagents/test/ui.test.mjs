@@ -100,7 +100,7 @@ for (const [status, icon] of statusIcons) {
       const { widget, controller } = mountWidget(harness);
       try {
         const terminalStatus = ["completed", "failed", "cancelled", "interrupted"].includes(status);
-        if (!terminalStatus) assert.ok(widget.render(200)[1].includes(` ${icon} `));
+        if (!terminalStatus) assert.ok(widget.render(200)[1].startsWith(`${icon} `), "widget rows start with the status icon");
         controller.toggle();
         assert.ok(widget.render(200).join("\n").includes(` output ${icon}`));
         for (const width of [1, 7, 20, 80]) harness.widths(widget.render(width), width);
@@ -147,7 +147,7 @@ test("output preview starts folded, preserves summary rows, toggles immediately,
     assert.ok(folded[0].includes("\uf054 collapsed Ctrl+O"));
     assert.ok(folded[0].includes("/rpc-subagents"));
     assert.equal(folded.length, 3);
-    assert.ok(folded[1].startsWith("task a b"));
+    assert.ok(folded[1].startsWith("\uf04b task a b"));
     assert.ok(folded[2].startsWith("Next schedule sche "));
     assert.equal(folded.join("\n").includes(current.text), false);
     current = { ...current, get text() { throw new Error("Folded output must not read task text"); } };
@@ -390,8 +390,8 @@ for (const [name, fields, thinking, timeout] of [
     code.installFleetWidget({ mode: "tui", ui: { getToolsExpanded, setWidget: (_name, factory) => { widget = factory(tui, theme); } } }, model);
     try {
       const widgetRow = widget.render(200)[1];
-      assert.ok(widgetRow.startsWith(`96cd scout opencode-go/deepseek-v4.1-flash ${thinking} \uf04b `));
-      assert.match(widgetRow, new RegExp(`\uf04b \\d+s${timeout.replace(".", "\\.")} .* \uf0e7 — tok/s$`));
+      assert.ok(widgetRow.startsWith(`\uf04b 96cd scout opencode-go/deepseek-v4.1-flash ${thinking} `));
+      assert.match(widgetRow, new RegExp(` ${thinking} \\d+s${timeout.replace(".", "\\.")} .* \uf0e7 — tok/s$`));
       assert.equal(widgetRow.includes("running"), false);
       assert.equal(widgetRow.includes("timeout="), false);
       if (!timeout) assert.equal(widgetRow.includes("\uf252"), false);
@@ -530,8 +530,8 @@ test("running rows end with TPS, finished rows show none, and details keep full 
   harness.model.tasks = () => [known];
   const { widget, controller } = mountWidget(harness);
   try {
-    const widgetRow = widget.render(400).find((line) => line.startsWith("tps- "));
-    assert.ok(widgetRow.startsWith("tps- a very long task name"), "widget keeps the four-character prefix");
+    const widgetRow = widget.render(400).find((line) => line.includes(" tps- "));
+    assert.ok(widgetRow.startsWith("\uf04b tps- a very long task name"), "widget rows start with the status, then the four-character prefix");
     assert.ok(widgetRow.endsWith("\uf0e7 12.5 tok/s"), "widget TPS is the final suffix");
     assert.equal(widgetRow.includes("tps-known-123456"), false, "widget summary keeps only the four-character prefix");
     controller.toggle();
@@ -598,6 +598,24 @@ test("the status column is padded to the widest status label so task IDs align",
   await harness.code.showFleetScreen(ctx, harness.model, {});
 });
 
+test("widget rows start with the padded status so IDs align, and finished tasks get no row or TPS", options, () => {
+  const harness = setup();
+  const statuses = statusIcons.slice(0, 9).map(([status]) => status);
+  harness.model.tasks = () => statuses.map((status, index) => ({ ...task, taskId: `id${index}-task`, name: `task ${status}`, status, state: { status, dialogs: [], requests: [] }, tps: 3.5 }));
+  harness.model.schedules = () => [];
+  harness.tui.terminal.rows = 40;
+  const { widget } = mountWidget(harness);
+  try {
+    const rows = Array.from(widget.render(200)).filter((line) => /\bid\d-/.test(line));
+    const live = statuses.filter((status) => !terminalTaskStates.has(status)).slice(0, 3);
+    assert.deepEqual(rows.map((line) => line.slice(0, 1)), live.map((status) => Object.fromEntries(statusIcons)[status]), "each widget row starts with its status icon");
+    const columns = rows.map((line) => tuiApi.visibleWidth(line.slice(0, line.search(/id\d/))));
+    assert.deepEqual(columns, rows.map(() => harness.code.STATUS_WIDTH + 1), "every ID starts right after the padded status column");
+    assert.ok(rows.every((line) => line.endsWith(" \uf0e7 3.5 tok/s")), "live widget rows end with TPS");
+    for (const status of terminalTaskStates) assert.equal(widget.render(200).some((line) => line.includes(`task ${status}`)), false, `${status} tasks get no widget row`);
+  } finally { widget.dispose(); }
+});
+
 test("colliding four-character prefixes keep list rows abbreviated while actions dispatch the full task ID", options, async () => {
   const harness = setup();
   const first = { ...task, taskId: "coll-aaaa-task", name: "first", tps: 1.5 };
@@ -636,8 +654,8 @@ test("nonfinite and negative TPS values render the placeholder", options, () => 
   const { widget } = mountWidget(harness);
   try {
     const rendered = widget.render(200);
-    assert.ok(rendered[1].startsWith("tps- negative ") && rendered[1].endsWith("\uf0e7 — tok/s"));
-    assert.ok(rendered[2].startsWith("tps- nonfinite ") && rendered[2].endsWith("\uf0e7 — tok/s"));
+    assert.ok(rendered[1].startsWith("\uf04b tps- negative ") && rendered[1].endsWith("\uf0e7 — tok/s"));
+    assert.ok(rendered[2].startsWith("\uf04b tps- nonfinite ") && rendered[2].endsWith("\uf0e7 — tok/s"));
   } finally { widget.dispose(); }
 });
 
