@@ -33,7 +33,7 @@ Each extension lives in `extensions/<name>/`, with its tests and any skills it s
 
 The page is a snapshot of the conversation when you ran `/annotate`. Running `/annotate` again while the page is open refreshes the snapshot and gives you the same URL. If you switch sessions (for example with `/new` or `/resume`) before you click Send, pi rejects the send and inserts nothing; run `/annotate` again in the new session.
 
-The server listens on `127.0.0.1` only, on a random port, and stops after a successful send, when the session ends, or after 30 minutes without requests. The URL holds a one-time token; the page removes it from the address bar as soon as it loads. Treat it like a password: anyone who can reach the port with the token can put text into your editor (but cannot send it to the model).
+The server listens on `127.0.0.1` only, on a random port, and stops after a successful send, when the session ends, or after 30 minutes without requests. The URL holds a one-time token; the page removes it from the address bar as soon as it loads, so reloading the tab does not work: run `/annotate` again to open the page. Treat it like a password: anyone who can reach the port with the token can put text into your editor (but cannot send it to the model).
 
 ### Over SSH
 
