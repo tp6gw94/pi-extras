@@ -10,7 +10,7 @@ describe("annotation docs", () => {
 			const text = read(name);
 			const section = text.slice(text.indexOf("## Annotation"), text.indexOf("\n## ", text.indexOf("## Annotation") + 1));
 			assert.ok(section.length > 500);
-			for (const needle of ["/annotate", "127.0.0.1", "ssh -L 41234:127.0.0.1:41234 <host>", "SSH_CONNECTION", "xdg-open", "30", "Send to pi editor", "/new"]) {
+			for (const needle of ["/annotate", "127.0.0.1", "ssh -L 41234:127.0.0.1:41234 <host>", "SSH_CONNECTION", "xdg-open", "30", "Send to pi editor", "/new", "[paste #1]"]) {
 				assert.ok(section.includes(needle), `${name}: ${needle}`);
 			}
 			assert.ok(text.includes("[Annotation](#annotation)"));

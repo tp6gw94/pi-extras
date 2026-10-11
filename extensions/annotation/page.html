@@ -67,6 +67,7 @@ main.finished { display: block; }
 (() => {
 	"use strict";
 	const token = new URLSearchParams(location.search).get("token") || "";
+	history.replaceState(null, "", location.pathname);
 	const byId = (id) => document.getElementById(id);
 	const conversation = byId("conversation");
 	const list = byId("list");

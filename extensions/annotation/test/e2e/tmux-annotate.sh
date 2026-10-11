@@ -76,7 +76,7 @@ cat >"$PI_HOME/.pi/agent/models.json" <<JSON
 JSON
 
 echo "pi $(HOME=$PI_HOME "$PI_BIN/pi" --version 2>/dev/null), $TUI_MODE, driver $DRIVER, in $WORK"
-tmux new-session -d -s "$S" -x 120 -y 36 -c "$WORK/project" \
+tmux new-session -d -s "$S" -x 120 -y 50 -c "$WORK/project" \
 	"export HOME='$PI_HOME' PATH='$WORK/bin:$PI_BIN:$PATH' TERM=xterm-256color ANNOTATE_EDITOR_PROBE='$WORK/editor.json'; unset PI_CODING_AGENT_DIR SSH_CONNECTION DISPLAY; pi --tui-mode $TUI_MODE --provider fake --model fake-model --extension '$ROOT/index.ts' --extension '$HERE/editor-probe.ts'; echo PI_EXITED \$?; sleep 600"
 
 set +e
@@ -196,6 +196,7 @@ check("nothing was inserted by the rejected sends", (editor() or {}).get("editor
 
 text("Please review:")
 wait(lambda: (editor() or {}).get("editor") == "Please review:", 5)
+keys("Home"); time.sleep(0.3)
 
 if DRIVER == "browser":
     run = subprocess.run(["node", f"{HERE}/browser.mjs", "annotate", url, SHOTS], capture_output=True, text=True, timeout=120)
@@ -203,6 +204,7 @@ if DRIVER == "browser":
     check("the browser flow finished", run.returncode == 0, run.stderr[-1500:])
     checks = result.get("checks", {})
     check("browser: <img onerror> in the conversation is inert text", checks.get("xssInert") == {"images": 0, "pwned": "undefined", "literal": True}, checks.get("xssInert"))
+    check("browser: the token is removed from the address bar", checks.get("tokenRemoved") is True)
     check("browser: tool output is collapsed until clicked", checks.get("toolCollapsed") is True and checks.get("toolExpanded") is True)
     check("browser: the composer quotes exactly the dragged text", result.get("selected", [])[:2] == ["The cache is LRU.", "cache-hit-ratio 0.93"], result.get("selected"))
     check("browser: Esc discards, Delete removes", checks.get("escDiscarded") is True and checks.get("listCount") == 2)
@@ -211,19 +213,19 @@ if DRIVER == "browser":
     print("screenshots: " + " ".join(result.get("screenshots", [])))
     expected = "Please review:\n> The cache is LRU.\n\nwhy LRU and not LFU?\n\n> cache-hit-ratio 0.93\n\nline one\nline two\n\n"
 else:
-    items = [{"quote": "The cache is LRU.", "note": "why LRU?"}, {"quote": "cache-hit-ratio 0.93", "note": ""}]
+    items = [{"quote": "The cache is LRU.", "note": "why LRU?"}, {"quote": "cache-hit-ratio 0.93", "note": "line one\nline two"}, {"quote": "It evicts the oldest entry first.", "note": "ok"}]
     status, body = call(port, "POST", "/api/send", json_headers, json.dumps({"items": items}))
-    check("send with the token, Host and JSON is accepted", status == 200 and json.loads(body) == {"ok": True, "inserted": 2}, f"{status} {body}")
-    expected = "Please review:\n> The cache is LRU.\n\nwhy LRU?\n\n> cache-hit-ratio 0.93\n\n"
+    check("send with the token, Host and JSON is accepted", status == 200 and json.loads(body) == {"ok": True, "inserted": 3}, f"{status} {body}")
+    expected = "Please review:\n> The cache is LRU.\n\nwhy LRU?\n\n> cache-hit-ratio 0.93\n\nline one\nline two\n\n> It evicts the oldest entry first.\n\nok\n\n"
 
 got = wait(lambda: (editor() or {}).get("editor") == expected and editor(), 5)
-check("the editor holds the draft and every annotation in one insert", bool(got), repr((editor() or {}).get("editor")))
+check("the annotations are appended after the draft with one newline, though the cursor was at the start", bool(got), repr((editor() or {}).get("editor")))
 time.sleep(1)
 screen = cap("03-inserted")
-if len(expected[len("Please review:"):].split("\n")) > 10:
-    check("the editor shows pi's paste marker for a long insert", "Please review:[paste #1 +" in screen, screen[-800:])
-else:
-    check("the editor shows the quotes on screen", "> The cache is LRU." in screen and "> cache-hit-ratio 0.93" in screen, screen[-800:])
+shown = [l.rstrip() for l in screen.split("\n")]
+wanted = [l for l in expected.split("\n") if l]
+appended = expected[len("Please review:"):].split("\n")
+check(f"the {len(appended)}-line insert is shown in full in the input box, without a [paste # marker", len(appended) > 10 and all(l in shown for l in wanted) and "[paste #" not in screen and "more ─" not in screen, screen[-1500:])
 check("the status no longer says the page is open", "annotate: page open" not in screen.split("\n", 1)[-1][-600:])
 time.sleep(2)
 check("the model received no new request", requests() == before, f"{requests()} vs {before}")
@@ -233,11 +235,32 @@ time.sleep(0.6)
 status, _ = call(port, "GET", "/api/snapshot", {"Host": f"127.0.0.1:{port}", "X-Annotate-Token": token})
 check("the server is closed after the send", status is None, status)
 
+def annotate_and_send(draft, label):
+    keys("C-c"); time.sleep(0.5)
+    wait(lambda: (editor() or {}).get("editor") == "", 5)
+    count = len(opened())
+    text("/annotate"); keys("Enter")
+    wait(lambda: len(opened()) == count + 1, 10)
+    u = urlparse(opened()[-1])
+    if draft:
+        text("/probe-set-editor " + json.dumps(draft)); keys("Enter")
+    ok = wait(lambda: (editor() or {}).get("editor") == draft, 5)
+    status, _ = call(u.port, "POST", "/api/send", {"Host": f"127.0.0.1:{u.port}", "X-Annotate-Token": parse_qs(u.query)["token"][0], "Content-Type": "application/json"}, json.dumps({"items": [{"quote": "It evicts the oldest entry first.", "note": "ok"}]}))
+    want = draft + "> It evicts the oldest entry first.\n\nok\n\n"
+    got = wait(lambda: (editor() or {}).get("editor") == want, 5)
+    check(f"append {label}", ok and status == 200 and bool(got), f"{status} {(editor() or {}).get('editor')!r}")
+    time.sleep(0.5)
+
+annotate_and_send("Ends with a newline\n", "after text ending in a newline adds no extra newline")
+annotate_and_send("", "into an empty input box starts with the quote")
+check("the model received no new request", requests() == before, f"{requests()} vs {before}")
+
 keys("C-c"); time.sleep(0.5)
 wait(lambda: (editor() or {}).get("editor") == "", 5)
 session_before = (editor() or {}).get("session")
+count = len(opened())
 text("/annotate"); keys("Enter")
-wait(lambda: len(opened()) == 3, 10)
+wait(lambda: len(opened()) == count + 1, 10)
 url2 = opened()[-1]
 check("a new /annotate gets a new URL", url2 != url, url2)
 p2 = urlparse(url2)

@@ -29,11 +29,11 @@ Each extension lives in `extensions/<name>/`, with its tests and any skills it s
 2. The page shows your messages, the assistant's replies and tool outputs. Tool outputs are collapsed; click one to expand it.
 3. Select text. A note box appears next to the selection. Type a note and press Enter to add the quote and note to the list on the right. Shift+Enter starts a new line, Esc discards.
 4. Edit or delete items in the list.
-5. Click **Send to pi editor**. pi inserts every item into the editor, in list order, as a `> quote` block, the note and a blank line. Nothing is sent to the model; you edit the text and send it yourself. The page then shows Done.
+5. Click **Send to pi editor**. pi appends every item to the end of the input box, in list order, as a `> quote` block, the note and a blank line. If the input box already has text that does not end with a newline, pi adds one first. The full text stays visible and editable in the input box (it is not collapsed into a `[paste #1]` marker). Nothing is sent to the model; you edit the text and send it yourself. The page then shows Done.
 
 The page is a snapshot of the conversation when you ran `/annotate`. Running `/annotate` again while the page is open refreshes the snapshot and gives you the same URL. If you switch sessions (for example with `/new` or `/resume`) before you click Send, pi rejects the send and inserts nothing; run `/annotate` again in the new session.
 
-The server listens on `127.0.0.1` only, on a random port, and stops after a successful send, when the session ends, or after 30 minutes without requests. The URL holds a one-time token. Treat it like a password: anyone who can reach the port with the token can put text into your editor (but cannot send it to the model).
+The server listens on `127.0.0.1` only, on a random port, and stops after a successful send, when the session ends, or after 30 minutes without requests. The URL holds a one-time token; the page removes it from the address bar as soon as it loads. Treat it like a password: anyone who can reach the port with the token can put text into your editor (but cannot send it to the model).
 
 ### Over SSH
 

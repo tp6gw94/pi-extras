@@ -75,6 +75,14 @@ function loadPage(snapshot: unknown, sendStatus = 200) {
 	const requests: { path: string; init: Record<string, unknown> }[] = [];
 	let selectionText = "";
 	const timers: (() => void)[] = [];
+	const location = { pathname: "/", search: "?token=tok123" };
+	const history = {
+		calls: [] as unknown[][],
+		replaceState(...args: unknown[]) {
+			this.calls.push(args);
+			location.search = "";
+		},
+	};
 	const document = {
 		getElementById: (id: string) => byId.get(id),
 		createElement: (tag: string) => {
@@ -112,7 +120,8 @@ function loadPage(snapshot: unknown, sendStatus = 200) {
 		document,
 		window,
 		fetch,
-		location: { search: "?token=tok123" },
+		location,
+		history,
 		URLSearchParams,
 		setTimeout: (fn: () => void) => timers.push(fn),
 		JSON,
@@ -131,7 +140,7 @@ function loadPage(snapshot: unknown, sendStatus = 200) {
 		selectionText = text;
 		byId.get("conversation")!.dispatch("mouseup");
 	};
-	return { byId, main, created, requests, flush, select };
+	return { byId, main, created, requests, flush, select, history, location };
 }
 
 describe("annotate page script", () => {
@@ -165,6 +174,14 @@ describe("annotate page script", () => {
 		const page = loadPage({ takenAt: "", items: [] });
 		await page.flush();
 		assert.equal(page.requests[0]!.path, "/api/snapshot");
+		assert.deepEqual(JSON.parse(JSON.stringify(page.requests[0]!.init.headers)), { "X-Annotate-Token": "tok123" });
+	});
+
+	it("removes the token from the address bar right after reading it", async () => {
+		const page = loadPage({ takenAt: "", items: [] });
+		assert.deepEqual(JSON.parse(JSON.stringify(page.history.calls)), [[null, "", "/"]]);
+		assert.equal(page.location.search, "");
+		await page.flush();
 		assert.deepEqual(JSON.parse(JSON.stringify(page.requests[0]!.init.headers)), { "X-Annotate-Token": "tok123" });
 	});
 

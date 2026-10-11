@@ -17,6 +17,17 @@ export default function (pi: ExtensionAPI) {
 		}, 200);
 		timer.unref();
 	});
+	pi.registerCommand("probe-set-editor", {
+		description: "test: set the editor text to a JSON string argument",
+		handler: async (args, ctx) => {
+			const text = JSON.parse(args.trim());
+			setTimeout(() => {
+				try {
+					ctx.ui.setEditorText(text);
+				} catch {}
+			}, 150);
+		},
+	});
 	pi.on("session_shutdown", () => {
 		if (timer) clearInterval(timer);
 	});

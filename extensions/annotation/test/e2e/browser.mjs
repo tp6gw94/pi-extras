@@ -68,6 +68,7 @@ result.checks.xssInert = await page.evaluate(() => ({
 	pwned: typeof window.__pwned,
 	literal: document.getElementById("conversation").textContent.includes("<img src=x onerror=window.__pwned=1>"),
 }));
+result.checks.tokenRemoved = !page.url().includes("token") && (await page.evaluate(() => location.href)) === new URL("/", url).href;
 result.checks.toolCollapsed = await page.evaluate(() => [...document.querySelectorAll("#conversation details")].every((d) => !d.open));
 await shot(mode === "annotate" ? "01-page" : "s1-page");
 

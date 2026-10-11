@@ -26,12 +26,13 @@ const branch = [
 	{ type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "The cache is LRU." }] } },
 ];
 
-function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; hasUI?: boolean } = {}) {
+function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string } = {}) {
 	const commands = new Map<string, Handler>();
 	const events = new Map<string, (...args: unknown[]) => unknown>();
 	const execs: { command: string; args: string[] }[] = [];
 	const notices: string[] = [];
-	const pastes: string[] = [];
+	const sets: string[] = [];
+	let editorText = options.editor ?? "draft";
 	const statuses: (string | undefined)[] = [];
 	const userMessages: unknown[] = [];
 	let stale = false;
@@ -66,13 +67,17 @@ function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; h
 				guard();
 				notices.push(message);
 			},
-			pasteToEditor: (text: string) => {
+			pasteToEditor: () => {
+				throw new Error("pasteToEditor must not be used");
+			},
+			setEditorText: (text: string) => {
 				guard();
-				pastes.push(text);
+				sets.push(text);
+				editorText = text;
 			},
 			getEditorText: () => {
 				guard();
-				return "draft";
+				return editorText;
 			},
 			setStatus: (_key: string, text: string | undefined) => {
 				guard();
@@ -88,7 +93,8 @@ function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; h
 		lastUrl,
 		execs,
 		notices,
-		pastes,
+		sets,
+		editor: () => editorText,
 		statuses,
 		userMessages,
 		shutdown: () => events.get("session_shutdown")!({ type: "session_shutdown" }, ctx),
@@ -151,7 +157,7 @@ describe("/annotate command", () => {
 		assert.equal(t.execs.length, 0);
 	});
 
-	it("pastes all annotations into the editor in one insert and never messages the agent", async () => {
+	it("appends all annotations to the end of the editor in one set and never messages the agent", async () => {
 		const t = setup();
 		cleanups.push(t.shutdown);
 		await t.run();
@@ -163,13 +169,38 @@ describe("/annotate command", () => {
 			],
 		});
 		assert.equal(reply.status, 200);
-		assert.deepEqual(t.pastes, ["\n> The cache is LRU.\n\nwhy LRU?\n\n> explain\n> the cache\n\n"]);
+		assert.deepEqual(t.sets, ["draft\n> The cache is LRU.\n\nwhy LRU?\n\n> explain\n> the cache\n\n"]);
 		assert.equal(t.userMessages.length, 0);
 		assert.equal(t.statuses.at(-1), undefined);
 		assert.match(t.notices.at(-1)!, /inserted 2 annotations/);
 		const again = await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] });
 		assert.equal(again.status, 410);
-		assert.equal(t.pastes.length, 1);
+		assert.equal(t.sets.length, 1);
+	});
+
+	for (const [editor, expected] of [
+		["", "> quote\n\nnote\n\n"],
+		["draft", "draft\n> quote\n\nnote\n\n"],
+		["draft\n", "draft\n> quote\n\nnote\n\n"],
+		["a\n\n", "a\n\n> quote\n\nnote\n\n"],
+	] as const) {
+		it(`appends after ${JSON.stringify(editor)} with one newline only when needed`, async () => {
+			const t = setup({ editor });
+			cleanups.push(t.shutdown);
+			await t.run();
+			const url = new URL(t.lastUrl());
+			assert.equal((await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "quote", note: "note" }] })).status, 200);
+			assert.equal(t.editor(), expected);
+		});
+	}
+
+	it("strips control sequences before appending", async () => {
+		const t = setup({ editor: "" });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const url = new URL(t.lastUrl());
+		await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "\x1b[31mred\x1b[0m", note: "n\x1b]0;x\x07\x1b[201~" }] });
+		assert.equal(t.editor(), "> red\n\nn\n\n");
 	});
 
 	it("rejects the send when the session switched and inserts nothing", async () => {
@@ -181,7 +212,7 @@ describe("/annotate command", () => {
 		const reply = await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] });
 		assert.equal(reply.status, 409);
 		assert.match(reply.body, /Session switched, run \/annotate again/);
-		assert.equal(t.pastes.length, 0);
+		assert.equal(t.sets.length, 0);
 	});
 
 	it("rejects the send when the ctx went stale and inserts nothing", async () => {
@@ -191,7 +222,7 @@ describe("/annotate command", () => {
 		t.makeStale();
 		const reply = await post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] });
 		assert.equal(reply.status, 409);
-		assert.equal(t.pastes.length, 0);
+		assert.equal(t.sets.length, 0);
 		t.shutdown();
 	});
 
@@ -201,7 +232,7 @@ describe("/annotate command", () => {
 		const url = new URL(t.lastUrl());
 		t.shutdown();
 		await assert.rejects(post(url.href, url.searchParams.get("token")!, { items: [{ quote: "x", note: "" }] }));
-		assert.equal(t.pastes.length, 0);
+		assert.equal(t.sets.length, 0);
 	});
 
 	it("keeps only one server across extension instances", async () => {

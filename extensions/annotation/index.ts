@@ -83,9 +83,10 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 				},
 				onSend: (items: Annotation[]) => {
 					try {
-						const text = annotationsText(items, ctx.ui.getEditorText());
+						const current = ctx.ui.getEditorText();
+						const text = annotationsText(items, current);
 						if (text === undefined) throw new Error("nothing to insert");
-						ctx.ui.pasteToEditor(text);
+						ctx.ui.setEditorText(current + text);
 						ctx.ui.setStatus(STATUS_KEY, undefined);
 						ctx.ui.notify(`annotate: inserted ${items.length} annotation${items.length === 1 ? "" : "s"} into the editor`, "info");
 						return items.length;
