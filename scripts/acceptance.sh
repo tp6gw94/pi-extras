@@ -5,7 +5,7 @@ PI_BIN=$(cd "${1:?usage: scripts/acceptance.sh <pi bin dir> <git ref> [out dir]}
 REF=${2:?usage: scripts/acceptance.sh <pi bin dir> <git ref> [out dir]}
 OUT=${3:-/tmp/pi-extras-acceptance}
 SRC="git:github.com/tp6gw94/pi-extras@$REF"
-ALL=(hooks inline-skills ralph resume-handoff rpc-subagents skill-name-normalizer ux)
+ALL=(annotation hooks inline-skills ralph resume-handoff rpc-subagents skill-name-normalizer ux)
 T=$(mktemp -d /tmp/pi-extras-acc.XXXXXX)
 export HOME=$T/home PATH="$PI_BIN:$PATH"
 unset PI_CODING_AGENT_DIR
@@ -49,12 +49,12 @@ cp "$SETTINGS" "$OUT/settings-installed.json"
 
 capture_start "$OUT/1-all.txt"
 expect_loaded "1 install" "$OUT/1-all.txt" "${ALL[@]}"
-SIX=(hooks inline-skills resume-handoff rpc-subagents skill-name-normalizer ux)
+SEVEN=(annotation hooks inline-skills resume-handoff rpc-subagents skill-name-normalizer ux)
 
 printf '{\n\t"packages": [\n\t\t{\n\t\t\t"source": "%s",\n\t\t\t"extensions": ["!extensions/ralph/index.ts"]\n\t\t}\n\t]\n}\n' "$SRC" >"$SETTINGS"
 cp "$SETTINGS" "$OUT/settings-filter.json"
 capture_start "$OUT/2-filter.txt"
-expect_loaded "2 settings filter" "$OUT/2-filter.txt" "${SIX[@]}"
+expect_loaded "2 settings filter" "$OUT/2-filter.txt" "${SEVEN[@]}"
 
 cp "$OUT/settings-installed.json" "$SETTINGS"
 tmux new-session -d -s $S -x 140 -y 45 -e HOME="$HOME" -e PATH="$PATH" -c "$T/project" "pi config; sleep 600"
@@ -70,7 +70,7 @@ tmux kill-session -t $S
 cp "$SETTINGS" "$OUT/settings-config.json"
 if grep -q '"-extensions/ralph/index.ts"' "$SETTINGS"; then echo 'PASS 3 pi config wrote "-extensions/ralph/index.ts"'; else echo "FAIL 3 pi config: $(cat "$SETTINGS")"; fail=1; fi
 capture_start "$OUT/3-config.txt"
-expect_loaded "3 pi config" "$OUT/3-config.txt" "${SIX[@]}"
+expect_loaded "3 pi config" "$OUT/3-config.txt" "${SEVEN[@]}"
 
 rm -rf "$T"
 exit $fail

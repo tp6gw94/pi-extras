@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>pi annotate</title>
+<style nonce="__NONCE__">
+:root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --muted: #6b6b70; --card: #ffffff; --line: #d9d9de; --accent: #2f6fde; --user: #eef4ff; --tool: #f4f4f6; --mark: #fff3bf; }
+@media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #e8e8ea; --muted: #9a9aa2; --card: #212126; --line: #34343b; --accent: #6f9cff; --user: #1f2a3d; --tool: #1c1c20; --mark: #4a4120; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: var(--card); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0; }
+#status { flex: 1; color: var(--muted); }
+#status.error { color: #d33; font-weight: 600; }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); padding: 4px 10px; }
+button:disabled { opacity: .5; cursor: default; }
+#send { background: var(--accent); border-color: var(--accent); color: #fff; padding: 6px 16px; font-weight: 600; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; padding: 20px; align-items: start; }
+#conversation { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.message { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.message.user { background: var(--user); }
+.message.tool { background: var(--tool); }
+.label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; user-select: none; }
+details > summary { cursor: pointer; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool .text { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 6px; max-height: 480px; overflow: auto; }
+aside { position: sticky; top: 64px; max-height: calc(100vh - 84px); overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+aside h2 { font-size: 14px; margin: 0 0 8px; }
+#list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.annotation { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.quote { margin: 0 0 6px; padding-left: 8px; border-left: 3px solid var(--accent); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
+textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px; resize: vertical; }
+.row { display: flex; justify-content: flex-end; margin-top: 4px; }
+.hint { color: var(--muted); margin: 0; }
+#composer { position: absolute; z-index: 5; width: 380px; max-width: calc(100vw - 16px); background: var(--card); border: 1px solid var(--accent); border-radius: 8px; padding: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+#composer .quote { max-height: 90px; }
+#composer .hint { font-size: 12px; margin-top: 4px; }
+main.finished { display: block; }
+.done { max-width: 560px; margin: 80px auto; text-align: center; }
+.done h2 { font-size: 20px; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { position: static; max-height: none; } }
+</style>
+</head>
+<body>
+<header>
+<h1>pi annotate</h1>
+<span id="status" role="status">Loading conversation…</span>
+<button id="send" type="button" disabled>Send to pi editor</button>
+</header>
+<main>
+<section id="conversation" aria-label="Conversation"></section>
+<aside aria-label="Annotations">
+<h2>Annotations (<span id="count">0</span>)</h2>
+<p id="empty" class="hint">Select text in the conversation, type a note and press Enter.</p>
+<ol id="list"></ol>
+</aside>
+</main>
+<div id="composer" hidden>
+<div id="composer-quote" class="quote"></div>
+<textarea id="note" rows="3" aria-label="Note" placeholder="Note"></textarea>
+<p class="hint">Enter adds · Shift+Enter new line · Esc discards</p>
+</div>
+<script nonce="__NONCE__">
+(() => {
+	"use strict";
+	const token = new URLSearchParams(location.search).get("token") || "";
+	history.replaceState(null, "", location.pathname);
+	const byId = (id) => document.getElementById(id);
+	const conversation = byId("conversation");
+	const list = byId("list");
+	const sendButton = byId("send");
+	const statusEl = byId("status");
+	const composer = byId("composer");
+	const composerQuote = byId("composer-quote");
+	const note = byId("note");
+	const countEl = byId("count");
+	const emptyEl = byId("empty");
+	const annotations = [];
+	let pending = null;
+	let finished = false;
+
+	function el(tag, className, text) {
+		const node = document.createElement(tag);
+		if (className) node.className = className;
+		if (text !== undefined) node.textContent = text;
+		return node;
+	}
+
+	function setStatus(text, isError) {
+		statusEl.textContent = text;
+		statusEl.className = isError ? "error" : "";
+	}
+
+	function api(path, init) {
+		const options = Object.assign({}, init);
+		options.headers = Object.assign({ "X-Annotate-Token": token }, init && init.headers);
+		options.cache = "no-store";
+		return fetch(path, options);
+	}
+
+	function renderConversation(snapshot) {
+		conversation.replaceChildren();
+		for (const item of snapshot.items) {
+			const block = el("article", "message " + item.kind);
+			const body = el("div", "text", item.text);
+			if (item.kind === "tool") {
+				const details = el("details");
+				details.append(el("summary", "label", item.label), body);
+				block.append(details);
+			} else {
+				block.append(el("div", "label", item.label), body);
+			}
+			conversation.append(block);
+		}
+		if (snapshot.items.length === 0) conversation.append(el("p", "hint", "This conversation has no messages yet."));
+	}
+
+	function renderList() {
+		list.replaceChildren();
+		annotations.forEach((annotation, index) => {
+			const item = el("li", "annotation");
+			const edit = el("textarea");
+			edit.rows = 2;
+			edit.value = annotation.note;
+			edit.setAttribute("aria-label", "Note " + (index + 1));
+			edit.addEventListener("input", () => {
+				annotation.note = edit.value;
+			});
+			const remove = el("button", "delete", "Delete");
+			remove.type = "button";
+			remove.addEventListener("click", () => {
+				annotations.splice(annotations.indexOf(annotation), 1);
+				renderList();
+			});
+			const row = el("div", "row");
+			row.append(remove);
+			item.append(el("blockquote", "quote", annotation.quote), edit, row);
+			list.append(item);
+		});
+		countEl.textContent = String(annotations.length);
+		emptyEl.hidden = annotations.length > 0;
+		sendButton.disabled = finished || annotations.length === 0;
+	}
+
+	function currentSelection() {
+		const selection = window.getSelection();
+		if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+		const range = selection.getRangeAt(0);
+		if (!conversation.contains(range.commonAncestorContainer)) return null;
+		const text = selection.toString();
+		if (text.trim() === "") return null;
+		return { text, rect: range.getBoundingClientRect() };
+	}
+
+	function openComposer(found) {
+		pending = found.text;
+		composerQuote.textContent = found.text;
+		composer.hidden = false;
+		const width = composer.offsetWidth;
+		const height = composer.offsetHeight;
+		let top = found.rect.bottom + 8;
+		if (top + height > window.innerHeight - 8) top = Math.max(8, found.rect.top - height - 8);
+		const left = Math.max(8, Math.min(found.rect.left, window.innerWidth - width - 8));
+		composer.style.top = top + window.scrollY + "px";
+		composer.style.left = left + window.scrollX + "px";
+		note.focus();
+	}
+
+	function closeComposer() {
+		pending = null;
+		note.value = "";
+		composer.hidden = true;
+		const selection = window.getSelection();
+		if (selection) selection.removeAllRanges();
+	}
+
+	function checkSelection() {
+		if (finished) return;
+		const found = currentSelection();
+		if (found) openComposer(found);
+	}
+
+	conversation.addEventListener("mouseup", () => setTimeout(checkSelection, 0));
+	conversation.addEventListener("keyup", (event) => {
+		if (event.shiftKey) checkSelection();
+	});
+	document.addEventListener("mousedown", (event) => {
+		if (!composer.hidden && !composer.contains(event.target) && note.value.trim() === "") {
+			pending = null;
+			composer.hidden = true;
+		}
+	});
+
+	note.addEventListener("keydown", (event) => {
+		if (event.isComposing || event.keyCode === 229) return;
+		if (event.key === "Escape") {
+			event.preventDefault();
+			closeComposer();
+		} else if (event.key === "Enter" && !event.shiftKey) {
+			event.preventDefault();
+			if (pending !== null) annotations.push({ quote: pending, note: note.value });
+			closeComposer();
+			renderList();
+		}
+	});
+
+	function showDone(count) {
+		finished = true;
+		const panel = el("section", "done");
+		panel.append(
+			el("h2", "", "Done"),
+			el("p", "", "Inserted " + count + " annotation" + (count === 1 ? "" : "s") + " into the pi editor. Nothing was sent to the model."),
+			el("p", "hint", "You can close this tab."),
+		);
+		const main = document.querySelector("main");
+		main.className = "finished";
+		main.replaceChildren(panel);
+		composer.hidden = true;
+		sendButton.disabled = true;
+		setStatus("Done", false);
+	}
+
+	function stop(message) {
+		finished = true;
+		composer.hidden = true;
+		sendButton.disabled = true;
+		setStatus(message, true);
+	}
+
+	sendButton.addEventListener("click", async () => {
+		if (finished || annotations.length === 0) return;
+		sendButton.disabled = true;
+		setStatus("Sending…", false);
+		let response;
+		try {
+			response = await api("/api/send", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ items: annotations.map((a) => ({ quote: a.quote, note: a.note })) }),
+			});
+		} catch {
+			stop("Session switched or pi closed, run /annotate again.");
+			return;
+		}
+		const data = await response.json().catch(() => ({}));
+		if (response.ok) return showDone(data.inserted);
+		if (response.status === 409) return stop("Session switched, run /annotate again.");
+		if (response.status === 410 || response.status === 403) return stop((data && data.error) || "This page expired. Run /annotate again.");
+		setStatus((data && data.error) || "Send failed: HTTP " + response.status, true);
+		sendButton.disabled = annotations.length === 0;
+	});
+
+	async function load() {
+		if (!token) return stop("Missing token. Open the URL that /annotate printed.");
+		let response;
+		try {
+			response = await api("/api/snapshot");
+		} catch {
+			return stop("Session switched or pi closed, run /annotate again.");
+		}
+		const data = await response.json().catch(() => ({}));
+		if (response.status === 409) return stop("Session switched, run /annotate again.");
+		if (!response.ok) return stop((data && data.error) || "Could not load the conversation: HTTP " + response.status);
+		renderConversation(data);
+		const taken = new Date(data.takenAt);
+		setStatus("Snapshot of " + data.items.length + " messages, taken " + (isNaN(taken) ? "" : taken.toLocaleTimeString()), false);
+		renderList();
+	}
+
+	load();
+})();
+</script>
+</body>
+</html>
