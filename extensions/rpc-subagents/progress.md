@@ -1,6 +1,6 @@
 # RPC subagents 交付狀態
 
-已完成本次核准範圍。所有子代理由真正的 `pi --mode rpc` 執行，沒有 SDK fallback。使用指南見 [README](README.md)，實測與限制見 [驗證紀錄](VALIDATION.md)。
+已完成本次核准範圍。所有子代理由真正的 `pi --mode rpc` 執行，沒有 SDK fallback。使用指南見 [README](README.md)。
 
 ## 實作
 
