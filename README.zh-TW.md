@@ -16,7 +16,7 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 | `resume-handoff` | 用 `/resume-handoff` 從檢查過的交接檔案開新 session。 | |
 | `rpc-subagents` | 以 `pi --mode rpc` 子程序執行子代理任務與排程，用 `/rpc-subagents` 列出它們。資料與 `config.json` 放在 `~/.pi/agent/rpc-subagents/`。 | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | `~/.pi/agent/skills` 與 `~/.agents/skills` 裡的 skill 名稱不合規時，給它一個合規的名稱。 | |
-| `ux` | 把上一則 prompt 釘選在編輯器上方，並用 `alt+q` 或 `/quote` 把剪貼簿引用進 prompt。 | [README](extensions/ux/README.zh-TW.md) |
+| `ux` | 把上一則 prompt 釘選在編輯器上方。 | [README](extensions/ux/README.zh-TW.md) |
 
 每個 extension 放在 `extensions/<名稱>/`，測試與它附帶的 skill 也在同一個目錄。
 

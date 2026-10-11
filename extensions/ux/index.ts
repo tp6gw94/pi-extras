@@ -3,10 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, KeyId } from "@earendil-works/pi-tui";
-import { clipboardFailureMessage, readClipboard, type ExecFn } from "./core/clipboard.ts";
-import { CONFIG_FILE_NAME, KEY_ACTIONS, parseConfig, type UxConfig } from "./core/config.ts";
+import { CONFIG_FILE_NAME, obsoleteKeyNotice, parseConfig, type UxConfig } from "./core/config.ts";
 import { lastUserPrompt, PromptPin } from "./core/prompt-state.ts";
-import { formatQuote } from "./core/quote.ts";
 import { collapsedLine, expandedLines } from "./core/summary.ts";
 
 export const WIDGET_KEY = "pi-ux:prompt";
@@ -19,7 +17,7 @@ function agentDir(): string {
 	}
 }
 
-function loadConfig(): { config: UxConfig; errors: string[]; path: string } {
+function loadConfig(): { config: UxConfig; errors: string[]; obsolete: string[]; path: string } {
 	const path = join(agentDir(), CONFIG_FILE_NAME);
 	let text: string | undefined;
 	try {
@@ -31,21 +29,10 @@ function loadConfig(): { config: UxConfig; errors: string[]; path: string } {
 }
 
 export default function piUx(pi: ExtensionAPI): void {
-	const exec: ExecFn = (command, args, options) => pi.exec(command, args, options);
-	const { config, errors, path: configPath } = loadConfig();
+	const { config, errors, obsolete, path: configPath } = loadConfig();
 	const pin = new PromptPin();
 	const toggleKey = config.keys.togglePrompt;
-
-	const used = new Map<string, string>();
-	for (const action of KEY_ACTIONS) {
-		const key = config.keys[action];
-		if (!key) continue;
-		const other = used.get(key);
-		if (other) {
-			errors.push(`keys.${action}: "${key}" is already used by ${other}; ${action} has no shortcut`);
-			config.keys[action] = undefined;
-		} else used.set(key, action);
-	}
+	let obsoleteNoticeShown = false;
 
 	function render(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
@@ -73,26 +60,12 @@ export default function piUx(pi: ExtensionAPI): void {
 		);
 	}
 
-	async function quoteClipboard(ctx: ExtensionContext): Promise<void> {
-		const result = await readClipboard(exec, { cwd: ctx.cwd });
-		if (!result.ok) {
-			ctx.ui.notify(clipboardFailureMessage(result), "warning");
-			return;
-		}
-		const quoted = formatQuote(result.text, ctx.ui.getEditorText());
-		if (quoted === undefined) {
-			ctx.ui.notify(`pi-ux: the clipboard is empty (read with ${result.tool}). Nothing inserted.`, "warning");
-			return;
-		}
-		// pasteToEditor inserts at the cursor and keeps typed text. setEditorText would replace it.
-		ctx.ui.pasteToEditor(quoted);
-		// The paste lands after an async clipboard read, outside pi's key handling, so nothing
-		// redraws the editor. Re-setting the widget is the public way to request a frame.
-		render(ctx);
-	}
-
 	pi.on("session_start", (_event, ctx) => {
 		if (errors.length > 0) ctx.ui.notify(`pi-ux: problems in ${configPath}:\n${errors.join("\n")}`, "warning");
+		if (obsolete.length > 0 && !obsoleteNoticeShown) {
+			obsoleteNoticeShown = true;
+			ctx.ui.notify(obsoleteKeyNotice(obsolete), "warning");
+		}
 		pin.restore(lastUserPrompt(ctx.sessionManager.getBranch()));
 		render(ctx);
 	});
@@ -114,16 +87,4 @@ export default function piUx(pi: ExtensionAPI): void {
 			},
 		});
 	}
-
-	if (config.keys.quoteClipboard) {
-		pi.registerShortcut(config.keys.quoteClipboard as KeyId, {
-			description: "pi-ux: insert the clipboard as a > quote at the cursor",
-			handler: quoteClipboard,
-		});
-	}
-
-	pi.registerCommand("quote", {
-		description: "Insert the clipboard as a > quote into the editor",
-		handler: async (_args, ctx) => quoteClipboard(ctx),
-	});
 }

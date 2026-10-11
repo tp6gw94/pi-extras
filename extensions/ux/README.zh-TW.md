@@ -2,10 +2,9 @@
 
 [English](README.md)
 
-pi-ux 是 [pi](https://github.com/earendil-works/pi) 的 extension，提供兩個編輯器小工具：
+pi-ux 是 [pi](https://github.com/earendil-works/pi) 的 extension，用來釘選上一則 prompt。它把你最後送出的 prompt 濃縮成一行，顯示在編輯器上方，長篇回覆捲過去時也看得到。按快捷鍵可以展開成完整內容，再按一次收合。
 
-- **釘選上一則 prompt。** pi-ux 把你最後送出的 prompt 濃縮成一行，顯示在編輯器上方，長篇回覆捲過去時也看得到。按快捷鍵可以展開成完整內容，再按一次收合。
-- **引用剪貼簿。** 按快捷鍵或執行 `/quote`，pi-ux 會把剪貼簿內容插入游標位置，每一行前面加上 `> `，讓你不必重打就能針對一段文字發問。
+pi-ux 以前可以把剪貼簿引用進編輯器。引用功能已移到 [annotation](../../README.zh-TW.md#annotation) extension：執行 `/annotate`，在瀏覽器裡選取對話內容、加上留言，再以引用的形式送進編輯器。
 
 pi-ux 在 `@earendil-works/pi-coding-agent` 1.0.4 與 Node.js 22 上測試過，fullscreen 與 regular 兩種終端機模式都有測。不需要設定檔就能用。
 
@@ -64,26 +63,6 @@ agent 工作時與回答後，釘選都留在原位。其他 extension 用 `pi.s
 
 再按一次 `alt+p` 回到單行。
 
-### 引用剪貼簿
-
-複製一段文字，打好問題的開頭，再按 `alt+q`。pi-ux 會把剪貼簿插入游標位置，你打好的字都保留：
-
-```text
-Explain this code:
-> const x = 1;
-> function add(a, b) {
->   return a + b;
-> }
-
-What does add return?
-```
-
-引用最後會接一行空白行，你可以直接在下面繼續打字。執行 `/quote` 會把同樣的引用插入空的編輯器。它會取代你打好的字，因為指令執行時，編輯器裡的內容就是 `/quote` 本身。剪貼簿是空的時候，pi-ux 不插入任何東西，並顯示警告：
-
-```text
- Warning: pi-ux: the clipboard is empty (read with xsel). Nothing inserted.
-```
-
 ## 更改快捷鍵
 
 預設快捷鍵如下：
@@ -91,18 +70,16 @@ What does add return?
 | 動作 | 預設按鍵 | 設定鍵 |
 | --- | --- | --- |
 | 展開或收合釘選的 prompt | `alt+p` | `togglePrompt` |
-| 把剪貼簿插入為引用 | `alt+q` | `quoteClipboard` |
 
 pi 自己的 `keybindings.json` 只對應 pi 內建的動作，所以 pi-ux 從 `~/.pi/agent/pi-ux.json` 讀取快捷鍵。如果你設定了 `PI_CODING_AGENT_DIR`，pi-ux 會改從那個目錄讀 `pi-ux.json`。
 
-要把展開鍵改成 `alt+o`，並關掉引用快捷鍵，寫入：
+要把展開鍵改成 `alt+o`，寫入：
 
 <!-- example-config -->
 ```json
 {
 	"keys": {
-		"togglePrompt": "alt+o",
-		"quoteClipboard": null
+		"togglePrompt": "alt+o"
 	}
 }
 ```
@@ -116,12 +93,7 @@ pi 自己的 `keybindings.json` 只對應 pi 內建的動作，所以 pi-ux 從 
 
 pi 比對的是目前生效的按鍵，包括你自己的 `keybindings.json`。
 
-在 macOS 與 Linux 上，pi 的預設按鍵不會用到 `alt+p` 與 `alt+q`。pi 用 `shift+ctrl+p` 切換到上一個模型，用 `alt+up` 還原排隊中的訊息。在原生 Windows，以及設定了 `WSL_DISTRO_NAME` 或 `WSL_INTEROP` 的 WSL Linux 上，pi 會改用 Windows 按鍵模式。在這個模式下，pi 把 `alt+p` 綁在上一個模型、`alt+q` 綁在還原排隊訊息，兩個 pi-ux 預設鍵都會衝突：
-
-- `alt+p` 是 pi 的核心按鍵，pi 會略過 pi-ux 的展開快捷鍵。
-- `alt+q` 交給 pi-ux，pi 的還原排隊訊息就沒有按鍵了。
-
-在 Windows 按鍵模式下，請在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
+在 macOS 與 Linux 上，pi 的預設按鍵不會用到 `alt+p`。pi 用 `shift+ctrl+p` 切換到上一個模型。在原生 Windows，以及設定了 `WSL_DISTRO_NAME` 或 `WSL_INTEROP` 的 WSL Linux 上，pi 會改用 Windows 按鍵模式。在這個模式下，pi 把 `alt+p` 綁在上一個模型。`alt+p` 在那裡是 pi 的核心按鍵，pi 會略過 pi-ux 的展開快捷鍵。在 Windows 按鍵模式下，請在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
 
 預設用 `alt` 組合鍵，是因為 tmux、herdr 等終端機多工器使用 `ctrl+b` 前綴，而且舊式終端機會把 `alt+字母` 送成 Escape 加上該字母，pi 看得懂。`ctrl+shift+p` 這類組合鍵，只有在支援 kitty keyboard protocol 或類似延伸按鍵模式的終端機才傳得到 pi。
 
@@ -138,41 +110,20 @@ pi 比對的是目前生效的按鍵，包括你自己的 `keybindings.json`。
 | 鍵 | 預設值 | 說明 |
 | --- | --- | --- |
 | `togglePrompt` | `alt+p` | 展開或收合釘選的 prompt。 |
-| `quoteClipboard` | `alt+q` | 把剪貼簿以引用形式插入游標位置。 |
 
-把動作設成 `null` 或 `""` 就會關掉它的快捷鍵。`/quote` 指令仍然可用。
+把動作設成 `null` 或 `""` 就會關掉它的快捷鍵。
 
 設定檔有問題時，pi-ux 會在 session 開始時顯示警告，並照常運作：
 
 - 無效的按鍵改用預設按鍵。
 - 不認得的設定會被忽略。
-- 兩個動作設成同一個按鍵時，第二個動作沒有快捷鍵。
+- `quoteClipboard` 是已移除的引用快捷鍵的設定鍵，會被忽略。pi-ux 會提示一次它已過時，檔案裡的其他設定照樣生效。
 
 ## 釘選 prompt 的運作方式
 
-你從編輯器送給 agent 的每一則 prompt，pi-ux 都會釘選。由 pi 或 extension 自行處理的指令，例如 `/reload` 或 `/quote`，不會改變釘選。skill 與 prompt template 指令會送給 agent，所以 pi-ux 會照你輸入的樣子釘選。RPC client 或其他 extension 送出的文字不會取代釘選。
+你從編輯器送給 agent 的每一則 prompt，pi-ux 都會釘選。由 pi 或 extension 自行處理的指令，例如 `/reload`，不會改變釘選。skill 與 prompt template 指令會送給 agent，所以 pi-ux 會照你輸入的樣子釘選。RPC client 或其他 extension 送出的文字不會取代釘選。
 
 恢復或繼續 session 時，pi-ux 會讀取目前分支上最後一則使用者訊息並釘選。pi-ux 不另外儲存任何資料，session 檔是唯一來源。新的 session 一開始沒有釘選。
-
-## 引用的運作方式
-
-pi-ux 依序嘗試下列工具讀取剪貼簿，採用第一個成功的，每個工具最多等 1.5 秒：
-
-1. `pbpaste`（macOS）
-2. `wl-paste --no-newline`（Wayland）
-3. `xclip -selection clipboard -o`（X11）
-4. `xsel --clipboard --output`（X11）
-
-工具不存在、失敗或逾時，就換下一個。全部都不行時，pi-ux 會顯示警告，列出試過的工具。
-
-接著 pi-ux 會整理文字：
-
-- Windows 換行轉成 `\n`，結尾的空白行會被去掉。
-- 每一行前面加上 `> `。空白行變成 `> `。
-- 引用後面接一行空白行。
-- 如果編輯器裡已經有文字，而且不是以換行結尾，引用會從新的一行開始。
-
-pi-ux 用 `ctx.ui.pasteToEditor` 插入結果，跟終端機貼上走同一條路。和一般貼上一樣，超過 10 行或 1000 個字元的引用會收合成 pi 的貼上標記，例如 `[paste #1 +24 lines]`。送出 prompt 時，pi 會把標記展開成完整引用。
 
 ## 用 pi 跳回先前的 prompt
 
@@ -181,9 +132,7 @@ pi-ux 不處理對話紀錄的導覽，因為 pi 本身就有。在預設的 ful
 ## 限制
 
 - 在 macOS 上，`alt` 快捷鍵需要終端機把 Option 當成 Meta 送出。Terminal.app 請開啟「Use Option as Meta key」。iTerm2 請把 Option 鍵設成「Esc+」。否則 Option 會打出特殊字元，例如 `π`。
-- 在 pi 的 Windows 按鍵模式，也就是原生 Windows 與 WSL 上，兩個預設鍵都和 pi 衝突。請參考[更改快捷鍵](#更改快捷鍵)，並在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
-- `/quote` 會取代你打好的字。指令執行時，編輯器裡的內容是 `/quote`，pi 送出時會清空它，所以引用會落在空的編輯器。要保留已輸入的文字，請用快捷鍵。
-- pi-ux 看不到游標位置。只要整個編輯器文字不是以換行結尾，引用就會從新的一行開始，即使游標在別處，例如中間某個空行的開頭。
+- 在 pi 的 Windows 按鍵模式，也就是原生 Windows 與 WSL 上，預設鍵和 pi 衝突。請參考[更改快捷鍵](#更改快捷鍵)，並在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
 - 恢復 session 後，pi-ux 釘選的是 session 裡最後一則使用者訊息。pi 不會記錄訊息來源，所以其他 extension 送出的使用者訊息可能會出現在那裡。
 - 恢復 session 後，skill 或 prompt template 顯示的是展開後的文字，而不是你輸入的指令。
 
@@ -197,4 +146,4 @@ npm test
 npm run typecheck
 ```
 
-`npm test` 會跑所有 pi-extras extension 的測試，包括 pi-ux 的單元測試與 README 檢查。`extensions/ux/test/e2e/tmux-verify.sh` 會在 tmux 裡操作真實的 pi session，需要已登入的模型、`tmux`、`xclip`、`xsel`，以及 Xvfb 之類的 X server。擷取的畫面存在 `/tmp/pi-ux-ev`。
+`npm test` 會跑所有 pi-extras extension 的測試，包括 pi-ux 的單元測試與 README 檢查。`extensions/ux/test/e2e/tmux-verify.sh` 會在 tmux 裡操作真實的 pi session，需要已登入的模型與 `tmux`。擷取的畫面存在 `/tmp/pi-ux-ev`。
