@@ -28,11 +28,11 @@ annotation 讓你在下一則 prompt 裡引用對話紀錄的一部分。在 pi 
 - 輸入留言後按 Enter。annotation 會把選取的內容以引用插入編輯器，每一行前面加上 `> `，接著是你的留言，最後是一行空白行。它不會送出 prompt，你可以繼續編輯。不輸入留言直接按 Enter，就只插入引用。
 - 按 Esc 關閉框，捨棄留言。
 
-不論哪種方式，選取都會被清除。選取兩行並留言 `What does add return?` 時，編輯器會得到：
+不論哪種方式，選取都會被清除。引用的是 pi 畫在畫面上的文字，包括程式碼區塊的縮排。從 `function` 選到下一行結尾、並留言 `What does add return?` 時，編輯器會得到：
 
 ```text
 > function add(a, b) {
->   return a + b;
+>      return a + b;
 
 What does add return?
 ```
@@ -64,8 +64,8 @@ pi 啟動時，會在 `[Extensions]` 底下列出八個 extension：
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff, tp6gw94/pi-extras:rpc-subagents,
-tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
+  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
+tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
 ## 關掉某個 extension

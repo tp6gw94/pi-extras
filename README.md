@@ -28,11 +28,11 @@ annotation lets you quote part of the transcript in your next prompt. In pi's fu
 - Type a note and press Enter. annotation inserts the selection into the editor as a quote, with every line prefixed by `> `, then your note, then a blank line. It does not send the prompt, so you can keep editing. Press Enter without a note to insert only the quote.
 - Press Esc to close the box and discard the note.
 
-Either way, the selection is cleared. For a selection of two lines and the note `What does add return?`, the editor gets:
+Either way, the selection is cleared. The quote holds the text as pi draws it, including the indentation of a code block. For a selection from `function` to the end of the next line and the note `What does add return?`, the editor gets:
 
 ```text
 > function add(a, b) {
->   return a + b;
+>      return a + b;
 
 What does add return?
 ```
@@ -64,8 +64,8 @@ When pi starts, it lists the eight extensions under `[Extensions]`:
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff, tp6gw94/pi-extras:rpc-subagents,
-tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
+  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
+tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
 ## Turn an extension off
