@@ -19,7 +19,6 @@ function agentDir(): string {
 	}
 }
 
-/** Read `<agent-dir>/pi-ux.json` once at load. Shortcuts are registered at load time, so changes need `/reload`. */
 function loadConfig(): { config: UxConfig; errors: string[]; path: string } {
 	const path = join(agentDir(), CONFIG_FILE_NAME);
 	let text: string | undefined;
@@ -37,7 +36,6 @@ export default function piUx(pi: ExtensionAPI): void {
 	const pin = new PromptPin();
 	const toggleKey = config.keys.togglePrompt;
 
-	// Two actions on one key: keep the first, disable the second.
 	const used = new Map<string, string>();
 	for (const action of KEY_ACTIONS) {
 		const key = config.keys[action];

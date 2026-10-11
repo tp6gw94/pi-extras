@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-// Point pi's agent dir at an empty temp dir before the extension loads its config.
 const agentDir = mkdtempSync(join(tmpdir(), "pi-ux-agent-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
@@ -146,7 +145,6 @@ describe("extension wiring (fake pi)", () => {
 		try {
 			const f = fakePi("x");
 			piUx(f.pi);
-			// a duplicate key keeps the first action and disables the second
 			assert.deepEqual(Object.keys(f.shortcuts), ["ctrl+alt+p"]);
 			const { ctx, calls } = fakeCtx();
 			f.on.session_start!({ type: "session_start", reason: "startup" }, ctx);

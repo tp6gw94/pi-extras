@@ -25,7 +25,7 @@ describe("collapsed summary", () => {
 	});
 
 	it("counts CJK characters as two columns", () => {
-		const cjk = "請幫我把這個函式改成非同步並補上測試"; // 18 chars, 36 columns
+		const cjk = "請幫我把這個函式改成非同步並補上測試";
 		const line = collapsedLine(cjk, 20);
 		assert.ok(visibleWidth(line) <= 20, `got ${visibleWidth(line)}`);
 		assert.ok(line.endsWith(ELLIPSIS));
@@ -113,7 +113,7 @@ describe("prompt pin: toggle state and source filtering", () => {
 
 	it("toggles expanded and collapsed; a new prompt starts collapsed", () => {
 		const pin = new PromptPin();
-		assert.equal(pin.toggle(), undefined); // nothing pinned
+		assert.equal(pin.toggle(), undefined);
 		pin.fromInput("one", "interactive");
 		assert.equal(pin.expanded, false);
 		assert.equal(pin.toggle(), true);
@@ -186,7 +186,7 @@ describe("clipboard fallback", () => {
 		const exec: ExecFn = async (command, _args, options) => {
 			calls.push(command);
 			assert.ok(options?.timeout && options.timeout <= 2000, "every tool gets a short timeout");
-			const r = results[command] ?? { code: 127 }; // not installed
+			const r = results[command] ?? { code: 127 };
 			if (r === "throw") throw new Error("spawn failed");
 			return { stdout: r.stdout ?? "", stderr: "", code: r.code, killed: r.killed ?? false };
 		};

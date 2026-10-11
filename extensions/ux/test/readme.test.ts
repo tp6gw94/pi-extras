@@ -16,7 +16,6 @@ function read(file: string): string {
 	return readFileSync(join(root, file), "utf8");
 }
 
-/** The ```json block right after the `<!-- example-config -->` marker. */
 function exampleConfig(text: string): string {
 	const m = /<!-- example-config -->\s*```json\n([\s\S]*?)\n```/.exec(text);
 	assert.ok(m, "example-config block not found");

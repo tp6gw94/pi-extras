@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Create the mixed TS + Python sample project used by the e2e acceptance run.
-# usage: test/e2e/make-sample.sh <dir>
 set -euo pipefail
 dir=${1:?usage: make-sample.sh <dir>}
 mkdir -p "$dir" && cd "$dir"

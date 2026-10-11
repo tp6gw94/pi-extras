@@ -204,12 +204,16 @@ function clearStatus(ctx: Pick<ExtensionContext, "mode" | "ui">): void {
 	if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined)
 }
 
-function tryClearStatus(ctx: Pick<ExtensionContext, "mode" | "ui">): void {
+function ignoreReplacedContext(action: () => void): void {
 	try {
-		clearStatus(ctx)
+		action()
 	} catch {
-		// The context may have been invalidated by session replacement.
+		// pi throws from a context that went stale after a session replacement or reload.
 	}
+}
+
+function tryClearStatus(ctx: Pick<ExtensionContext, "mode" | "ui">): void {
+	ignoreReplacedContext(() => clearStatus(ctx))
 }
 
 function refreshStatus(ctx: Pick<ExtensionContext, "mode" | "ui" | "sessionManager">): void {
@@ -227,11 +231,7 @@ function pendingState(state: RalphRunState): RalphRunState {
 }
 
 function tryAppendRunStateToContext(ctx: Pick<ExtensionContext, "sessionManager">, state: RalphRunState): void {
-	try {
-		appendRunStateToContext(ctx, state)
-	} catch {
-		// The context may have been invalidated by session replacement.
-	}
+	ignoreReplacedContext(() => appendRunStateToContext(ctx, state))
 }
 
 function tryNotify(
@@ -239,11 +239,7 @@ function tryNotify(
 	message: string,
 	level: "info" | "warning" | "error",
 ): void {
-	try {
-		notify(ctx, message, level)
-	} catch {
-		// The context may have been invalidated by session replacement.
-	}
+	ignoreReplacedContext(() => notify(ctx, message, level))
 }
 
 export function buildRalphPrompt(task: string, iteration: number, maxIterations: number): string {

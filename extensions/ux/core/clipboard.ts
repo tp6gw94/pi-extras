@@ -1,4 +1,3 @@
-/** Same shape as `pi.exec`. */
 export type ExecFn = (
 	command: string,
 	args: string[],
@@ -11,7 +10,6 @@ export interface ClipboardTool {
 	args: string[];
 }
 
-/** Tried in this order. The first tool that exits 0 decides the result. */
 export const CLIPBOARD_TOOLS: readonly ClipboardTool[] = [
 	{ name: "pbpaste", command: "pbpaste", args: [] },
 	{ name: "wl-paste", command: "wl-paste", args: ["--no-newline"] },

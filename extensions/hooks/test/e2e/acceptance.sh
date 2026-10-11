@@ -14,7 +14,7 @@ tmpl="$out/template"
 [ -d "$tmpl" ] || "$here/make-sample.sh" "$tmpl"
 
 fresh() { rm -rf "${out:?}/$1" && cp -a "$tmpl" "$out/$1"; }
-drive() { # log-name project-dir confirm prompt...
+drive() {
 	local name=$1 dir=$2 confirm=$3; shift 3
 	local args=()
 	for p in "$@"; do args+=(--prompt "$p"); done

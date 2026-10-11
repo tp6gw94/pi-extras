@@ -133,7 +133,6 @@ export function createTaskPreparer({ extensionDir, configDir = extensionDir, age
     if (webSource) args.push("--extension", join(extensionDir, "web.ts"));
     args.push("--extension", bridgeExtension);
     for (const path of providers) args.push("--extension", path);
-    // RpcTransport passes this object to childEnvironment, which replaces rather than merges the environment.
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith("RPC_SUBAGENTS_")) delete env[key];
     if (webSource) {

@@ -481,7 +481,6 @@ test("keeps report state changes but skips status writes outside TUI", async () 
 })
 
 test("takes TypeBox from pi as a peer dependency, not a bundled copy", () => {
-	// pi-extras has one root package.json. pi supplies typebox to extensions, so it is a "*" peer.
 	const packageJson = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"))
 	assert.equal(packageJson.peerDependencies?.typebox, "*")
 	assert.equal(packageJson.dependencies?.typebox, undefined)

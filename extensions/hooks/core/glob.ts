@@ -1,14 +1,3 @@
-/**
- * Minimal glob matcher (no dependencies).
- *
- * Supported: `*` (any chars except `/`), `**` (any number of path segments),
- * `?`, `[...]` / `[!...]`, and `{a,b}` alternation (nestable).
- *
- * A glob without `/` is matched against the file's basename at any depth
- * (`*.ts` matches `src/a/b.ts`), like .gitignore. A glob with `/` is matched
- * against the path relative to the project root (leading `./` or `/` ignored).
- */
-
 const cache = new Map<string, RegExp>();
 
 function escapeRe(ch: string): string {
@@ -99,7 +88,6 @@ function normalizeRel(p: string): string {
 	return s.replace(/^\/+/, "");
 }
 
-/** Match one glob against a project-relative path. */
 export function matchGlob(glob: string, relPath: string): boolean {
 	const rel = normalizeRel(relPath);
 	const g = normalizeRel(glob);
@@ -110,7 +98,6 @@ export function matchGlob(glob: string, relPath: string): boolean {
 	return globToRegExp(g).test(rel);
 }
 
-/** True when any glob in the list matches. Globs starting with `!` exclude. */
 export function matchAny(globs: readonly string[], relPath: string): boolean {
 	let matched = false;
 	for (const g of globs) {

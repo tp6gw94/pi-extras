@@ -168,7 +168,6 @@ describe("{files} substitution", () => {
 		assert.equal(substituteFiles("eslint {files}", ["--fix.ts"]), "eslint ./--fix.ts");
 		assert.equal(substituteFiles("ruff check {files}", ["-rf.py", "src/ok.py"]), "ruff check ./-rf.py src/ok.py");
 		assert.equal(safeFileArg("src/-x.ts"), "src/-x.ts");
-		// still shell-quoted correctly when the name also needs quoting
 		assert.equal(substituteFiles("eslint {files}", ["--fix me's.ts"]), `eslint './--fix me'\\''s.ts'`);
 		const out = execFileSync("sh", ["-c", substituteFiles("printf '%s\\n' {files}", ["--fix.ts", "-rf.py", "--a b.ts"])], {
 			encoding: "utf8",
@@ -306,7 +305,7 @@ describe("changed files (git)", () => {
 			writeFileSync(join(dir, "dirty.py"), "1\n");
 			git(dir, "add", "-A");
 			git(dir, "commit", "-qm", "init");
-			writeFileSync(join(dir, "dirty.py"), "2\n"); // dirty before the turn
+			writeFileSync(join(dir, "dirty.py"), "2\n");
 			const statusBefore = git(dir, "status", "--porcelain");
 
 			const start = await snapshotGit(nodeExec, dir);
@@ -322,12 +321,10 @@ describe("changed files (git)", () => {
 
 			const changed = await changedSince(nodeExec, dir, start);
 			assert.deepEqual(changed?.sort(), ["a.ts", "src/new.py"]);
-			// dirty.py was already dirty and untouched this turn → not reported
 			assert.equal(git(dir, "diff", "--cached", "--name-only"), "");
-			assert.notEqual(git(dir, "status", "--porcelain"), statusBefore); // working tree changed…
-			assert.match(git(dir, "status", "--porcelain"), /\?\? src\//); // …but new file still untracked
+			assert.notEqual(git(dir, "status", "--porcelain"), statusBefore);
+			assert.match(git(dir, "status", "--porcelain"), /\?\? src\//);
 
-			// relative to a sub-directory project root
 			const sub = await changedSince(nodeExec, join(dir, "src"), start);
 			assert.deepEqual(sub, ["new.py"]);
 		} finally {
@@ -378,10 +375,10 @@ describe("config frozen per prompt", () => {
 		rc.start({ hash: "h1", n: 1 });
 		assert.equal(rc.config?.n, 1);
 		assert.equal(rc.shouldWarnChange("h1"), false);
-		assert.equal(rc.shouldWarnChange("h2"), true); // agent edited .pi/hooks.json
-		assert.equal(rc.shouldWarnChange("h2"), false); // only once
-		assert.equal(rc.shouldWarnChange(undefined), true); // deleted
-		assert.equal(rc.config?.n, 1); // still the frozen one
+		assert.equal(rc.shouldWarnChange("h2"), true);
+		assert.equal(rc.shouldWarnChange("h2"), false);
+		assert.equal(rc.shouldWarnChange(undefined), true);
+		assert.equal(rc.config?.n, 1);
 		rc.end();
 		assert.equal(rc.isActive, false);
 		assert.equal(rc.config, undefined);

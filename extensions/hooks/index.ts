@@ -22,15 +22,12 @@ interface LoadedConfig {
 	config: HooksConfig;
 }
 
-/** Optional JSONL trace of every hook command (set PI_HOOKS_LOG=/path/to/file). */
 function trace(record: Record<string, unknown>): void {
 	const file = process.env.PI_HOOKS_LOG;
 	if (!file) return;
 	try {
 		appendFileSync(file, `${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`);
-	} catch {
-		// tracing must never break the agent
-	}
+	} catch {}
 }
 
 function toolPath(input: Record<string, unknown>, cwd: string): string | undefined {
@@ -69,7 +66,6 @@ function describeRules(config: HooksConfig): string {
 export default function piHooks(pi: ExtensionAPI): void {
 	const exec: ExecFn = (command, args, options) => pi.exec(command, args, options);
 	const trust = new TrustStore(join(agentDir(), "pi-hooks-trust.json"));
-	/** Decisions made this session, keyed by "<path>\0<hash>". */
 	const decisions = new Map<string, Promise<boolean>>();
 	const reportedConfigErrors = new Set<string>();
 	const counter = new FixCounter(DEFAULT_MAX_FIX_ATTEMPTS);
@@ -116,7 +112,6 @@ export default function piHooks(pi: ExtensionAPI): void {
 		return { path, hash, config };
 	}
 
-	/** Ask once per config content; remember approvals across sessions by hash. */
 	function ensureTrusted(ctx: ExtensionContext, loaded: LoadedConfig): Promise<boolean> {
 		const key = `${loaded.path}\0${loaded.hash}`;
 		let decision = decisions.get(key);
@@ -256,7 +251,6 @@ export default function piHooks(pi: ExtensionAPI): void {
 		for (const { rule, files } of routes) {
 			const outcome = await run(ctx, "beforeSettle", rule, files);
 			if (outcome.aborted) return;
-			// A timeout is reported to the user; it is not something the agent can fix.
 			if (!outcome.ok && !outcome.timedOut) failures.push({ rule, files, outcome });
 		}
 

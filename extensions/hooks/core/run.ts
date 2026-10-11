@@ -1,4 +1,3 @@
-/** Same shape as `pi.exec` so the core stays testable without pi. */
 export type ExecFn = (
 	command: string,
 	args: string[],
@@ -7,10 +6,8 @@ export type ExecFn = (
 
 export interface RunOutcome {
 	command: string;
-	/** Exit code 0 and not killed. */
 	ok: boolean;
 	timedOut: boolean;
-	/** Killed by the caller's abort signal (user cancelled), not by the timeout. */
 	aborted: boolean;
 	code: number;
 	output: string;
@@ -30,7 +27,6 @@ export const GROUP_WRAPPER = [
 	'wait "$pid"',
 ].join("\n");
 
-/** Extra time after timeoutMs before we stop waiting even if the process never reports exit. */
 export const HARD_GUARD_GRACE_MS = 7_000;
 
 /**
