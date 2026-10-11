@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CLIPBOARD_TOOLS } from "../ux-core/clipboard.ts";
-import { CONFIG_FILE_NAME, DEFAULT_KEYS, KEY_ACTIONS, parseConfig, TOP_LEVEL_KEYS } from "../ux-core/config.ts";
+import { CLIPBOARD_TOOLS } from "../core/clipboard.ts";
+import { CONFIG_FILE_NAME, DEFAULT_KEYS, KEY_ACTIONS, parseConfig, TOP_LEVEL_KEYS } from "../core/config.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const readmes = {

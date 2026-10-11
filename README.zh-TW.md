@@ -1,189 +1,96 @@
-# pi-ux
+# pi-extras
 
 [English](README.md)
 
-pi-ux 是 [pi](https://github.com/earendil-works/pi) 的 extension，提供兩個編輯器小工具：
+pi-extras 是一個 [pi](https://github.com/earendil-works/pi) 套件，裡面有七個 extension。安裝一次，pi 就會載入其中每個 extension。你可以在 pi 的設定裡關掉個別的 extension。
 
-- **釘選上一則 prompt。** pi-ux 把你最後送出的 prompt 濃縮成一行，顯示在編輯器上方，長篇回覆捲過去時也看得到。按快捷鍵可以展開成完整內容，再按一次收合。
-- **引用剪貼簿。** 按快捷鍵或執行 `/quote`，pi-ux 會把剪貼簿內容插入游標位置，每一行前面加上 `> `，讓你不必重打就能針對一段文字發問。
+pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上測試過。
 
-pi-ux 在 `@earendil-works/pi-coding-agent` 1.0.4 與 Node.js 22 上測試過，fullscreen 與 regular 兩種終端機模式都有測。不需要設定檔就能用。
+## Extension 列表
 
-## 以 pi package 安裝
+| Extension | 用途 | 文件 |
+| --- | --- | --- |
+| `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
+| `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
+| `ralph` | 用 `/ralph` 對同一個任務跑有上限的多輪全新 pi session，用 `/ralph-stop` 停止。 | |
+| `resume-handoff` | 用 `/resume-handoff` 從檢查過的交接檔案開新 session。 | |
+| `rpc-subagents` | 以 `pi --mode rpc` 子程序執行子代理任務與排程，用 `/rpc-subagents` 列出它們。資料與 `config.json` 放在 `~/.pi/agent/rpc-subagents/`。 | [README](extensions/rpc-subagents/README.md) |
+| `skill-name-normalizer` | `~/.pi/agent/skills` 與 `~/.agents/skills` 裡的 skill 名稱不合規時，給它一個合規的名稱。 | |
+| `ux` | 把上一則 prompt 釘選在編輯器上方，並用 `alt+q` 或 `/quote` 把剪貼簿引用進 prompt。 | [README](extensions/ux/README.zh-TW.md) |
 
-要在所有專案安裝 pi-ux，執行：
+每個 extension 放在 `extensions/<名稱>/`，測試與它附帶的 skill 也在同一個目錄。
+
+## 安裝
+
+要在所有專案安裝 pi-extras，執行：
 
 ```sh
-pi install git:github.com/tp6gw94/pi-ux
+pi install git:github.com/tp6gw94/pi-extras
 ```
 
 只想裝在目前的專案，加上 `--local`。pi 會把套件寫進 `.pi/settings.json`：
 
 ```sh
-pi install --local git:github.com/tp6gw94/pi-ux
+pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-不安裝、只在一個 session 試用，就從 clone 下來的目錄載入 extension 檔案：
-
-```sh
-pi --extension ./ux-pi/index.ts
-```
-
-## 2 分鐘上手
-
-以下輸出來自 pi 1.0.4 在 110 欄寬 tmux pane 中的實際執行。`test/e2e/tmux-verify.sh` 會重跑同樣的流程。
-
-### 送出 prompt
-
-輸入 prompt 並按 Enter。回覆結束後，prompt 會停在編輯器上方。比終端機還寬的 prompt 會以 `…` 結尾：
+pi 啟動時，會在 `[Extensions]` 底下列出七個 extension：
 
 ```text
- 60 water
-
-❯ Write the numbers 1 to 60, one per line, each followed by a short English word. This prompt is deliberately…
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[Extensions]
+  tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff, tp6gw94/pi-extras:rpc-subagents,
+tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
-agent 工作時與回答後，釘選都留在原位。其他 extension 用 `pi.sendUserMessage` 送出的訊息不會取代它。
+## 關掉某個 extension
 
-### 展開釘選的 prompt
+pi 可以略過已安裝套件裡的個別 extension。你可以在 `pi config` 畫面操作，也可以直接編輯設定檔。不論哪種方式，都要重新啟動 pi 或執行 `/reload` 才會生效。extension 附帶的 skill 會跟著它一起消失，例如 `ralph` 的 `ralph-completion`。
 
-按 `alt+p`。釘選會顯示完整 prompt，你輸入的每一行各佔一行，並依終端機寬度換行：
+### 用 pi config
 
-```text
-▾ Last prompt (alt+p to collapse)
-│ Write the numbers 1 to 60, one per line, each followed by a short English word. This prompt is deliberately
-│ long so that the pinned summary has to be truncated at the terminal width with an ellipsis.
-│ 第二行：請用英文回答，不要加任何解釋。
-│ Third line: no code blocks.
-```
+1. 執行 `pi config`。它會開啟個人設定。要改目前專案的設定，執行 `pi config --local`，或按 Tab。在專案範圍裡，Space 會在 inherit、`+`、`-` 之間切換。
+2. 在 `git:github.com/tp6gw94/pi-extras` 底下移到要關的 extension，例如 `ralph/index.ts`，按 Space。方框會從 `[x]` 變成 `[ ]`。
+3. 按 Esc 關閉。pi config 每次變更都會立刻存檔。
 
-再按一次 `alt+p` 回到單行。
+pi config 會在設定檔寫入一筆精確路徑的排除：
 
-### 引用剪貼簿
-
-複製一段文字，打好問題的開頭，再按 `alt+q`。pi-ux 會把剪貼簿插入游標位置，你打好的字都保留：
-
-```text
-Explain this code:
-> const x = 1;
-> function add(a, b) {
->   return a + b;
-> }
-
-What does add return?
-```
-
-引用最後會接一行空白行，你可以直接在下面繼續打字。執行 `/quote` 會把同樣的引用插入空的編輯器。它會取代你打好的字，因為指令執行時，編輯器裡的內容就是 `/quote` 本身。剪貼簿是空的時候，pi-ux 不插入任何東西，並顯示警告：
-
-```text
- Warning: pi-ux: the clipboard is empty (read with xsel). Nothing inserted.
-```
-
-## 更改快捷鍵
-
-預設快捷鍵如下：
-
-| 動作 | 預設按鍵 | 設定鍵 |
-| --- | --- | --- |
-| 展開或收合釘選的 prompt | `alt+p` | `togglePrompt` |
-| 把剪貼簿插入為引用 | `alt+q` | `quoteClipboard` |
-
-pi 自己的 `keybindings.json` 只對應 pi 內建的動作，所以 pi-ux 從 `~/.pi/agent/pi-ux.json` 讀取快捷鍵。如果你設定了 `PI_CODING_AGENT_DIR`，pi-ux 會改從那個目錄讀 `pi-ux.json`。
-
-要把展開鍵改成 `alt+o`，並關掉引用快捷鍵，寫入：
-
-<!-- example-config -->
 ```json
 {
-	"keys": {
-		"togglePrompt": "alt+o",
-		"quoteClipboard": null
-	}
+	"packages": [
+		{
+			"source": "git:github.com/tp6gw94/pi-extras",
+			"extensions": ["-extensions/ralph/index.ts"]
+		}
+	]
 }
 ```
 
-接著在 pi 裡執行 `/reload`，或重新啟動 pi。pi-ux 只在載入時讀一次這個檔案。
+### 在 settings.json 裡設定
 
-按鍵採用 pi 的按鍵語法：零個或多個 `ctrl`、`shift`、`alt`、`super`，以 `+` 串接，最後接一個按鍵，例如 `ctrl+alt+p` 或 `f6`。pi 載入 extension 時，會拿每個快捷鍵比對自己的按鍵：
+個人設定在 `~/.pi/agent/settings.json`，專案設定在 `.pi/settings.json`。把套件的 source 字串換成一個物件，`source` 不變，再加上 `extensions` 篩選。篩選裡的路徑相對於套件根目錄：
 
-- pi 核心動作用到的按鍵，例如 `ctrl+c` 或 `ctrl+p`，保留給 pi。pi 會略過 pi-ux 的快捷鍵，並在啟動時顯示警告。
-- pi 用到的其他按鍵交給 pi-ux，pi 會在啟動時顯示警告。
+<!-- example-filter -->
+```json
+{
+	"packages": [
+		{
+			"source": "git:github.com/tp6gw94/pi-extras",
+			"extensions": ["!extensions/ralph/index.ts", "!extensions/resume-handoff/index.ts"]
+		}
+	]
+}
+```
 
-pi 比對的是目前生效的按鍵，包括你自己的 `keybindings.json`。
+篩選接受這些寫法：
 
-在 macOS 與 Linux 上，pi 的預設按鍵不會用到 `alt+p` 與 `alt+q`。pi 用 `shift+ctrl+p` 切換到上一個模型，用 `alt+up` 還原排隊中的訊息。在原生 Windows，以及設定了 `WSL_DISTRO_NAME` 或 `WSL_INTEROP` 的 WSL Linux 上，pi 會改用 Windows 按鍵模式。在這個模式下，pi 把 `alt+p` 綁在上一個模型、`alt+q` 綁在還原排隊訊息，兩個 pi-ux 預設鍵都會衝突：
+| 寫法 | 效果 |
+| --- | --- |
+| `!pattern` | 略過所有符合 glob 的 extension，例如 `!extensions/ralph/index.ts`。 |
+| `-path` | 略過這個精確路徑的 extension。pi config 寫的就是這種。 |
+| `pattern` | 只載入符合的 extension。`["extensions/ux/index.ts", "extensions/hooks/index.ts"]` 只載入 ux 與 hooks。 |
+| `+path` | 即使被 `!pattern` 略過，仍載入這個精確路徑的 extension。 |
 
-- `alt+p` 是 pi 的核心按鍵，pi 會略過 pi-ux 的展開快捷鍵。
-- `alt+q` 交給 pi-ux，pi 的還原排隊訊息就沒有按鍵了。
-
-在 Windows 按鍵模式下，請在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
-
-預設用 `alt` 組合鍵，是因為 tmux、herdr 等終端機多工器使用 `ctrl+b` 前綴，而且舊式終端機會把 `alt+字母` 送成 Escape 加上該字母，pi 看得懂。`ctrl+shift+p` 這類組合鍵，只有在支援 kitty keyboard protocol 或類似延伸按鍵模式的終端機才傳得到 pi。
-
-## 設定參考
-
-`pi-ux.json` 是一個 JSON 物件，每個鍵都可省略。
-
-| 鍵 | 型別 | 說明 |
-| --- | --- | --- |
-| `keys` | object | 依動作設定的快捷鍵。沒寫的動作沿用預設按鍵。 |
-
-### `keys`
-
-| 鍵 | 預設值 | 說明 |
-| --- | --- | --- |
-| `togglePrompt` | `alt+p` | 展開或收合釘選的 prompt。 |
-| `quoteClipboard` | `alt+q` | 把剪貼簿以引用形式插入游標位置。 |
-
-把動作設成 `null` 或 `""` 就會關掉它的快捷鍵。`/quote` 指令仍然可用。
-
-設定檔有問題時，pi-ux 會在 session 開始時顯示警告，並照常運作：
-
-- 無效的按鍵改用預設按鍵。
-- 不認得的設定會被忽略。
-- 兩個動作設成同一個按鍵時，第二個動作沒有快捷鍵。
-
-## 釘選 prompt 的運作方式
-
-你從編輯器送給 agent 的每一則 prompt，pi-ux 都會釘選。由 pi 或 extension 自行處理的指令，例如 `/reload` 或 `/quote`，不會改變釘選。skill 與 prompt template 指令會送給 agent，所以 pi-ux 會照你輸入的樣子釘選。RPC client 或其他 extension 送出的文字不會取代釘選。
-
-恢復或繼續 session 時，pi-ux 會讀取目前分支上最後一則使用者訊息並釘選。pi-ux 不另外儲存任何資料，session 檔是唯一來源。新的 session 一開始沒有釘選。
-
-## 引用的運作方式
-
-pi-ux 依序嘗試下列工具讀取剪貼簿，採用第一個成功的，每個工具最多等 1.5 秒：
-
-1. `pbpaste`（macOS）
-2. `wl-paste --no-newline`（Wayland）
-3. `xclip -selection clipboard -o`（X11）
-4. `xsel --clipboard --output`（X11）
-
-工具不存在、失敗或逾時，就換下一個。全部都不行時，pi-ux 會顯示警告，列出試過的工具。
-
-接著 pi-ux 會整理文字：
-
-- Windows 換行轉成 `\n`，結尾的空白行會被去掉。
-- 每一行前面加上 `> `。空白行變成 `> `。
-- 引用後面接一行空白行。
-- 如果編輯器裡已經有文字，而且不是以換行結尾，引用會從新的一行開始。
-
-pi-ux 用 `ctx.ui.pasteToEditor` 插入結果，跟終端機貼上走同一條路。和一般貼上一樣，超過 10 行或 1000 個字元的引用會收合成 pi 的貼上標記，例如 `[paste #1 +24 lines]`。送出 prompt 時，pi 會把標記展開成完整引用。
-
-## 用 pi 跳回先前的 prompt
-
-pi-ux 不處理對話紀錄的導覽，因為 pi 本身就有。在預設的 fullscreen 模式，`ctrl+shift+up` 與 `ctrl+shift+down` 會跳到上一則與下一則 prompt。在 regular 模式（`--tui-mode regular`），pi 會用 OSC 133 跳脫碼標記每則訊息，支援的終端機可以用它自己的按鍵在 prompt 之間跳轉。
-
-## 限制
-
-- 在 macOS 上，`alt` 快捷鍵需要終端機把 Option 當成 Meta 送出。Terminal.app 請開啟「Use Option as Meta key」。iTerm2 請把 Option 鍵設成「Esc+」。否則 Option 會打出特殊字元，例如 `π`。
-- 在 pi 的 Windows 按鍵模式，也就是原生 Windows 與 WSL 上，兩個預設鍵都和 pi 衝突。請參考[更改快捷鍵](#更改快捷鍵)，並在 `~/.pi/agent/pi-ux.json` 設定其他按鍵。
-- `/quote` 會取代你打好的字。指令執行時，編輯器裡的內容是 `/quote`，pi 送出時會清空它，所以引用會落在空的編輯器。要保留已輸入的文字，請用快捷鍵。
-- pi-ux 看不到游標位置。只要整個編輯器文字不是以換行結尾，引用就會從新的一行開始，即使游標在別處，例如中間某個空行的開頭。
-- 恢復 session 後，pi-ux 釘選的是 session 裡最後一則使用者訊息。pi 不會記錄訊息來源，所以其他 extension 送出的使用者訊息可能會出現在那裡。
-- 恢復 session 後，skill 或 prompt template 顯示的是展開後的文字，而不是你輸入的指令。
+空清單 `"extensions": []` 一個 extension 都不載入。不寫 `extensions` 就全部載入。`source` 要和 `pi install` 寫入的字串相同，包括 `@ref`，pi 才會把它當成同一個套件。
 
 ## 開發
 
@@ -193,4 +100,8 @@ npm test
 npm run typecheck
 ```
 
-`npm test` 會跑單元測試與 README 檢查。`test/e2e/tmux-verify.sh` 會在 tmux 裡操作真實的 pi session，需要已登入的模型、`tmux`、`xclip`、`xsel`，以及 Xvfb 之類的 X server。擷取的畫面存在 `/tmp/pi-ux-ev`。
+- `npm test` 會跑每個 extension 的測試，包括 `.ts` 與 `.mjs`。`rpc-subagents` 裡需要已安裝 pi 的測試會略過，除非你把 `RPC_SUBAGENTS_PI_PACKAGE` 設成全域安裝的 pi，例如 `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`。
+- `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。`ralph` 與 `skill-name-normalizer` 的測試目前還沒有做型別檢查。
+- `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
+
+pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。`croner` 是唯一的執行期 dependency。
