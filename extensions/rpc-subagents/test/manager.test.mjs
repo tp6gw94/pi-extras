@@ -360,7 +360,7 @@ test("terminal snapshot survives failed append and eviction with Unicode output 
   assert.equal(children[0].exited, true);
   let output = "";
   await replayAndFollow(result.eventFile, { maxReplayBytes: 4096, pollMs: 5, write: async (text) => { output += text; } });
-  assert.match(output, /結果 failed/);
+  assert.match(output, /Result failed/);
 });
 
 test("terminal state snapshot is attempted independently of a non-capacity append failure", async (t) => {

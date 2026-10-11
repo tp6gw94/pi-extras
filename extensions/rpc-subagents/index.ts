@@ -99,7 +99,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     const storage = await prepareStorage({ agentDir });
     const root = storage.dataRoot;
     const copied = [storage.migrated.data && `${storage.migrated.data} → ${storage.dataRoot}`, storage.migrated.config && `${storage.migrated.config} → ${storage.configFile}`].filter(Boolean);
-    if (copied.length && notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(`RPC subagents 已將舊位置的資料複製到新位置（只做一次，舊檔案保留不動）：${copied.join("；")}`), "info");
+    if (copied.length && notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(`RPC subagents copied its data from the old location (once; the old files are left untouched): ${copied.join("; ")}`), "info");
     const config = await loadLocalConfig(storage.configFile);
     const cliPath = resolveCliEntrypoint(getPackageDir());
     const fleet = new FleetManager({ root, concurrency: config.concurrency, dialogTimeoutMs: config.dialogTimeoutMs,
@@ -138,7 +138,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
           } catch (error) {
             if (failedRequests.has(key)) continue;
             failedRequests.add(key);
-            if (notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(`RPC subagents 無法喚醒父層處理請求 ${key}: ${error instanceof Error ? error.message : String(error)}`), "warning");
+            if (notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(`RPC subagents could not wake the parent to handle request ${key}: ${error instanceof Error ? error.message : String(error)}`), "warning");
           }
         }
       }
@@ -211,34 +211,34 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     });
   }
 
-  register("rpc_subagents_run", "RPC 任務", "Run an independent real Pi RPC subprocess. Default sync waits for settled; async=true detaches after acceptance. Specify model.provider/id or inherit the current model explicitly. Optional tools replaces the default child execution list with plain names or adjusts it with +name/-name entries, and naming an installed web tool loads web support for that tool only, with no sandbox guarantee. Optional session continues a managed completed session and is mutually exclusive with context. Fork captures the current branch now. No worktree isolation.", RunParams, TaskOutput,
+  register("rpc_subagents_run", "RPC task", "Run an independent real Pi RPC subprocess. Default sync waits for settled; async=true detaches after acceptance. Specify model.provider/id or inherit the current model explicitly. Optional tools replaces the default child execution list with plain names or adjusts it with +name/-name entries, and naming an installed web tool loads web support for that tool only, with no sandbox guarantee. Optional session continues a managed completed session and is mutually exclusive with context. Fork captures the current branch now. No worktree isolation.", RunParams, TaskOutput,
     async (input, signal, ctx) => {
       const captured = capture(input, ctx);
       captured.spec.cwd = await canonicalCwd(captured.spec.cwd);
       const { fleet } = await app();
       return fleet.run(captured.spec, { template: captured.template, signal });
     });
-  register("rpc_subagents_status", "RPC 狀態", "Read one task's current state, including pending ordinary dialogs, coordination requests, reports, capabilities, and session identity, or list this owner's retained tasks.", Type.Object({ taskId: Type.Optional(Type.String()) }), Type.Union([TaskOutput, Type.Object({ tasks: Type.Array(TaskOutput) })]),
+  register("rpc_subagents_status", "RPC status", "Read one task's current state, including pending ordinary dialogs, coordination requests, reports, capabilities, and session identity, or list this owner's retained tasks.", Type.Object({ taskId: Type.Optional(Type.String()) }), Type.Union([TaskOutput, Type.Object({ tasks: Type.Array(TaskOutput) })]),
     async ({ taskId }) => { const { fleet } = await app(); return taskId ? fleet.status(taskId) : { tasks: fleet.list() }; }, true);
-  register("rpc_subagents_result", "RPC 結果", "Read a task's retained result or bounded partial text. Check status for completion; eventFile holds the actual RPC event log.", TaskIdParams, TaskOutput,
+  register("rpc_subagents_result", "RPC result", "Read a task's retained result or bounded partial text. Check status for completion; eventFile holds the actual RPC event log.", TaskIdParams, TaskOutput,
     async ({ taskId }) => (await app()).fleet.result(taskId), true);
-  register("rpc_subagents_wait", "等待 RPC 任務", "Wait for a terminal task result. Optional timeout returns its current state without cancelling it. Aborting this wait does not stop a detached task.", Type.Object({ taskId: Type.String(), timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 86400000 })) }), TaskOutput,
+  register("rpc_subagents_wait", "Wait for RPC task", "Wait for a terminal task result. Optional timeout returns its current state without cancelling it. Aborting this wait does not stop a detached task.", Type.Object({ taskId: Type.String(), timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 86400000 })) }), TaskOutput,
     async ({ taskId, timeoutMs }, signal) => (await app()).fleet.wait(taskId, { timeoutMs, signal }), true);
-  register("rpc_subagents_cancel", "取消 RPC 任務", "Idempotently cancel queued, starting, running, or waiting tasks. Clear the RPC queue, abort, and terminate the owned process within finite deadlines.", TaskIdParams, TaskOutput,
+  register("rpc_subagents_cancel", "Cancel RPC task", "Idempotently cancel queued, starting, running, or waiting tasks. Clear the RPC queue, abort, and terminate the owned process within finite deadlines.", TaskIdParams, TaskOutput,
     async ({ taskId }) => (await app()).fleet.cancel(taskId));
-  register("rpc_subagents_respond", "回應 RPC 對話", "Explicitly respond to one pending ordinary child UI dialog by matching dialogId. Coordination requests require rpc_subagents_reply instead. Never autoapprove. Provide cancelled=true, confirmed boolean, or a value matching its method.",
+  register("rpc_subagents_respond", "Respond to RPC dialog", "Explicitly respond to one pending ordinary child UI dialog by matching dialogId. Coordination requests require rpc_subagents_reply instead. Never autoapprove. Provide cancelled=true, confirmed boolean, or a value matching its method.",
     Type.Object({ taskId: Type.String(), dialogId: Type.String(), cancelled: Type.Optional(Type.Boolean()), confirmed: Type.Optional(Type.Boolean()), value: Type.Optional(Type.String({ maxLength: 65536 })) }), TaskOutput,
     async ({ taskId, dialogId, ...answer }) => (await app()).fleet.respond(taskId, dialogId, answer));
-  register("rpc_subagents_pending", "RPC 協調待處理", "Read bounded coordination requests and reports for one task without mutating state. after resumes the report tail; limit bounds both arrays. Reports never wake the parent; requests do. Read-only.", PendingParams, PendingOutput,
+  register("rpc_subagents_pending", "RPC pending coordination", "Read bounded coordination requests and reports for one task without mutating state. after resumes the report tail; limit bounds both arrays. Reports never wake the parent; requests do. Read-only.", PendingParams, PendingOutput,
     async ({ taskId, after, limit }) => (await app()).fleet.pending(taskId, { after, limit }), true);
-  register("rpc_subagents_reply", "RPC 回覆請求", "Answer exactly one pending coordination request by requestId with value, or cancelled=true. The manager validates the answer; it is not an approval and never auto-approves. Coordination request IDs are not dialog IDs.", ReplyParams, TaskOutput,
+  register("rpc_subagents_reply", "Reply to RPC request", "Answer exactly one pending coordination request by requestId with value, or cancelled=true. The manager validates the answer; it is not an approval and never auto-approves. Coordination request IDs are not dialog IDs.", ReplyParams, TaskOutput,
     async ({ taskId, requestId, ...answer }) => (await app()).fleet.reply(taskId, requestId, answer));
-  register("rpc_subagents_steer", "RPC 即時引導", "Send a native RPC steer to an accepted live task that is streaming. The handled/queued receipt only means the child accepted the message, not that it consumed it, and steering cannot unblock a waiting ask. This is not a follow-up prompt and has no retry.", SteerParams, SteerOutput,
+  register("rpc_subagents_steer", "Steer RPC task", "Send a native RPC steer to an accepted live task that is streaming. The handled/queued receipt only means the child accepted the message, not that it consumed it, and steering cannot unblock a waiting ask. This is not a follow-up prompt and has no retry.", SteerParams, SteerOutput,
     async ({ taskId, message }) => (await app()).fleet.steer(taskId, message));
-  register("rpc_subagents_view", "RPC 檢視器", "Open an on-demand read-only Herdr viewer of the same task event log. Requires HERDR_ENV=1 and an explicit caller pane or this process's HERDR_PANE_ID. Never starts another Pi. Returns a standalone viewer command if unavailable.",
+  register("rpc_subagents_view", "RPC viewer", "Open an on-demand read-only Herdr viewer of the same task event log. Requires HERDR_ENV=1 and an explicit caller pane or this process's HERDR_PANE_ID. Never starts another Pi. Returns a standalone viewer command if unavailable.",
     Type.Object({ taskId: Type.String(), callerPaneId: Type.Optional(Type.String()), direction: Type.Optional(Type.Union([Type.Literal("right"), Type.Literal("down")])) }), ViewOutput,
     async ({ taskId, callerPaneId, direction }) => (await app()).view(taskId, callerPaneId, direction));
-  register("rpc_subagents_schedule_create", "建立 RPC 排程", "Persist one local task schedule for its cwd. One trigger only: zoned ISO or +duration at, interval every, or five-field cron with explicit IANA timezone. Fork snapshot is captured once now, not at fire time. Resolved execution tools and web tools persist and are reused at every fire. No offline runs or catch-up.",
+  register("rpc_subagents_schedule_create", "Create RPC schedule", "Persist one local task schedule for its cwd. One trigger only: zoned ISO or +duration at, interval every, or five-field cron with explicit IANA timezone. Fork snapshot is captured once now, not at fire time. Resolved execution tools and web tools persist and are reused at every fire. No offline runs or catch-up.",
     Type.Object({ name: Type.Optional(Type.String({ maxLength: 160 })), task: RunParams, trigger: Type.Union([
       Type.Object({ type: Type.Literal("at"), at: Type.String() }, { additionalProperties: false }),
       Type.Object({ type: Type.Literal("interval"), every: Type.String() }, { additionalProperties: false }),
@@ -251,13 +251,13 @@ export default function rpcSubagents(pi: ExtensionAPI) {
       const manager = await (await app()).project(captured.spec.cwd);
       return manager.create({ name, task: captured.spec, trigger }, { template: captured.template });
     });
-  register("rpc_subagents_schedule_list", "RPC 排程清單", "Read persistent schedules for this cwd without acquiring ownership, arming timers, or changing saved state. Uses the existing local owner or a file snapshot.", Type.Object({ cwd: Type.Optional(Type.String()) }), Type.Object({ schedules: Type.Array(ScheduleOutput) }),
+  register("rpc_subagents_schedule_list", "List RPC schedules", "Read persistent schedules for this cwd without acquiring ownership, arming timers, or changing saved state. Uses the existing local owner or a file snapshot.", Type.Object({ cwd: Type.Optional(Type.String()) }), Type.Object({ schedules: Type.Array(ScheduleOutput) }),
     async ({ cwd }, _signal, ctx) => ({ schedules: await (await app()).listSchedules(cwd ?? ctx.cwd) }), true);
-  register("rpc_subagents_schedule_pause", "暫停 RPC 排程", "Idempotently pause future fires. Does not abort existing scheduled tasks.", ScheduleIdParams, ScheduleOutput,
+  register("rpc_subagents_schedule_pause", "Pause RPC schedule", "Idempotently pause future fires. Does not abort existing scheduled tasks.", ScheduleIdParams, ScheduleOutput,
     async ({ scheduleId, cwd }, _signal, ctx) => (await (await app()).project(cwd ?? ctx.cwd)).pause(scheduleId));
-  register("rpc_subagents_schedule_resume", "恢復 RPC 排程", "Resume only paused schedules at a strictly future trigger. Cancelled/completed/missed schedules never revive.", ScheduleIdParams, ScheduleOutput,
+  register("rpc_subagents_schedule_resume", "Resume RPC schedule", "Resume only paused schedules at a strictly future trigger. Cancelled/completed/missed schedules never revive.", ScheduleIdParams, ScheduleOutput,
     async ({ scheduleId, cwd }, _signal, ctx) => (await (await app()).project(cwd ?? ctx.cwd)).resume(scheduleId));
-  register("rpc_subagents_schedule_cancel", "取消 RPC 排程", "Idempotently cancel future fires. abortRunning=true also cancels only this schedule's active task IDs; it never cancels unrelated tasks.",
+  register("rpc_subagents_schedule_cancel", "Cancel RPC schedule", "Idempotently cancel future fires. abortRunning=true also cancels only this schedule's active task IDs; it never cancels unrelated tasks.",
     Type.Object({ scheduleId: Type.String(), cwd: Type.Optional(Type.String()), abortRunning: Type.Optional(Type.Boolean()) }), ScheduleOutput,
     async ({ scheduleId, cwd, abortRunning }, _signal, ctx) => (await (await app()).project(cwd ?? ctx.cwd)).cancel(scheduleId, { abortRunning }));
 
@@ -269,7 +269,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
       if (stopped) return;
       if (ctx.mode === "tui") widgetController = installFleetWidget(ctx, current.model);
       await current.project(ctx.cwd);
-    } catch (error) { if (ctx.mode === "tui") ctx.ui.notify(safeText(`RPC subagents 排程未啟動。${error instanceof Error ? error.message : String(error)}`), "warning"); }
+    } catch (error) { if (ctx.mode === "tui") ctx.ui.notify(safeText(`RPC subagents schedules did not start. ${error instanceof Error ? error.message : String(error)}`), "warning"); }
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     stopped = true;
@@ -285,40 +285,40 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     current.dispose();
   });
   pi.registerCommand("rpc-subagents", {
-    description: "RPC 任務與排程的即時互動清單",
+    description: "Live list of RPC tasks and schedules",
     handler: async (_args, ctx) => {
       const current = await app();
       const scheduleOwner = (id: string) => {
         const manager = [...current.schedules.values()].find((candidate) => candidate.list().some((record: ScheduleRecord) => record.scheduleId === id));
-        if (!manager) throw new Error("找不到此排程的工作目錄。");
+        if (!manager) throw new Error("No working directory found for this schedule.");
         return manager;
       };
       await showFleetScreen(ctx, current.model, {
         cancelTask: (id) => current.fleet.cancel(id), respond: (id, dialogId, answer) => current.fleet.respond(id, dialogId, answer),
         reply: (id, requestId, answer) => current.fleet.reply(id, requestId, answer),
-        viewTask: async (task: TaskResult) => { const result = await current.view(task.taskId); ctx.ui.notify(safeText(result.status === "opened" ? `已開啟檢視器 ${result.paneId}` : `無法開啟 Herdr。${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning"); },
+        viewTask: async (task: TaskResult) => { const result = await current.view(task.taskId); ctx.ui.notify(safeText(result.status === "opened" ? `Opened viewer ${result.paneId}` : `Could not open Herdr. ${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning"); },
         pauseSchedule: (id) => scheduleOwner(id).pause(id), resumeSchedule: (id) => scheduleOwner(id).resume(id),
         cancelSchedule: (id, abortRunning) => scheduleOwner(id).cancel(id, { abortRunning }),
       });
     },
   });
   pi.registerCommand("rpc-subagents-output", {
-    description: "展開或收合 RPC 子任務的即時輸出預覽",
+    description: "Expand or collapse the live output preview of RPC subagents",
     handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui") throw new Error("RPC 子任務輸出預覽只支援 TUI 模式。");
-      if (!widgetController) throw new Error("RPC 子任務輸出預覽尚未啟動。");
+      if (ctx.mode !== "tui") throw new Error("The RPC subagent output preview is only available in TUI mode.");
+      if (!widgetController) throw new Error("The RPC subagent output preview has not started yet.");
       widgetController.toggle();
     },
   });
   pi.registerCommand("rpc-subagents-view", {
-    description: "開啟指定 RPC 任務的唯讀 Herdr 檢視器",
+    description: "Open a read-only Herdr viewer for an RPC task",
     handler: async (args, ctx) => {
       const current = await app();
       const requested = args.trim();
       const matches = current.fleet.list().filter((task: TaskResult) => task.taskId.startsWith(requested));
       const id = matches.length === 1 ? matches[0].taskId : requested;
       const result = await current.view(id);
-      if (ctx.hasUI) ctx.ui.notify(safeText(result.status === "opened" ? `已開啟檢視器 ${result.paneId}` : `無法開啟 Herdr。${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning");
+      if (ctx.hasUI) ctx.ui.notify(safeText(result.status === "opened" ? `Opened viewer ${result.paneId}` : `Could not open Herdr. ${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning");
     },
   });
 }

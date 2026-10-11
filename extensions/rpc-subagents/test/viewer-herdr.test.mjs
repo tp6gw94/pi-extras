@@ -53,9 +53,9 @@ test("viewer replays and follows the exact log, showing task/model/tools/text/re
     line("rpc", { type: "tool_execution_end", toolCallId: "call", toolName: "read", result: { content: [{ type: "text", text: "output" }] }, isError: false }) +
     line("fleet", { type: "task_result", task: { status: "completed", text: "final\x1b]52;c;clipboard\x07answer", state: { status: "completed" } } }));
   await following;
-  assert.match(output, /任務 task  review/); assert.match(output, /模型 test\/model/);
-  assert.match(output, /Hello world\u2028繁體/); assert.match(output, /工具 read call/); assert.match(output, /工具完成 read/);
-  assert.match(output, /結果 completed\nfinalanswer/); assert.equal(output.includes("\x1b"), false); assert.equal(output.includes("clipboard"), false);
+  assert.match(output, /Task task  review/); assert.match(output, /Model test\/model/);
+  assert.match(output, /Hello world\u2028繁體/); assert.match(output, /Tool read call/); assert.match(output, /Tool done read/);
+  assert.match(output, /Result completed\nfinalanswer/); assert.equal(output.includes("\x1b"), false); assert.equal(output.includes("clipboard"), false);
 });
 
 test("viewer bounds replay and reports omitted history while decoding partial live JSONL chunks", async (t) => {
@@ -68,7 +68,7 @@ test("viewer bounds replay and reports omitted history while decoding partial li
   const controller = new AbortController();
   const tail = replayAndFollow(file, { pollMs: 5, signal: controller.signal, maxReplayBytes: Buffer.byteLength(pending) + 1, write: async (text) => { output += text; } });
   await eventually(() => output.includes("waiting_input"));
-  assert.match(output, /已略過較早/); assert.equal(output.includes("omitted old text"), false);
+  assert.match(output, /Skipped the first/); assert.equal(output.includes("omitted old text"), false);
   const next = line("stderr", { type: "stderr", text: "chunked 繁體" }); const bytes = Buffer.from(next);
   await appendFile(file, bytes.subarray(0, bytes.length - 4));
   await appendFile(file, bytes.subarray(bytes.length - 4));
@@ -132,8 +132,8 @@ test("viewer EOF uses terminal snapshot when tail replay skips a giant legacy te
   await writeFile(join(directory, "state.json"), JSON.stringify(task));
   let output = "";
   await replayAndFollow(file, { pollMs: 5, write: async (text) => { output += text; } });
-  assert.match(output, /已略過較早/);
-  assert.match(output, /結果 failed\nsaved final answer/);
+  assert.match(output, /Skipped the first/);
+  assert.match(output, /Result failed\nsaved final answer/);
 });
 
 test("viewer sees the bounded terminal marker even when its oversized task_result was skipped", { timeout: 2000 }, async (t) => {
@@ -142,7 +142,7 @@ test("viewer sees the bounded terminal marker even when its oversized task_resul
   await writeFile(file, line("fleet", { type: "task_result", task: { status: "failed", state: { status: "failed" }, error: "繁體".repeat(300000) } }) + line("fleet", { type: "task_terminal", status: "failed" }));
   let output = "";
   await replayAndFollow(file, { write: async (text) => { output += text; } });
-  assert.match(output, /結果 failed/);
+  assert.match(output, /Result failed/);
 });
 
 test("verified Herdr current-pane split refuses changed caller identity and never follows UI focus", async () => {

@@ -46,26 +46,26 @@ export class EventRenderer {
     if (record.source === "fleet") {
       if (event.type === "task_created") {
         const task = event.task;
-        return `任務 ${safeText(task.taskId)}  ${safeText(task.name)}\n模型 ${safeText(task.model.provider)}/${safeText(task.model.id)}\n狀態 ${safeText(task.status)}\n`;
+        return `Task ${safeText(task.taskId)}  ${safeText(task.name)}\nModel ${safeText(task.model.provider)}/${safeText(task.model.id)}\nStatus ${safeText(task.status)}\n`;
       }
-      if (event.type === "task_state") return `\n狀態 ${safeText(event.state.status)}${event.state.status === "waiting_input" ? "，等待明確回應" : ""}\n`;
+      if (event.type === "task_state") return `\nStatus ${safeText(event.state.status)}${event.state.status === "waiting_input" ? " (waiting for an explicit response)" : ""}\n`;
       if (event.type === "task_terminal") {
         if (this.terminal) return "";
         this.terminal = true;
-        return `\n結果 ${safeText(event.status)}\n`;
+        return `\nResult ${safeText(event.status)}\n`;
       }
       if (event.type === "task_result") {
         this.terminal = true;
         const task = event.task;
-        return `\n結果 ${safeText(task.status)}\n${safeText(task.text, 65536)}${task.truncated ? "\n[輸出已截短，完整事件保留於記錄檔]" : ""}${task.error ? `\n錯誤 ${safeText(task.error)}` : ""}${task.state.reason ? `\n原因 ${safeText(task.state.reason)}` : ""}\n`;
+        return `\nResult ${safeText(task.status)}\n${safeText(task.text, 65536)}${task.truncated ? "\n[Output truncated; the full events are kept in the log file]" : ""}${task.error ? `\nError ${safeText(task.error)}` : ""}${task.state.reason ? `\nReason ${safeText(task.state.reason)}` : ""}\n`;
       }
-      if (event.type === "dialog_responded") return `\n對話 ${safeText(event.dialogId)} 已${event.cancelled ? "取消" : "回應"}\n`;
+      if (event.type === "dialog_responded") return `\nDialog ${safeText(event.dialogId)} ${event.cancelled ? "cancelled" : "answered"}\n`;
       return "";
     }
-    if (record.source === "stderr") return `\n診斷 ${safeText(event.text)}\n`;
+    if (record.source === "stderr") return `\nDiagnostics ${safeText(event.text)}\n`;
     if (event.type === "message_start" && event.message?.role === "assistant") {
       this.streams.clear();
-      return "\n輸出\n";
+      return "\nOutput\n";
     }
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
       const delta = event.assistantMessageEvent;
@@ -74,16 +74,16 @@ export class EventRenderer {
     }
     if (event.type === "message_end" && event.message?.role === "assistant") {
       this.streams.clear();
-      return event.message.errorMessage ? `\n模型錯誤 ${safeText(event.message.errorMessage)}\n` : "\n";
+      return event.message.errorMessage ? `\nModel error ${safeText(event.message.errorMessage)}\n` : "\n";
     }
-    if (event.type === "tool_execution_start") return `\n工具 ${safeText(event.toolName)} ${safeText(event.toolCallId)}\n${safeText(JSON.stringify(event.args), 2048)}\n`;
-    if (event.type === "tool_execution_update") return `工具進度 ${safeText(event.toolName)}\n${safeText(textContent(event.partialResult?.content), 4096)}\n`;
-    if (event.type === "tool_execution_end") return `工具${event.isError ? "失敗" : "完成"} ${safeText(event.toolName)}\n${safeText(textContent(event.result?.content), 4096)}\n`;
-    if (event.type === "extension_ui_request") return `\n子程序介面 ${safeText(event.method)} ${safeText(event.title ?? event.message)}\n`;
-    if (event.type === "auto_retry_start") return `\n重試 ${safeText(event.attempt)} ${safeText(event.errorMessage)}\n`;
-    if (event.type === "auto_retry_end" && !event.success) return `\n重試失敗 ${safeText(event.finalError)}\n`;
-    if (event.type === "response" && event.success === false) return `\nRPC 失敗 ${safeText(event.command)} ${safeText(event.error)}\n`;
-    if (event.type === "extension_error") return `\n擴充錯誤 ${safeText(event.error)}\n`;
+    if (event.type === "tool_execution_start") return `\nTool ${safeText(event.toolName)} ${safeText(event.toolCallId)}\n${safeText(JSON.stringify(event.args), 2048)}\n`;
+    if (event.type === "tool_execution_update") return `Tool progress ${safeText(event.toolName)}\n${safeText(textContent(event.partialResult?.content), 4096)}\n`;
+    if (event.type === "tool_execution_end") return `Tool ${event.isError ? "failed" : "done"} ${safeText(event.toolName)}\n${safeText(textContent(event.result?.content), 4096)}\n`;
+    if (event.type === "extension_ui_request") return `\nChild UI ${safeText(event.method)} ${safeText(event.title ?? event.message)}\n`;
+    if (event.type === "auto_retry_start") return `\nRetry ${safeText(event.attempt)} ${safeText(event.errorMessage)}\n`;
+    if (event.type === "auto_retry_end" && !event.success) return `\nRetry failed ${safeText(event.finalError)}\n`;
+    if (event.type === "response" && event.success === false) return `\nRPC failed ${safeText(event.command)} ${safeText(event.error)}\n`;
+    if (event.type === "extension_error") return `\nExtension error ${safeText(event.error)}\n`;
     return "";
   }
 }
@@ -108,7 +108,7 @@ export async function replayAndFollow(file, { write, signal, maxReplayBytes = 10
     const size = (await handle.stat()).size;
     offset = Math.max(0, size - maxReplayBytes);
     discard = offset > 0;
-    if (discard) await write(`[已略過較早的 ${offset} bytes，僅重播記錄檔尾段]\n`);
+    if (discard) await write(`[Skipped the first ${offset} bytes; replaying only the end of the log]\n`);
     const bytes = Buffer.alloc(65536);
     while (!signal?.aborted) {
       const read = await handle.read(bytes, 0, bytes.length, offset);
@@ -133,14 +133,14 @@ export async function replayAndFollow(file, { write, signal, maxReplayBytes = 10
         if (discard) { discard = false; continue; }
         if (!line) continue;
         let record;
-        try { record = JSON.parse(line); } catch { await write("[無法解析的事件已略過]\n"); continue; }
+        try { record = JSON.parse(line); } catch { await write("[Skipped an event that could not be parsed]\n"); continue; }
         const text = renderer.render(record);
         if (text) await write(text);
       }
       if (Buffer.byteLength(buffer) > 8388608) {
         buffer = "";
         discard = true;
-        await write("[事件超出大小限制，已略過]\n");
+        await write("[Skipped an event over the size limit]\n");
       }
     }
   } finally { await handle.close(); }
@@ -148,7 +148,7 @@ export async function replayAndFollow(file, { write, signal, maxReplayBytes = 10
 
 async function main() {
   const index = process.argv.indexOf("--events");
-  if (index < 0 || !process.argv[index + 1]) throw new Error("用法：node viewer.mjs --events /absolute/path/events.jsonl");
+  if (index < 0 || !process.argv[index + 1]) throw new Error("Usage: node viewer.mjs --events /absolute/path/events.jsonl");
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once("SIGINT", stop);
