@@ -294,6 +294,8 @@ status, _ = call(page.port, "GET", f"{page.base}/snapshot?t={page.token}", {"Hos
 check("the token as a query parameter is not accepted (403)", status == 403, status)
 status, _ = call(page.port, "GET", f"{page.base}/snapshot?token={page.token}", {"Host": f"127.0.0.1:{page.port}"})
 check("the token as ?token= is not accepted (403)", status == 403, status)
+bad = [call(page.port, "GET", path, page.headers())[0] for path in ("/%E0", "/%E0/api/snapshot", "/%E0/api/events?after=1", f"/{page.sid}/api/events?after=%E0")]
+check("malformed paths get 400 and pi keeps running", bad == [400, 400, 400, 400] and alive() and page.snapshot()[0] == 200, bad)
 status, _ = call(page.port, "GET", "/not-this-session/api/snapshot", page.headers())
 check("another session id in the path gets 410", status == 410, status)
 status, body = call(page.port, "GET", f"/{page.sid}", {"Host": f"127.0.0.1:{page.port}"})

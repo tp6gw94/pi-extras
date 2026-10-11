@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
-import { createServer, type Server } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { after, describe, it } from "node:test";
 import type { Annotation } from "../quote.ts";
 import {
@@ -343,5 +343,98 @@ describe("live updates", () => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		const holder = await hold(server.port);
 		assert.ok(holder.listening);
+	});
+});
+
+describe("annotate server robustness", () => {
+	const crashes: unknown[] = [];
+	const onCrash = (error: unknown) => crashes.push(error);
+	process.on("uncaughtException", onCrash);
+	process.on("unhandledRejection", onCrash);
+	after(() => {
+		process.off("uncaughtException", onCrash);
+		process.off("unhandledRejection", onCrash);
+	});
+
+	it("answers malformed percent-encoding with 400 and keeps serving", async () => {
+		const { server, auth, api } = await start();
+		const paths = ["/%E0", "/%E0/api/snapshot", "/%E0/api/events?after=1", "/%E0/api/send", "/%", "/%ZZ/api/events?after=%E0", `/${SID}%E0/api/snapshot`];
+		for (const path of paths) {
+			for (const headers of [{}, auth()]) {
+				const reply = await request(server.port, { path, headers });
+				assert.ok(reply.status >= 400 && reply.status < 500, `${path} ${reply.status}`);
+			}
+		}
+		assert.equal((await request(server.port, { path: "/%E0" })).status, 400);
+		assert.equal((await request(server.port, { path: "/%E0/api/snapshot", headers: auth() })).status, 400);
+		assert.equal((await request(server.port, { path: "/%E0/api/events?after=1", headers: auth() })).status, 400);
+		assert.equal((await request(server.port, { method: "POST", path: "/%E0/api/send", headers: auth({ "content-type": "application/json" }), body: "{}" })).status, 400);
+		assert.equal((await request(server.port, { path: `/${SID}/api/events?after=%E0`, headers: auth() })).status, 400);
+		assert.equal((await request(server.port, { path: `/${SID}/api/events`, headers: auth() })).status, 400);
+		const snapshot = await api("snapshot");
+		assert.equal(snapshot.status, 200);
+		assert.equal(JSON.parse(snapshot.body).sessionId, SID);
+		assert.equal((await request(server.port, { path: `/${SID}` })).status, 200);
+		assert.equal(server.closed, false);
+		assert.deepEqual(crashes, []);
+	});
+
+	it("rejects a request target that is not a path", async () => {
+		const { server, api } = await start();
+		const reply = await new Promise<string>((resolve, reject) => {
+			const socket = createConnection(server.port, "127.0.0.1", () => socket.end(`GET * HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`));
+			const chunks: Buffer[] = [];
+			socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+			socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			socket.on("error", reject);
+		});
+		assert.match(reply, /^HTTP\/1\.1 400 /);
+		assert.equal((await api("snapshot")).status, 200);
+		assert.deepEqual(crashes, []);
+	});
+
+	it("turns an error thrown inside a handler into 500 and keeps serving", async () => {
+		let calls = 0;
+		let throwAt = 0;
+		const { server, api, send, sent } = await start({
+			isCurrent: () => {
+				calls++;
+				if (calls === throwAt) throw new Error("boom");
+				return true;
+			},
+		});
+		throwAt = calls + 1;
+		assert.equal((await request(server.port, { path: `/${SID}` })).status, 500);
+		throwAt = calls + 1;
+		assert.equal((await api("snapshot")).status, 500);
+		throwAt = calls + 2;
+		assert.equal((await send(1)).status, 500);
+		assert.deepEqual(sent, []);
+		const poll = api("events?after=1");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		throwAt = calls + 1;
+		server.update([item("u1", "hello", "user"), item("a1", "reply")]);
+		assert.equal((await poll).status, 500);
+		throwAt = 0;
+		assert.equal((await api("snapshot")).status, 200);
+		assert.equal((await send(1)).status, 200);
+		assert.equal(sent.length, 1);
+		assert.equal(JSON.parse((await api("events?after=1")).body).items.length, 1);
+		assert.equal(server.closed, false);
+		assert.deepEqual(crashes, []);
+	});
+
+	it("turns a failing onSend into 500 without using up the seq", async () => {
+		let fail = true;
+		const { send } = await start({
+			onSend: (items) => {
+				if (fail) throw new TypeError("editor exploded");
+				return items.length;
+			},
+		});
+		assert.equal((await send(1)).status, 500);
+		fail = false;
+		assert.equal((await send(1)).status, 200);
+		assert.deepEqual(crashes, []);
 	});
 });

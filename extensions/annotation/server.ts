@@ -90,6 +90,43 @@ function sendJson(res: ServerResponse, status: number, body: unknown, extra: Rec
 	res.end(JSON.stringify(body));
 }
 
+function failed(res: ServerResponse): void {
+	try {
+		if (!res.headersSent && !res.destroyed) {
+			sendJson(res, 500, { error: "internal error" }, { Connection: "close" });
+			return;
+		}
+		res.destroy();
+	} catch {
+		res.destroy();
+	}
+}
+
+function guarded<T extends unknown[]>(res: ServerResponse, fn: (...args: T) => void): (...args: T) => void {
+	return (...args: T) => {
+		try {
+			fn(...args);
+		} catch {
+			failed(res);
+		}
+	};
+}
+
+export function decodePathPart(part: string): string | undefined {
+	try {
+		return decodeURIComponent(part);
+	} catch {
+		return undefined;
+	}
+}
+
+export function splitTarget(target: string): { parts: string[]; query: URLSearchParams } | undefined {
+	const at = target.indexOf("?");
+	const path = at < 0 ? target : target.slice(0, at);
+	if (!path.startsWith("/")) return undefined;
+	return { parts: path.split("/").filter((part) => part !== ""), query: new URLSearchParams(at < 0 ? "" : target.slice(at + 1)) };
+}
+
 export function parseSend(body: unknown): { seq: number; items: Annotation[] } | string {
 	const seq = (body as { seq?: unknown } | null)?.seq;
 	if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 1) return "seq must be a positive integer";
@@ -199,7 +236,7 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		const chunks: Buffer[] = [];
 		let size = 0;
 		let rejected = false;
-		req.on("data", (chunk: Buffer) => {
+		req.on("data", guarded(res, (chunk: Buffer) => {
 			if (rejected) return;
 			size += chunk.length;
 			if (size > maxBodyBytes) {
@@ -208,10 +245,10 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 				return;
 			}
 			chunks.push(chunk);
-		});
-		req.on("end", () => {
+		}));
+		req.on("end", guarded(res, () => {
 			if (!rejected) done(Buffer.concat(chunks).toString("utf8"));
-		});
+		}));
 	};
 
 	const handleSend = (req: IncomingMessage, res: ServerResponse) => {
@@ -244,19 +281,19 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		});
 	};
 
-	const handleEvents = (url: URL, req: IncomingMessage, res: ServerResponse) => {
-		const after = Number(url.searchParams.get("after"));
+	const handleEvents = (query: URLSearchParams, res: ServerResponse) => {
+		const after = Number(query.get("after") ?? Number.NaN);
 		if (!Number.isInteger(after) || after < 0) return sendJson(res, 400, { error: "after must be a version number" });
 		if (after !== version) return sendJson(res, 200, changesAfter(after));
 		if (waiters.size >= maxLongPolls) return sendJson(res, 429, { error: `at most ${maxLongPolls} live connections` });
 		let timer: NodeJS.Timeout | undefined;
-		const finish = () => {
+		const finish = guarded(res, () => {
 			waiters.delete(finish);
 			if (timer) clearTimeout(timer);
 			if (closed) return;
 			if (!options.isCurrent()) return sendJson(res, 410, { error: SESSION_SWITCHED });
 			sendJson(res, 200, changesAfter(after));
-		};
+		});
 		waiters.add(finish);
 		timer = setTimeout(finish, longPollMs);
 		res.on("close", () => {
@@ -264,7 +301,7 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		});
 	};
 
-	const server = createServer((req, res) => {
+	const route = (req: IncomingMessage, res: ServerResponse) => {
 		if (closed) {
 			res.writeHead(503, { ...baseHeaders(), Connection: "close" });
 			res.end();
@@ -275,14 +312,24 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			req.resume();
 			return;
 		}
-		const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
-		const parts = url.pathname.split("/").filter((part) => part !== "");
+		const target = splitTarget(req.url ?? "/");
+		if (!target) {
+			sendJson(res, 400, { error: "bad request target" });
+			req.resume();
+			return;
+		}
+		const { parts, query } = target;
 		if (parts.length === 0 || parts.length === 2 || parts.length > 3 || (parts.length === 3 && parts[1] !== "api")) {
 			sendJson(res, 404, { error: "not found" });
 			req.resume();
 			return;
 		}
-		const pathSession = decodeURIComponent(parts[0]!);
+		const pathSession = decodePathPart(parts[0]!);
+		if (pathSession === undefined) {
+			sendJson(res, 400, { error: "malformed path" });
+			req.resume();
+			return;
+		}
 		if (parts.length === 1) {
 			if (req.method !== "GET") return sendJson(res, 405, { error: "method not allowed" });
 			if (pathSession !== sessionId || !options.isCurrent()) return switchedPage(res);
@@ -319,7 +366,15 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			return;
 		}
 		if (endpoint === "snapshot") return sendJson(res, 200, { sessionId, version, nextSeq: lastSeq + 1, items });
-		return handleEvents(url, req, res);
+		return handleEvents(query, res);
+	};
+
+	const server = createServer((req, res) => {
+		req.on("error", () => res.destroy());
+		res.on("error", () => res.destroy());
+		Promise.resolve()
+			.then(() => route(req, res))
+			.catch(() => failed(res));
 	});
 	server.on("connection", (socket) => {
 		sockets.add(socket);
