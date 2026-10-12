@@ -435,6 +435,40 @@ for draft, label in [("Ends with a newline\n", "after text ending in a newline a
     check(f"append {label}", ok and status == 200 and bool(got), f"{status} {editor_text()!r}")
 clear_editor()
 
+if DRIVER == "browser":
+    ready, restarted = f"{WORK}/browser-reload-ready", f"{WORK}/browser-reload-restarted"
+    for f in (ready, restarted):
+        if os.path.exists(f): os.remove(f)
+    browser = subprocess.Popen(["node", f"{HERE}/browser.mjs", "reload", fresh.url, SHOTS, ready, restarted], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    check("browser: reload, send and a fresh tab ran", wait(lambda: os.path.exists(ready) or browser.poll() is not None, 90) and os.path.exists(ready), browser.stderr.read()[-1500:] if browser.poll() is not None else "")
+    got = wait(lambda: editor_text() == "> Checking the cache stats.\n\nafter reload\n\n", 5)
+    check("browser: a send after reloading the tab reaches the editor", bool(got), repr(editor_text()))
+    clear_editor()
+    command("/annotate")
+    check("browser: /annotate stopped the server", bool(wait(lambda: port_free(fresh.port), 5)))
+    stale = fresh
+    fresh = annotate_again()
+    seq = 1
+    check("browser: /annotate restarted the server with a new token", fresh.token != stale.token, fresh.url)
+    open(restarted, "w").write("go")
+    out, err = browser.communicate(timeout=60)
+    result = json.loads(out.strip().split("\n")[-1]) if browser.returncode == 0 else {}
+    checks = result.get("checks", {})
+    key = f"annotate-token:{stale.sid}"
+    stored, after = checks.get("stored", {}), checks.get("afterReload", {})
+    check("browser: the token is kept only in sessionStorage under the session id", stored.get("session") == {key: stale.token} and stored.get("local") == 0 and stored.get("cookie") == "" and "#" not in stored.get("href", "#"), stored or err[-800:])
+    check("browser: after a reload the page is live without the token in the URL", after.get("status", "").startswith("Live") and after.get("session") == {key: stale.token} and "#" not in after.get("href", "#"), after)
+    check("browser: the reloaded tab can send", checks.get("reloadSend", {}).get("round") is True and checks.get("reloadSend", {}).get("count") == 0, checks.get("reloadSend"))
+    fresh_tab = checks.get("freshTab", {})
+    check("browser: a fresh tab without the fragment says it is not authorized", fresh_tab.get("status", "").startswith("Not authorized") and fresh_tab.get("sendDisabled") is True and fresh_tab.get("stored") == 0, fresh_tab)
+    stale_state = checks.get("stale", {})
+    check("browser: after a restart the reloaded old tab shows the stale-token message and clears the stored token", "no longer valid" in stale_state.get("status", "") and "new URL printed by /annotate" in stale_state.get("status", "") and stale_state.get("sendDisabled") is True and stale_state.get("stored") is None, stale_state)
+    check("browser: the stale tab stops making requests", checks.get("staleRequests") == 0, checks.get("staleRequests"))
+    check("browser: no page errors besides the rejected request", all("403" in e or "Failed to load resource" in e for e in result.get("errors", [])), result.get("errors"))
+    print("screenshots: " + " ".join(result.get("screenshots", [])))
+    time.sleep(0.5)
+    check("browser: nothing else was inserted", editor_text() == "", repr(editor_text()))
+
 session_before = (editor() or {}).get("session")
 old = fresh
 if DRIVER == "browser":

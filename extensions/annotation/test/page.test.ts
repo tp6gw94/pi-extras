@@ -91,7 +91,20 @@ class FakeElement {
 
 type Reply = { status: number; body: unknown };
 
-function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record<string, unknown> } = {}) {
+class FakeStorage {
+	entries = new Map<string, string>();
+	getItem(key: string): string | null {
+		return this.entries.has(key) ? this.entries.get(key)! : null;
+	}
+	setItem(key: string, value: string): void {
+		this.entries.set(key, String(value));
+	}
+	removeItem(key: string): void {
+		this.entries.delete(key);
+	}
+}
+
+function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record<string, unknown>; hash?: string; pathname?: string; storage?: FakeStorage; snapshotStatus?: number } = {}) {
 	const ids = ["conversation", "list", "send", "status", "composer", "composer-quote", "note", "count", "empty"];
 	const byId = new Map(ids.map((id) => [id, new FakeElement(id === "note" ? "textarea" : "div")]));
 	const created: FakeElement[] = [];
@@ -105,7 +118,9 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 	let timerId = 0;
 	const timers: { id: number; fn: () => void; ms: number }[] = [];
 	const windowListeners: Record<string, Listener[]> = {};
-	const location = { pathname: "/sid-1", hash: "#t=tok123", search: "" };
+	const location = { pathname: options.pathname ?? "/sid-1", hash: options.hash ?? "#t=tok123", search: "" };
+	const sessionStorage = options.storage ?? new FakeStorage();
+	const base = location.pathname;
 	const history = {
 		calls: [] as unknown[][],
 		replaceState(...args: unknown[]) {
@@ -131,6 +146,12 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 			return node;
 		},
 		addEventListener: () => {},
+		get cookie(): string {
+			throw new Error("cookies must not be used");
+		},
+		set cookie(_value: string) {
+			throw new Error("cookies must not be used");
+		},
 		write: () => {
 			throw new Error("document.write must not be used");
 		},
@@ -157,14 +178,14 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 	const respond = (reply: Reply) => ({ ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body });
 	const fetch = (path: string, init: Record<string, unknown> = {}) => {
 		requests.push({ path, init });
-		if (path === "/sid-1/api/snapshot") return Promise.resolve(respond({ status: 200, body: snapshot }));
-		if (path.startsWith("/sid-1/api/events")) {
+		if (path === base + "/api/snapshot") return Promise.resolve(respond({ status: options.snapshotStatus ?? 200, body: options.snapshotStatus ? {} : snapshot }));
+		if (path.startsWith(base + "/api/events")) {
 			const answer = (reply: Reply) => (reply.status === 0 ? Promise.reject(new TypeError("network")) : Promise.resolve(respond(reply)));
 			const queued = eventQueue.shift();
 			if (queued) return answer(queued);
 			return new Promise((resolve, reject) => eventWaiters.push((reply) => answer(reply).then(resolve, reject)));
 		}
-		if (path === "/sid-1/api/send") {
+		if (path === base + "/api/send") {
 			const reply = sendReplies.shift() ?? { status: 200, body: { ok: true, inserted: 1, nextSeq: 2 } };
 			if (reply.status === 0) return Promise.reject(new TypeError("network"));
 			return Promise.resolve(respond(reply));
@@ -177,6 +198,10 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		fetch,
 		location,
 		history,
+		sessionStorage,
+		get localStorage() {
+			throw new Error("localStorage must not be used");
+		},
 		URLSearchParams,
 		setTimeout: (fn: () => void, ms = 0) => {
 			timerId++;
@@ -232,7 +257,7 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 	};
 	const sends = () => requests.filter((entry) => entry.path === "/sid-1/api/send").map((entry) => JSON.parse(String(entry.init.body)));
 	const blocks = () => byId.get("conversation")!.children.filter((child) => child.tag === "article").map((child) => child.attributes["data-id"]);
-	return { byId, created, requests, flush, select, history, location, pushEvent, annotate, sends, blocks, message, timers };
+	return { byId, created, requests, flush, select, history, location, sessionStorage, pushEvent, annotate, sends, blocks, message, timers };
 }
 
 const item = (id: string, text: string, kind = "assistant") => ({ id, kind, label: kind, text });
@@ -268,6 +293,75 @@ describe("annotate page script", () => {
 		assert.deepEqual(plain([page.requests[0]!.init.headers]), [{ "X-Annotate-Token": "tok123" }]);
 		assert.equal(page.requests[1]!.path, "/sid-1/api/events?after=1");
 		assert.ok(page.requests.every((entry) => !entry.path.includes("tok123")));
+	});
+
+	it("keeps the token in sessionStorage keyed by session id and reuses it after a reload", async () => {
+		const storage = new FakeStorage();
+		const first = loadPage({ version: 1, nextSeq: 1, items: [] }, { storage });
+		await first.flush();
+		assert.deepEqual([...storage.entries], [["annotate-token:sid-1", "tok123"]]);
+		assert.equal(first.location.hash, "");
+		const reloaded = loadPage({ version: 1, nextSeq: 1, items: [] }, { storage, hash: "" });
+		await reloaded.flush();
+		assert.deepEqual(plain([reloaded.requests[0]!.init.headers]), [{ "X-Annotate-Token": "tok123" }]);
+		assert.match(reloaded.byId.get("status")!.textContent, /^Live/);
+		await reloaded.annotate("x", "n");
+		reloaded.byId.get("send")!.dispatch("click");
+		await reloaded.flush();
+		assert.deepEqual(plain([reloaded.requests.find((entry) => entry.path === "/sid-1/api/send")!.init.headers]), [{ "X-Annotate-Token": "tok123", "Content-Type": "application/json" }]);
+		assert.ok(reloaded.requests.every((entry) => !entry.path.includes("tok123")));
+	});
+
+	it("shows a not-authorized message and sends nothing when the tab has no token", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [] }, { hash: "" });
+		await page.flush();
+		assert.equal(page.requests.length, 0);
+		assert.match(page.byId.get("status")!.textContent, /^Not authorized/);
+		assert.equal(page.byId.get("send")!.disabled, true);
+	});
+
+	it("lets a fresh fragment token win over an older stored one and overwrites it", async () => {
+		const storage = new FakeStorage();
+		storage.setItem("annotate-token:sid-1", "old");
+		const page = loadPage({ version: 1, nextSeq: 1, items: [] }, { storage, hash: "#t=new" });
+		await page.flush();
+		assert.deepEqual(plain([page.requests[0]!.init.headers]), [{ "X-Annotate-Token": "new" }]);
+		assert.equal(storage.getItem("annotate-token:sid-1"), "new");
+		assert.match(page.byId.get("status")!.textContent, /^Live/);
+	});
+
+	it("never uses another session's stored token", async () => {
+		const storage = new FakeStorage();
+		storage.setItem("annotate-token:sid-1", "tokA");
+		const other = loadPage({ version: 1, nextSeq: 1, items: [] }, { storage, hash: "", pathname: "/sid-2" });
+		await other.flush();
+		assert.equal(other.requests.length, 0);
+		assert.match(other.byId.get("status")!.textContent, /^Not authorized/);
+		const own = loadPage({ version: 1, nextSeq: 1, items: [] }, { storage, hash: "#t=tokB", pathname: "/sid-2" });
+		await own.flush();
+		assert.deepEqual(plain([own.requests[0]!.init.headers]), [{ "X-Annotate-Token": "tokB" }]);
+		assert.deepEqual(Object.fromEntries(storage.entries), { "annotate-token:sid-1": "tokA", "annotate-token:sid-2": "tokB" });
+	});
+
+	it("clears the stored token, shows the stale message and stops on a 403 snapshot after a reload", async () => {
+		const storage = new FakeStorage();
+		storage.setItem("annotate-token:sid-1", "old");
+		const page = loadPage({ version: 1, nextSeq: 1, items: [] }, { storage, hash: "", snapshotStatus: 403 });
+		await page.flush({ slow: true });
+		assert.equal(storage.getItem("annotate-token:sid-1"), null);
+		assert.match(page.byId.get("status")!.textContent, /token is no longer valid.*new URL printed by \/annotate/);
+		assert.equal(page.requests.length, 1);
+		assert.equal(page.byId.get("send")!.disabled, true);
+	});
+
+	it("clears the stored token and stops polling when a send gets 403", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] }, { send: [{ status: 403, body: {} }] });
+		await page.flush();
+		await page.annotate("x", "n");
+		page.byId.get("send")!.dispatch("click");
+		await page.flush({ slow: true });
+		assert.equal(page.sessionStorage.getItem("annotate-token:sid-1"), null);
+		assert.match(page.byId.get("status")!.textContent, /token is no longer valid/);
 	});
 
 	it("appends new items from the long-poll and keeps polling with the new version", async () => {
@@ -486,6 +580,10 @@ describe("annotate page script", () => {
 		await page.pushEvent({ status: 403, body: {} });
 		assert.match(page.byId.get("status")!.textContent, /token is no longer valid/);
 		assert.equal(page.byId.get("send")!.disabled, true);
+		assert.equal(page.sessionStorage.getItem("annotate-token:sid-1"), null);
+		const polls = page.requests.filter((entry) => entry.path.includes("/api/events")).length;
+		await page.flush({ slow: true });
+		assert.equal(page.requests.filter((entry) => entry.path.includes("/api/events")).length, polls);
 	});
 
 	const observers: { callback: (entries: unknown[]) => void; observed: FakeElement[] }[] = [];
