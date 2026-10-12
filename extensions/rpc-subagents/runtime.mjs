@@ -36,13 +36,16 @@ export async function loadLocalConfig(configFile) {
   };
 }
 
-export function providerExtensionPaths({ extensionDir, configDir = extensionDir, agentDir, cwd, config }) {
-  const defaults = ["extensions/opencode-provider", "npm/node_modules/pi-claude-bridge"]
-    .map((name) => join(agentDir, name)).filter(existsSync);
+export function providerExtensionPaths({ extensionDir, configDir = extensionDir, configFile = join(configDir, "config.json"), agentDir, cwd, config }) {
+  const defaults = ["npm/node_modules/pi-claude-bridge"].map((name) => join(agentDir, name)).filter(existsSync);
   const additional = config.projects?.[cwd]?.providerSources ?? [];
   if (!Array.isArray(additional) || additional.some((item) => typeof item !== "string")) throw new Error("Project providerSources must be an array of explicit local paths");
-  const paths = [...defaults, ...additional.map((source) => resolve(configDir, source))].map((source) => {
-    if (!existsSync(source)) throw new Error(`Provider bootstrap source does not exist: ${source}`);
+  const explicit = additional.map((entry) => {
+    const source = resolve(configDir, entry);
+    if (!existsSync(source)) throw new Error(`Provider bootstrap source does not exist: ${source} (from providerSources of ${cwd} in ${configFile})`);
+    return source;
+  });
+  const paths = [...defaults, ...explicit].map((source) => {
     const path = realpathSync(source);
     if (path === realpathSync(extensionDir)) throw new Error("RPC subagents cannot bootstrap itself in a child");
     return path;
@@ -108,11 +111,11 @@ export function resolveWebEntrypoint(agentDir) {
   }
 }
 
-export function createTaskPreparer({ extensionDir, configDir = extensionDir, agentDir, cliPath, config }) {
+export function createTaskPreparer({ extensionDir, configDir = extensionDir, configFile = join(configDir, "config.json"), agentDir, cliPath, config }) {
   const bridgeExtension = join(extensionDir, "child.ts");
   return async (spec, { directory, template, taskId, ownerId, nonce, session } = {}) => {
     await canonicalCwd(spec.cwd);
-    const providers = providerExtensionPaths({ extensionDir, configDir, agentDir, cwd: spec.cwd, config });
+    const providers = providerExtensionPaths({ extensionDir, configDir, configFile, agentDir, cwd: spec.cwd, config });
     if (!existsSync(bridgeExtension) || !statSync(bridgeExtension).isFile()) throw new Error("RPC subagents child bridge is unavailable");
     const binding = resolveLaunchBinding({ taskId, ownerId, nonce });
     const tools = normalizeTools(spec.tools);
