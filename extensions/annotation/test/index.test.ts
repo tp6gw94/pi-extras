@@ -112,7 +112,7 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 	};
 	return {
 		run: () => commands.get("annotate")!("", ctx),
-		end: () => commands.get("annotation-end")!("", ctx),
+		commands,
 		emit,
 		lastUrl,
 		parts,
@@ -153,7 +153,7 @@ describe("/annotate command", () => {
 		assert.match(token, /^[\w-]{32}$/);
 		assert.deepEqual(t.execs, [{ command: "xdg-open", args: [t.lastUrl()] }]);
 		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
-		assert.match(t.notices.at(-1)!, /\/annotation-end/);
+		assert.match(t.notices.at(-1)!, /Run \/annotate again to stop it\./);
 	});
 
 	it("uses 4747 by default, or the next free port", async () => {
@@ -164,15 +164,9 @@ describe("/annotate command", () => {
 		assert.ok((port >= 4747 && port <= 4756) || port > 0, String(port));
 	});
 
-	it("reprints the identical URL and does not start a second server", async () => {
+	it("registers /annotate and no /annotation-end", async () => {
 		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run();
-		const first = t.lastUrl();
-		await t.run();
-		await t.run();
-		assert.equal(t.lastUrl(), first);
-		assert.deepEqual(t.execs.map((e) => e.args[0]), [first, first, first]);
+		assert.deepEqual([...t.commands.keys()], ["annotate"]);
 	});
 
 	it("does not open a browser over SSH and shows ssh -L usage", async () => {
@@ -281,24 +275,97 @@ describe("live updates and lifecycle", () => {
 		assert.deepEqual(reply.items.map((i: { id: string }) => i.id), ["u1"]);
 	});
 
-	it("/annotation-end ends a pending long-poll at once and frees the port", async () => {
+	it("a second /annotate stops the server, ends a pending long-poll at once and frees the port", async () => {
 		const t = await setup();
 		await t.run();
 		const { url, token } = t.parts();
 		const started = Date.now();
 		const poll = call(url, "GET", "events?after=1", token);
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		await t.end();
+		await t.run();
 		await assert.rejects(poll);
 		assert.ok(Date.now() - started < 1500);
-		assert.match(t.notices.at(-1)!, new RegExp(`stopped, port ${url.port} released`));
+		assert.equal(t.notices.at(-1), `annotate: closed, port ${url.port} released`);
+		assert.equal(t.statuses.at(-1), undefined);
+		assert.equal(t.execs.length, 1);
 		await new Promise<void>((resolve, reject) => {
 			const probe = createServer();
 			probe.once("error", reject);
 			probe.listen(Number(url.port), "127.0.0.1", () => probe.close(() => resolve()));
 		});
-		await t.end();
-		assert.equal(t.notices.at(-1), "annotate: not running");
+	});
+
+	it("a third /annotate starts a new server with a new token and the old token gets 403", async () => {
+		const port = await freePort();
+		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const old = t.parts();
+		await t.run();
+		await t.run();
+		const fresh = t.parts();
+		assert.equal(fresh.url.port, String(port));
+		assert.equal(fresh.url.pathname, old.url.pathname);
+		assert.notEqual(fresh.token, old.token);
+		assert.deepEqual(t.execs.map((e) => e.args[0]), [old.url.href, fresh.url.href]);
+		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
+		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 403);
+		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 403);
+		assert.equal((await call(fresh.url, "GET", "snapshot", fresh.token)).status, 200);
+		assert.equal(t.editor(), "");
+	});
+
+	it("two rapid /annotate calls while the server is starting end with it closed and the port released", async () => {
+		const port = await freePort();
+		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
+		cleanups.push(t.shutdown);
+		await Promise.all([t.run(), t.run()]);
+		assert.equal(t.execs.length, 0);
+		assert.equal(t.notices.at(-1), `annotate: closed, port ${port} released`);
+		assert.equal(t.statuses.at(-1), undefined);
+		await new Promise<void>((resolve, reject) => {
+			const probe = createServer();
+			probe.once("error", reject);
+			probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
+		});
+		await t.run();
+		const { url, token } = t.parts();
+		assert.equal(url.port, String(port));
+		assert.equal(t.execs.length, 1);
+		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
+		assert.equal((await call(url, "GET", "snapshot", token)).status, 200);
+	});
+
+	it("a session shutdown while the server is starting closes it as soon as it binds", async () => {
+		const port = await freePort();
+		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
+		const run = t.run();
+		await t.shutdown();
+		await run;
+		assert.equal(t.execs.length, 0);
+		await new Promise<void>((resolve, reject) => {
+			const probe = createServer();
+			probe.once("error", reject);
+			probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
+		});
+	});
+
+	it("/annotate after /new starts a fresh server for the new session id even if the old one still runs", async () => {
+		const port = await freePort();
+		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const old = t.parts();
+		t.switchSession("session-b");
+		await t.run();
+		const fresh = t.parts();
+		assert.equal(fresh.url.pathname, "/session-b");
+		assert.equal(fresh.url.port, String(port));
+		assert.notEqual(fresh.token, old.token);
+		assert.equal(t.execs.length, 2);
+		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
+		assert.equal((await call(fresh.url, "GET", "snapshot", fresh.token)).status, 200);
+		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 410);
 	});
 
 	it("after a session switch the old tab gets 410 from the new server and nothing is inserted", async () => {

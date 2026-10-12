@@ -111,6 +111,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 	let pending = null;
 	let finished = false;
 	let sending = false;
+	let closed = false;
 	let version = 0;
 	let nextSeq = 1;
 	let messageCount = 0;
@@ -355,7 +356,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		});
 		countEl.textContent = String(annotations.length);
 		emptyEl.hidden = annotations.length > 0;
-		sendButton.disabled = finished || sending || annotations.length === 0;
+		sendButton.disabled = finished || sending || closed || annotations.length === 0;
 	}
 
 	function codeAncestor(node) {
@@ -441,7 +442,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		setStatus(message, true);
 	}
 
-	const DISCONNECTED = "Disconnected from pi, retrying. After /annotation-end, a session switch or quitting pi, run /annotate again.";
+	const CLOSED = "Server closed. Your list is kept and can be copied; run /annotate and open the new URL to send it.";
 	const LOST_TOKEN = "This page's token is no longer valid. Run /annotate again to get the URL.";
 	const SWITCHED = "Session switched, run /annotate again.";
 
@@ -460,8 +461,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 			});
 		} catch {
 			sending = false;
-			setStatus(DISCONNECTED, true);
-			renderList();
+			serverClosed();
 			return;
 		}
 		const data = await response.json().catch(() => ({}));
@@ -489,7 +489,12 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		renderList();
 	});
 
-	let disconnected = false;
+	function serverClosed() {
+		closed = true;
+		setStatus(CLOSED, true);
+		renderList();
+	}
+
 	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 	async function poll() {
@@ -498,8 +503,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 			try {
 				response = await api("events?after=" + version);
 			} catch {
-				disconnected = true;
-				setStatus(DISCONNECTED, true);
+				serverClosed();
 				await wait(2000);
 				continue;
 			}
@@ -516,10 +520,13 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 			if (data.reset || data.items.length > 0) {
 				applyItems(data.items, data.reset);
 				liveStatus(data.reset ? "conversation changed" : "");
-			} else if (disconnected) {
+			} else if (closed) {
 				liveStatus("");
 			}
-			disconnected = false;
+			if (closed) {
+				closed = false;
+				renderList();
+			}
 			version = data.version;
 		}
 	}
@@ -530,7 +537,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		try {
 			response = await api("snapshot");
 		} catch {
-			return stop(DISCONNECTED);
+			return stop(CLOSED);
 		}
 		const data = await response.json().catch(() => ({}));
 		if (response.status === 410) return stop(SWITCHED);

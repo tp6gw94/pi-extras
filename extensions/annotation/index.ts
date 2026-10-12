@@ -22,7 +22,7 @@ export function browserCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv
 export function annotateNotice(url: string, port: number, env: NodeJS.ProcessEnv): string {
 	const lines = [`annotate: open ${url}`];
 	if (env.SSH_CONNECTION) lines.push(`Over SSH, forward the port from your machine first: ssh -L ${port}:127.0.0.1:${port} <host>`);
-	lines.push("Stop it with /annotation-end.");
+	lines.push("Run /annotate again to stop it.");
 	return lines.join("\n");
 }
 
@@ -40,6 +40,7 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 	const store = globalThis as GlobalWithServer;
 	let mine: AnnotateServer | undefined;
 	let starting: Promise<AnnotateServer> | undefined;
+	let closeWhenStarted = false;
 
 	const running = () => (mine && !mine.closed && store[ACTIVE] === mine ? mine : undefined);
 
@@ -107,40 +108,48 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 		});
 		mine = server;
 		store[ACTIVE] = server;
-		ctx.ui.setStatus(STATUS_KEY, `annotate: live on 127.0.0.1:${server.port}`);
+		try {
+			ctx.ui.setStatus(STATUS_KEY, `annotate: live on 127.0.0.1:${server.port}`);
+		} catch {}
 		return server;
 	};
 
+	const closeNotice = (ctx: ExtensionContext, port: number) => {
+		try {
+			ctx.ui.notify(`annotate: closed, port ${port} released`, "info");
+		} catch {}
+	};
+
 	pi.registerCommand("annotate", {
-		description: "Open this conversation in a live browser page to quote parts of it with notes; Send appends them to the editor",
+		description: "Toggle a live browser page of this conversation to quote parts of it with notes; Send appends them to the editor",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
-			let server = running();
-			if (server && server.sessionId !== ctx.sessionManager.getSessionId()) {
-				server.close("replaced");
-				server = undefined;
-			}
-			if (!server) {
-				starting ??= start(ctx).finally(() => {
-					starting = undefined;
-				});
-				server = await starting;
-			}
-			show(ctx, server);
-		},
-	});
-
-	pi.registerCommand("annotation-end", {
-		description: "Stop the /annotate page server",
-		handler: async (_args, ctx) => {
-			const server = running();
-			if (!server) {
-				if (ctx.hasUI) ctx.ui.notify("annotate: not running", "info");
+			if (starting) {
+				closeWhenStarted = true;
 				return;
 			}
-			const port = server.port;
-			server.close("end");
-			if (ctx.hasUI) ctx.ui.notify(`annotate: stopped, port ${port} released`, "info");
+			const server = running();
+			if (server && server.sessionId === ctx.sessionManager.getSessionId()) {
+				const port = server.port;
+				server.close("end");
+				closeNotice(ctx, port);
+				return;
+			}
+			if (server) server.close("replaced");
+			closeWhenStarted = false;
+			const current = start(ctx).finally(() => {
+				starting = undefined;
+			});
+			starting = current;
+			const started = await current;
+			if (closeWhenStarted) {
+				closeWhenStarted = false;
+				const port = started.port;
+				if (!started.closed) started.close("end");
+				closeNotice(ctx, port);
+				return;
+			}
+			show(ctx, started);
 		},
 	});
 
@@ -158,6 +167,7 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 	});
 
 	pi.on("session_shutdown", () => {
+		if (starting) closeWhenStarted = true;
 		const server = mine;
 		mine = undefined;
 		if (server && !server.closed) server.close("session");

@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [mode, url, outDir, ...files] = process.argv.slice(2);
-if (!["live", "switched"].includes(mode) || !url || !outDir) {
+if (!["live", "switched", "closed"].includes(mode) || !url || !outDir) {
 	console.error("usage: node browser.mjs live <url> <screenshot dir> <round 2 ready file> <round 3 ready file> <tree go file>");
 	console.error("       node browser.mjs switched <url> <screenshot dir> <ready file> <go file>");
+	console.error("       node browser.mjs closed <url> <screenshot dir> <ready file>");
 	console.error("env: PLAYWRIGHT_CORE (path to an installed playwright-core package), CHROME_BIN (Chrome or Chromium executable)");
 	process.exit(2);
 }
@@ -73,6 +74,27 @@ const waitForFile = async (file, ms) => {
 	if (!existsSync(file)) throw new Error(`timed out waiting for ${file}`);
 };
 const messages = () => page.locator("#conversation article").count();
+const closedState = () =>
+	page.evaluate(() => {
+		const list = document.getElementById("list");
+		const items = [...list.querySelectorAll("li")];
+		const range = document.createRange();
+		range.selectNodeContents(list);
+		const selection = window.getSelection();
+		selection.removeAllRanges();
+		selection.addRange(range);
+		const copied = selection.toString();
+		selection.removeAllRanges();
+		return {
+			status: document.getElementById("status").textContent,
+			sendDisabled: document.getElementById("send").disabled,
+			count: items.length,
+			quotes: items.map((item) => item.querySelector("blockquote").textContent),
+			notes: items.map((item) => item.querySelector("textarea").value),
+			notesEditable: items.every((item) => !item.querySelector("textarea").disabled && !item.querySelector("textarea").readOnly),
+			copied,
+		};
+	});
 const listState = async (round) => ({
 	count: await page.locator("#list > li").count(),
 	round: (await page.locator("#status").textContent()).includes(`(round ${round})`),
@@ -158,6 +180,18 @@ if (mode === "live") {
 		status: (await page.locator("#status").textContent()).includes("conversation changed"),
 	};
 	await shot("09-tree-reset");
+} else if (mode === "closed") {
+	const [readyFile] = files;
+	errors.length = 0;
+	await dragSelect("#conversation .assistant .text", "That is not a command I know.");
+	await page.keyboard.type("keep me");
+	await page.keyboard.press("Enter");
+	await page.locator("#list > li").first().waitFor();
+	result.before = await closedState();
+	writeFileSync(readyFile, "ready");
+	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Server closed"), null, { timeout: 30_000 });
+	result.closed = await closedState();
+	await shot("c1-server-closed");
 } else {
 	const [readyFile, goFile] = files;
 	errors.length = 0;
@@ -165,9 +199,9 @@ if (mode === "live") {
 	await page.keyboard.type("too late");
 	await page.keyboard.press("Enter");
 	writeFileSync(readyFile, "ready");
-	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Disconnected"), null, { timeout: 30_000 });
-	result.disconnectedText = await page.locator("#status").textContent();
-	await shot("s2-disconnected");
+	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Server closed"), null, { timeout: 30_000 });
+	result.closed = await closedState();
+	await shot("s2-server-closed");
 	await waitForFile(goFile, 60_000);
 	if (!(await page.locator("#send").isDisabled())) await page.locator("#send").click().catch(() => {});
 	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Session switched"), null, { timeout: 15_000 });

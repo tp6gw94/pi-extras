@@ -10,11 +10,12 @@ describe("annotation docs", () => {
 			const text = read(name);
 			const section = text.slice(text.indexOf("## Annotation"), text.indexOf("\n## ", text.indexOf("## Annotation") + 1));
 			assert.ok(section.length > 500);
-			for (const needle of ["/annotate", "/annotation-end", "127.0.0.1", "4747", "4756", "PI_ANNOTATE_PORT", "#t=<token>", "/<session id>", "ssh -L 4747:127.0.0.1:4747 <host>", "SSH_CONNECTION", "xdg-open", "X-Annotate-Token", "Send to pi editor", "/new", "/tree", "[paste #1]", "Show source", "Quote whole diagram", "```mermaid", "/frame", "allow-scripts", "securityLevel: \"strict\"", "5.5 MB"]) {
+			for (const needle of ["/annotate", "annotate: closed, port <port> released", "Server closed", "127.0.0.1", "4747", "4756", "PI_ANNOTATE_PORT", "#t=<token>", "/<session id>", "ssh -L 4747:127.0.0.1:4747 <host>", "SSH_CONNECTION", "xdg-open", "X-Annotate-Token", "Send to pi editor", "/new", "/tree", "[paste #1]", "Show source", "Quote whole diagram", "```mermaid", "/frame", "allow-scripts", "securityLevel: \"strict\"", "5.5 MB"]) {
 				assert.ok(section.includes(needle), `${name}: ${needle}`);
 			}
 			assert.ok(text.includes("[Annotation](#annotation)"));
 			assert.ok(!/alt\+q|\/quote\b|pbpaste|xclip/.test(text));
+			assert.ok(!text.includes("/annotation-end"));
 		});
 	}
 });
