@@ -440,30 +440,47 @@ describe("annotate page script", () => {
 		assert.equal(page.requests.length, before + 1);
 	});
 
-	it("keeps the list when the server goes away, retries, and then reports a session switch", async () => {
+	it("keeps the list when the server closes, disables Send, retries, and then reports a session switch", async () => {
 		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] }, { send: [{ status: 0, body: null }] });
 		await page.flush();
 		await page.annotate("x");
 		page.byId.get("send")!.dispatch("click");
 		await page.flush();
-		assert.match(page.byId.get("status")!.textContent, /^Disconnected from pi, retrying/);
+		assert.match(page.byId.get("status")!.textContent, /^Server closed\. Your list is kept/);
 		assert.equal(page.byId.get("count")!.textContent, "1");
-		assert.equal(page.byId.get("send")!.disabled, false);
+		assert.equal(page.byId.get("send")!.disabled, true);
 		const polls = () => page.requests.filter((entry) => entry.path.startsWith("/sid-1/api/events")).length;
 		const before = polls();
 		await page.pushEvent({ status: 0, body: null });
-		assert.match(page.byId.get("status")!.textContent, /^Disconnected from pi, retrying/);
+		assert.match(page.byId.get("status")!.textContent, /^Server closed\./);
+		assert.equal(page.byId.get("send")!.disabled, true);
+		assert.equal(page.byId.get("count")!.textContent, "1");
 		assert.equal(polls(), before + 1);
 		await page.pushEvent({ status: 410, body: {} });
 		assert.equal(page.byId.get("status")!.textContent, "Session switched, run /annotate again.");
 		assert.equal(page.byId.get("send")!.disabled, true);
+		assert.equal(page.byId.get("count")!.textContent, "1");
+	});
+
+	it("a dropped long-poll disables Send with the list kept, and a working server enables it again", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] });
+		await page.flush();
+		await page.annotate("x");
+		assert.equal(page.byId.get("send")!.disabled, false);
+		await page.pushEvent({ status: 0, body: null });
+		assert.match(page.byId.get("status")!.textContent, /^Server closed\./);
+		assert.equal(page.byId.get("send")!.disabled, true);
+		assert.equal(page.byId.get("count")!.textContent, "1");
+		await page.pushEvent({ status: 200, body: { version: 1, reset: false, items: [] } });
+		assert.match(page.byId.get("status")!.textContent, /^Live/);
+		assert.equal(page.byId.get("send")!.disabled, false);
 	});
 
 	it("recovers after a dropped long-poll and stops on a token the server no longer knows", async () => {
 		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] });
 		await page.flush();
 		await page.pushEvent({ status: 0, body: null });
-		assert.match(page.byId.get("status")!.textContent, /^Disconnected/);
+		assert.match(page.byId.get("status")!.textContent, /^Server closed/);
 		await page.pushEvent({ status: 200, body: { version: 1, reset: false, items: [] } });
 		assert.match(page.byId.get("status")!.textContent, /^Live/);
 		await page.pushEvent({ status: 403, body: {} });

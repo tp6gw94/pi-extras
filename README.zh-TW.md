@@ -10,7 +10,7 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 
 | Extension | 用途 | 文件 |
 | --- | --- | --- |
-| `annotation` | 用 `/annotate` 在瀏覽器打開對話的即時頁面，引用段落並加上筆記，再附加到編輯器；`/annotation-end` 停止它。 | [Annotation](#annotation) |
+| `annotation` | 用 `/annotate` 在瀏覽器打開對話的即時頁面，引用段落並加上筆記，再附加到編輯器；再執行一次 `/annotate` 就會停止。 | [Annotation](#annotation) |
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
 | `ralph` | 用 `/ralph` 對同一個任務跑有上限的多輪全新 pi session，用 `/ralph-stop` 停止。 | |
@@ -32,7 +32,9 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 5. 按 **Send to pi editor**。pi 會依清單順序，把每一項以 `> 引用` 區塊、筆記、一行空行的格式附加到輸入框的最後面。如果輸入框原本有文字且不是以換行結尾，pi 會先補一個換行。完整的文字會留在輸入框裡，看得到也能編輯（不會收合成 `[paste #1]` 標記）。不會送給模型；文字由你編輯後自己送出。
 6. 頁面會保持開啟並清空清單，你可以繼續選取、想送幾次就送幾次。
 
-伺服器執行中再執行 `/annotate`，只會再印一次同樣的網址並打開它，不會啟動第二個伺服器。`/annotation-end` 會停止伺服器並釋放 port。session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或離開 pi。沒有閒置逾時。切換 session 之後，舊分頁會顯示 session 已切換；請在新的 session 重新執行 `/annotate`。
+`/annotate` 是開關。這個 session 沒有伺服器在執行時，它會啟動伺服器並打開網址；有伺服器在執行時，它會停止伺服器：等待中的請求立刻結束、port 釋放，pi 顯示 `annotate: closed, port <port> released`。伺服器還在啟動時再執行 `/annotate`，結果也是停止。session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或離開 pi。沒有閒置逾時。切換 session 之後，`/annotate` 會為新的 session 啟動新的伺服器，舊分頁會顯示 session 已切換。
+
+如果網址不見了，執行兩次 `/annotate`：第一次停止伺服器，第二次啟動新的伺服器，給你新的網址與 token。已開啟的分頁只在伺服器停止前有效；停止後會顯示 **Server closed**、停用 **Send to pi editor**，並保留還沒送出的清單，讓你複製下來，或換到新的網址再加一次。新的伺服器不接受舊的 token。
 
 ### Markdown 與圖表
 
@@ -55,7 +57,7 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 
 每個 pi 程序有自己的伺服器，只聽 `127.0.0.1`。預設 port 是 4747，有設定 `PI_ANNOTATE_PORT` 時用它。如果那個 port 被占用，會依序嘗試接下來九個 port（預設是 4748 到 4756），再不行就用隨機的空閒 port。所以同時開好幾個 pi，會分別拿到 4747、4748，依此類推。
 
-網址格式是 `http://127.0.0.1:<port>/<session id>#t=<token>`。token 放在 fragment（`#` 之後），瀏覽器不會把它放進網址送給伺服器；頁面會讀取它、把它從網址列移除，之後每個請求都用 `X-Annotate-Token` header 帶上它。因此重新整理分頁會失效，請再執行一次 `/annotate` 取得網址。請把網址當成密碼：任何拿到 token 又連得到這個 port 的人，都能把文字放進你的編輯器（但無法送給模型）。
+網址格式是 `http://127.0.0.1:<port>/<session id>#t=<token>`。token 放在 fragment（`#` 之後），瀏覽器不會把它放進網址送給伺服器；頁面會讀取它、把它從網址列移除，之後每個請求都用 `X-Annotate-Token` header 帶上它。因此重新整理分頁會失效，請執行兩次 `/annotate` 取得新的網址。請把網址當成密碼：任何拿到 token 又連得到這個 port 的人，都能把文字放進你的編輯器（但無法送給模型）。
 
 ### 透過 SSH
 
@@ -151,7 +153,7 @@ npm run typecheck
 
 - `npm test` 會跑每個 extension 的測試，包括 `.ts` 與 `.mjs`。`rpc-subagents` 裡需要已安裝 pi 的測試會略過，除非你把 `RPC_SUBAGENTS_PI_PACKAGE` 設成全域安裝的 pi，例如 `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`。
 - `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。
-- `annotation` 的測試涵蓋引用格式、對話快照、頁面腳本（內容一律當成文字顯示，不當 HTML），以及對真的本機伺服器做的 HTTP 測試（token、Host 與 session 檢查、送出序號、long-poll 即時更新、port 遞補）。`extensions/annotation/test/e2e/tmux-annotate.sh` 會在 tmux 裡用假的模型跑真的 pi，執行 `/annotate` 並檢查編輯器、即時更新、`/tree`、`/annotation-end` 與切換 session；請把 `PI_BIN` 設成 pi 執行檔。markdown 測試涵蓋每種語法、無害化的 XSS 內容與程式碼區塊引用，伺服器測試涵蓋 `/frame` 路由、它們的 CSP 與路徑穿越。`extensions/annotation/test/e2e/browser.mjs` 用 headless Chromium 操作頁面；它需要 `playwright-core`，這不是本套件的 dependency。`extensions/annotation/test/e2e/tmux-markdown.sh` 讓 pi 回覆一段 markdown，並執行 `extensions/annotation/test/e2e/markdown.mjs` 檢查顯示結果、圖表 iframe、引用、即時更新、逾時退回、CSP 違規與網路請求；需要設定 `PI_BIN`、`PLAYWRIGHT_CORE` 與 `CHROME_BIN`。
+- `annotation` 的測試涵蓋引用格式、對話快照、頁面腳本（內容一律當成文字顯示，不當 HTML），以及對真的本機伺服器做的 HTTP 測試（token、Host 與 session 檢查、送出序號、long-poll 即時更新、port 遞補）。`extensions/annotation/test/e2e/tmux-annotate.sh` 會在 tmux 裡用假的模型跑真的 pi，執行 `/annotate` 並檢查編輯器、即時更新、`/tree`、用 `/annotate` 停止與重新啟動、伺服器關閉後的頁面，以及切換 session；請把 `PI_BIN` 設成 pi 執行檔。markdown 測試涵蓋每種語法、無害化的 XSS 內容與程式碼區塊引用，伺服器測試涵蓋 `/frame` 路由、它們的 CSP 與路徑穿越。`extensions/annotation/test/e2e/browser.mjs` 用 headless Chromium 操作頁面；它需要 `playwright-core`，這不是本套件的 dependency。`extensions/annotation/test/e2e/tmux-markdown.sh` 讓 pi 回覆一段 markdown，並執行 `extensions/annotation/test/e2e/markdown.mjs` 檢查顯示結果、圖表 iframe、引用、即時更新、逾時退回、CSP 違規與網路請求；需要設定 `PI_BIN`、`PLAYWRIGHT_CORE` 與 `CHROME_BIN`。
 - `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
 
 pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。執行期 dependency 是 `croner`（給 `rpc-subagents` 的 cron 用）與 `mermaid`（給 `annotation` 的圖表用），兩者都鎖定確切版本。

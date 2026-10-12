@@ -6,7 +6,8 @@ usage() {
 Runs /annotate in a real pi under tmux with a fake local model. Checks the URL, port
 fallback and request checks, sends several rounds of annotations, checks the editor and
 that the model got no new request, checks live updates after a new reply and after /tree,
-the long-poll limit, /annotation-end, and that an old page is rejected after /new.
+the long-poll limit, that a second /annotate stops the server and a third starts a new
+one, that an old page is rejected after /new, and that /annotation-end is not a command.
 
 Usage:
   PI_BIN=~/.local/pi-1.1.0/bin extensions/annotation/test/e2e/tmux-annotate.sh
@@ -259,15 +260,11 @@ check("the URL is http://127.0.0.1:<port>/<session id>#t=<token> with no query",
 check(f"pi fell back to the next port while {BASE} was busy" if held else f"pi used a port from {BASE} up ({BASE} was already busy)", page.port == BASE + 1 if held else BASE <= page.port <= BASE + 9, page.port)
 screen = cap("02-annotate")
 flat = screen.replace("\n", "")
-check("the TUI shows the URL and how to stop it", url in flat and "/annotation-end" in flat, screen[-800:])
+check("the TUI shows the URL and how to stop it", url in flat and "Run/annotateagaintostopit." in "".join(screen.split()), screen[-800:])
 check("the status line shows the live server", f"annotate: live on 127.0.0.1:{page.port}" in screen)
 check("the editor is empty and still usable", editor_text() == "")
 
-command("/annotate")
-wait(lambda: len(opened()) == 2, 10)
-check("running /annotate again reprints and reopens the identical URL", opened() == [url, url] and url in cap("02b-annotate-again").replace("\n", ""), repr(opened()))
 status, snap = page.snapshot()
-check("the second /annotate kept the same server", status == 200, status)
 
 kinds = [i["kind"] for i in snap.get("items", [])] if status == 200 else []
 check("the snapshot has user, assistant and tool items", kinds == ["user", "assistant", "tool", "assistant"], f"{status} {kinds}")
@@ -404,17 +401,16 @@ pollers = [page.poll_in_background(version) for _ in range(4)]
 status, body, took = page.events(version, timeout=5)
 check("a 5th concurrent long-poll gets 429", status == 429 and took < 2, f"{status} {took}")
 started = time.time()
-command("/annotation-end")
+command("/annotate")
 for thread, _ in pollers:
     thread.join(10)
 ends = [box.get("result", (None, None, 99)) for _, box in pollers]
-check("/annotation-end ends all pending long-polls at once", all(s is None for s, _, _ in ends) and time.time() - started < 3, [(s, round(t, 2)) for s, _, t in ends])
-check("/annotation-end releases the port", bool(wait(lambda: port_free(page.port), 3)), page.port)
-check("/annotation-end says the port was released", bool(wait(lambda: f"annotate: stopped, port {page.port} released" in cap(), 5)), cap()[-600:])
+check("a second /annotate ends all pending long-polls at once", all(s is None for s, _, _ in ends) and time.time() - started < 3, [(s, round(t, 2)) for s, _, t in ends])
+check("a second /annotate releases the port", bool(wait(lambda: port_free(page.port), 3)), page.port)
+check("a second /annotate says the server closed and the port was released", bool(wait(lambda: f"annotate: closed, port {page.port} released" in cap(), 5)), cap()[-600:])
+check("a second /annotate opened no browser", len(opened()) == 1, repr(opened()))
 check("the status line no longer shows the server", bool(wait(lambda: "annotate: live on" not in cap(), 5)))
 cap("06-end")
-command("/annotation-end")
-check("/annotation-end again says it is not running", bool(wait(lambda: "annotate: not running" in cap(), 5)))
 check("the model received no new request", requests() == before, f"{requests()} vs {before}")
 
 def annotate_again():
@@ -423,7 +419,7 @@ def annotate_again():
     return Page(opened()[-1])
 
 fresh = annotate_again()
-check("/annotate after /annotation-end starts a new server with a new token", fresh.token != page.token and fresh.sid == page.sid and (fresh.port == BASE or not held), fresh.url)
+check("a third /annotate starts a new server with a new token", fresh.token != page.token and fresh.sid == page.sid and (fresh.port == BASE or not held), fresh.url)
 status, _ = call(fresh.port, "GET", f"{fresh.base}/snapshot", {"Host": f"127.0.0.1:{fresh.port}", "X-Annotate-Token": page.token})
 check("the old token is not accepted by the new server", status == 403, status)
 seq = 1
@@ -468,6 +464,8 @@ if DRIVER == "browser":
     open(go, "w").write("go")
     out, err = browser.communicate(timeout=60)
     result = json.loads(out.strip().split("\n")[-1]) if browser.returncode == 0 else {}
+    closed = result.get("closed", {})
+    check("browser: when /new closes the server the page says so and keeps the list with Send disabled", closed.get("status", "").startswith("Server closed.") and closed.get("sendDisabled") is True and closed.get("count") == 1 and closed.get("notes") == ["too late"], closed)
     check("browser: the old page says the session switched", result.get("statusText") == "Session switched, run /annotate again.", result.get("statusText") or err[-800:])
     check("browser: Send is disabled afterwards", result.get("sendDisabled") is True)
     check("browser: no page errors besides failed requests", all("Failed to load resource" in e or "ERR_CONNECTION" in e for e in result.get("errors", [])), result.get("errors"))
@@ -475,9 +473,33 @@ if DRIVER == "browser":
 time.sleep(1)
 screen = cap("07-after-switch")
 check("nothing was inserted into the new session", editor_text() == "" and "too late" not in screen, repr(editor()))
-command("/annotation-end")
-check("the new server stops too", bool(wait(lambda: port_free(new.port), 5)))
+command("/annotate")
+check("/annotate stops the new server too", bool(wait(lambda: port_free(new.port), 5)) and bool(wait(lambda: f"annotate: closed, port {new.port} released" in cap(), 5)))
 check("the model received no new request", requests() == before, f"{requests()} vs {before}")
+shown = len(opened())
+notices = cap().count("annotate: ")
+command("/annotation-end")
+got = wait(lambda: requests() == before + 1, 15)
+last = urllib.request.urlopen(f"http://127.0.0.1:{PORT}/last-user").read().decode()
+check("/annotation-end is not a command: pi sends it to the model as a prompt", bool(got) and "/annotation-end" in last, f"{requests()} vs {before}, {last!r}")
+check("the model's answer to /annotation-end is shown", bool(wait(lambda: "That is not a command I know." in cap(), 15)))
+screen = cap("08-annotation-end")
+check("/annotation-end does not start, stop or mention a server", len(opened()) == shown and port_free(new.port) and "annotate: live on" not in screen and screen.count("annotate: ") <= notices, screen[-800:])
+if DRIVER == "browser":
+    last_page = annotate_again()
+    ready = f"{WORK}/browser-closed-ready"
+    browser = subprocess.Popen(["node", f"{HERE}/browser.mjs", "closed", last_page.url, SHOTS, ready], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    check("browser: the page loaded and an annotation is in the list", wait(lambda: os.path.exists(ready) or browser.poll() is not None, 60) and os.path.exists(ready))
+    command("/annotate")
+    out, err = browser.communicate(timeout=60)
+    result = json.loads(out.strip().split("\n")[-1]) if browser.returncode == 0 else {}
+    closed = result.get("closed", {})
+    check("browser: after /annotate closes the server the page says so", closed.get("status", "").startswith("Server closed. Your list is kept"), closed.get("status") or err[-800:])
+    check("browser: /annotate closed the server", bool(wait(lambda: port_free(last_page.port), 5)))
+    check("browser: Send is disabled and the unsent list is kept", closed.get("sendDisabled") is True and closed.get("count") == 1 and closed.get("quotes") == ["That is not a command I know."] and closed.get("notes") == ["keep me"] and result.get("before", {}).get("sendDisabled") is False, closed)
+    check("browser: the kept list can be selected and copied", "That is not a command I know." in closed.get("copied", "") and closed.get("notesEditable") is True, closed.get("copied"))
+    check("browser: no page errors besides failed requests", all("Failed to load resource" in e or "ERR_CONNECTION" in e for e in result.get("errors", [])), result.get("errors"))
+    print("screenshots: " + " ".join(result.get("screenshots", [])))
 check("pi is still running", alive())
 print(f"{failures} failed")
 sys.exit(1 if failures else 0)

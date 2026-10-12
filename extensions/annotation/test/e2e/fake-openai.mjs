@@ -50,11 +50,16 @@ const markdownReply = [
 ].join("\n");
 const liveReply = "Here is the call flow:\n\n```mermaid\nsequenceDiagram\n    Client->>Cache: get(key)\n    Cache-->>Client: value\n```";
 let requests = 0;
+let lastUser = "";
 
 http
 	.createServer((req, res) => {
 		if (req.url === "/count") {
 			res.end(String(requests));
+			return;
+		}
+		if (req.url === "/last-user") {
+			res.end(lastUser);
 			return;
 		}
 		const chunks = [];
@@ -67,6 +72,7 @@ http
 				const messages = JSON.parse(Buffer.concat(chunks).toString("utf8")).messages ?? [];
 				lastRole = messages.at(-1)?.role ?? "";
 				lastText = JSON.stringify(messages.at(-1)?.content ?? "");
+				if (lastRole === "user") lastUser = lastText;
 			} catch {}
 			res.writeHead(200, { "content-type": "text/event-stream" });
 			const chunk = (delta, finish = null) =>
@@ -76,7 +82,9 @@ http
 				for (const piece of text.match(/[\s\S]{1,40}/g)) chunk({ content: piece });
 				chunk({}, "stop");
 			};
-			if (lastRole === "user" && lastText.includes("live diagram")) {
+			if (lastRole === "user" && lastText.includes("/annotation-end")) {
+				reply("That is not a command I know.");
+			} else if (lastRole === "user" && lastText.includes("live diagram")) {
 				reply(liveReply);
 			} else if (lastRole === "user" && lastText.includes("markdown")) {
 				reply(markdownReply);
