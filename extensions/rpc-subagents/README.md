@@ -283,9 +283,9 @@ opener 不可用時，回傳 `status: "unavailable"`、原因與已 quote 的獨
 
 這些 bootstrap 來源必須能在不等待啟動期使用者對話的情況下完成 `session_start`。
 
-agent 目錄裡已存在的 `extensions/opencode-provider` 與 npm 安裝的 `npm/node_modules/pi-claude-bridge` 會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
+預設的 child provider 只有 npm 安裝的 `npm/node_modules/pi-claude-bridge`：agent 目錄裡有它時會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。`extensions/opencode-provider` 不再預設載入；需要時請把它加入該 cwd 的 `providerSources`。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
 
-若需要其他 provider，參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。擴充功能不掃描任意 extension 來猜測 provider，也不安裝來源或修改使用者設定。
+若需要其他 provider，參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。擴充功能不掃描任意 extension 來猜測 provider，也不安裝來源或修改使用者設定。`providerSources` 裡的路徑不存在時，任務不會啟動，錯誤訊息為 `Provider bootstrap source does not exist: <路徑> (from providerSources of <cwd> in <config.json 路徑>)`；請修正該路徑，或從該 cwd 的 `providerSources` 移除它。
 
 ## 執行靜態與單元檢查
 

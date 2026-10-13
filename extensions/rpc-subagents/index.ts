@@ -104,7 +104,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     const cliPath = resolveCliEntrypoint(getPackageDir());
     const fleet = new FleetManager({ root, concurrency: config.concurrency, dialogTimeoutMs: config.dialogTimeoutMs,
       journalOptions: { maxBytes: config.maxEventBytes },
-      prepare: createTaskPreparer({ extensionDir, configDir: storage.configDir, agentDir, cliPath, config }),
+      prepare: createTaskPreparer({ extensionDir, configDir: storage.configDir, configFile: storage.configFile, agentDir, cliPath, config }),
     });
     const schedules = new Map<string, ScheduleManager>();
     const listeners = new Set<() => void>();

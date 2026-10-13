@@ -19,7 +19,7 @@ async function prepareFixture(t) {
   const directory = await temporary(t);
   const agentDir = join(directory, "agent");
   const extensionDir = join(agentDir, "extensions", "rpc-subagents");
-  const providerDir = join(agentDir, "extensions", "opencode-provider");
+  const providerDir = join(agentDir, "npm", "node_modules", "pi-claude-bridge");
   await mkdir(extensionDir, { recursive: true });
   await mkdir(providerDir, { recursive: true });
   await writeFile(join(extensionDir, "child.ts"), "export default function () {}\n");
@@ -101,7 +101,7 @@ test("CLI selection follows the current installed manifest, never a PATH shim or
   assert.throws(() => resolveCliEntrypoint(packageDir, oldShim), /outside/);
 });
 
-test("provider bootstrapping includes only present known providers and explicit project allowlist sources, never deepinfra-provider", async (t) => {
+test("provider bootstrapping includes only pi-claude-bridge by default and explicit project allowlist sources, never opencode-provider or deepinfra-provider", async (t) => {
   const directory = await temporary(t); const agentDir = join(directory, "agent"); const extensionDir = join(agentDir, "git", "pi-extras", "extensions", "rpc-subagents");
   const deepinfra = join(agentDir, "extensions", "deepinfra-provider"); const opencode = join(agentDir, "extensions", "opencode-provider");
   const arbitrary = join(agentDir, "extensions", "arbitrary-extension"); const additional = join(directory, "extra-provider.ts");
@@ -111,9 +111,24 @@ test("provider bootstrapping includes only present known providers and explicit 
   assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: [additional] } } } }), [claudeBridge, additional]);
   assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/other", config: {} }), [claudeBridge]);
   await mkdir(opencode);
-  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/other", config: {} }), [opencode, claudeBridge]);
-  assert.deepEqual(providerExtensionPaths({ extensionDir, configDir: directory, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: ["extra-provider.ts"] } } } }), [opencode, claudeBridge, additional], "relative sources are relative to configDir");
-  assert.throws(() => providerExtensionPaths({ extensionDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: ["/missing"] } } } }), /does not exist/);
+  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/other", config: {} }), [claudeBridge]);
+  assert.deepEqual(providerExtensionPaths({ extensionDir, configDir: directory, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: ["extra-provider.ts"] } } } }), [claudeBridge, additional], "relative sources are relative to configDir");
+  assert.deepEqual(providerExtensionPaths({ extensionDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: [opencode] } } } }), [claudeBridge, opencode], "opencode-provider loads only when listed explicitly");
+});
+
+test("a missing explicit provider source is an error naming the path, the project cwd and the config file", async (t) => {
+  const directory = await temporary(t); const agentDir = join(directory, "agent"); const extensionDir = join(agentDir, "git", "pi-extras", "extensions", "rpc-subagents");
+  const configDir = join(agentDir, "rpc-subagents"); const configFile = join(configDir, "config.json");
+  await mkdir(extensionDir, { recursive: true });
+  const config = { projects: { "/project": { providerSources: ["../extensions/opencode-provider"] } } };
+  const missing = join(agentDir, "extensions", "opencode-provider");
+  assert.throws(() => providerExtensionPaths({ extensionDir, configDir, configFile, agentDir, cwd: "/project", config }),
+    { message: `Provider bootstrap source does not exist: ${missing} (from providerSources of /project in ${configFile})` });
+  assert.throws(() => providerExtensionPaths({ extensionDir, configDir, agentDir, cwd: "/project", config: { projects: { "/project": { providerSources: ["/missing"] } } } }),
+    { message: `Provider bootstrap source does not exist: /missing (from providerSources of /project in ${configFile})` });
+  const prepare = createTaskPreparer({ extensionDir, configDir, configFile, agentDir, cliPath: "/pi", config: { projects: { [directory]: { providerSources: ["/missing"] } } } });
+  await assert.rejects(prepare(taskSpec(directory), { directory: join(directory, "tasks", "task-1"), taskId: "task-1", ownerId: "owner", nonce: "nonce" }),
+    { message: `Provider bootstrap source does not exist: /missing (from providerSources of ${directory} in ${configFile})` });
 });
 
 test("task preparation builds exact argv for default, custom, and empty tool sets", async (t) => {
