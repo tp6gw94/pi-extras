@@ -7,6 +7,7 @@ import { boundedInteger, normalizeTools } from "./domain.mjs";
 import { readWebCatalog, WEB_APPROVED_ENV } from "./web-policy.mjs";
 import { resolveWebLaunch } from "./capability.mjs";
 import { PARENT_TOOL_NAME } from "./coordination.mjs";
+import { guardAutoExtensions } from "./user-extensions.mjs";
 
 export function resolveCliEntrypoint(packageDir, argvEntry = process.argv[1]) {
   const root = realpathSync(packageDir);
@@ -36,7 +37,7 @@ export async function loadLocalConfig(configFile) {
   };
 }
 
-export function providerExtensionPaths({ extensionDir, configDir = extensionDir, configFile = join(configDir, "config.json"), agentDir, cwd, config }) {
+export function providerExtensionPaths({ extensionDir, configDir = extensionDir, configFile = join(configDir, "config.json"), agentDir, cwd, config, autoExtensions = [], onSelfSkipped }) {
   const defaults = ["npm/node_modules/pi-claude-bridge"].map((name) => join(agentDir, name)).filter(existsSync);
   const additional = config.projects?.[cwd]?.providerSources ?? [];
   if (!Array.isArray(additional) || additional.some((item) => typeof item !== "string")) throw new Error("Project providerSources must be an array of explicit local paths");
@@ -45,12 +46,14 @@ export function providerExtensionPaths({ extensionDir, configDir = extensionDir,
     if (!existsSync(source)) throw new Error(`Provider bootstrap source does not exist: ${source} (from providerSources of ${cwd} in ${configFile})`);
     return source;
   });
+  const auto = guardAutoExtensions(autoExtensions, extensionDir);
+  if (auto.skipped.length) onSelfSkipped?.(auto.skipped);
   const paths = [...defaults, ...explicit].map((source) => {
     const path = realpathSync(source);
     if (path === realpathSync(extensionDir)) throw new Error("RPC subagents cannot bootstrap itself in a child");
     return path;
   });
-  return [...new Set(paths)];
+  return [...new Set([...auto.kept, ...paths])];
 }
 
 export async function canonicalCwd(cwd) {
@@ -111,11 +114,18 @@ export function resolveWebEntrypoint(agentDir) {
   }
 }
 
-export function createTaskPreparer({ extensionDir, configDir = extensionDir, configFile = join(configDir, "config.json"), agentDir, cliPath, config }) {
+export function createTaskPreparer({ extensionDir, configDir = extensionDir, configFile = join(configDir, "config.json"), agentDir, cliPath, config, resolveUserExtensions, notify }) {
+  let selfNoticeShown = false;
+  const onSelfSkipped = (skipped) => {
+    if (selfNoticeShown) return;
+    selfNoticeShown = true;
+    notify?.(`RPC subagents did not load itself in children (found via your settings at ${skipped.join(", ")}).`);
+  };
   const bridgeExtension = join(extensionDir, "child.ts");
   return async (spec, { directory, template, taskId, ownerId, nonce, session } = {}) => {
     await canonicalCwd(spec.cwd);
-    const providers = providerExtensionPaths({ extensionDir, configDir, configFile, agentDir, cwd: spec.cwd, config });
+    const autoExtensions = resolveUserExtensions ? await resolveUserExtensions(spec.cwd) : [];
+    const providers = providerExtensionPaths({ extensionDir, configDir, configFile, agentDir, cwd: spec.cwd, config, autoExtensions, onSelfSkipped });
     if (!existsSync(bridgeExtension) || !statSync(bridgeExtension).isFile()) throw new Error("RPC subagents child bridge is unavailable");
     const binding = resolveLaunchBinding({ taskId, ownerId, nonce });
     const tools = normalizeTools(spec.tools);

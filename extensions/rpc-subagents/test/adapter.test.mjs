@@ -4,6 +4,7 @@ import { readFile, mkdtemp, readdir, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { readSchedules, ScheduleManager } from "../schedules.mjs";
 import { COORDINATION_LIMITS } from "../coordination.mjs";
+import { CHILD_BINDING_ENV } from "../runtime.mjs";
 import { safeText } from "../viewer.mjs";
 import { projectKey } from "../store.mjs";
 import { stripTypeScriptTypes } from "node:module";
@@ -24,7 +25,7 @@ const factorySource = source.replace(/^import .*?;\s*$/gm, "").replace("export d
 function load(env, context = {}, api = {}) {
   const tools = []; const commands = []; const commandHandlers = new Map(); const events = []; const handlers = new Map();
   const forbidden = () => { throw new Error("Factory attempted to initialize runtime resources"); };
-  const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, safeText,
+  const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, CHILD_BINDING_ENV, safeText,
     getPackageDir: forbidden, getAgentDir: forbidden, loadLocalConfig: forbidden, prepareStorage: forbidden, setTimeout: forbidden, setInterval: forbidden, ...context });
   factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name, command) => { commands.push(name); commandHandlers.set(name, command.handler); },
     on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...api });

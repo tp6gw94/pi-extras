@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { COORDINATION_LIMITS } from "../coordination.mjs";
+import { CHILD_BINDING_ENV } from "../runtime.mjs";
 import { safeText } from "../viewer.mjs";
 import { projectKey } from "../store.mjs";
 import { prepareStorage } from "../storage.mjs";
@@ -32,7 +33,7 @@ function load({ extensionDir, agentDir = extensionDir, calls, fleetOptions, sche
   const tools = []; const commands = []; const events = []; const handlers = new Map();
   const track = (name, fn) => (...args) => { calls.push(name); return fn(...args); };
   const factory = runInNewContext(factorySource, { process: { env: {} }, Type: schema, dirname: () => extensionDir, join, fileURLToPath, moduleUrl,
-    COORDINATION_LIMITS, safeText, prepareStorage: track("prepareStorage", prepareStorage),
+    COORDINATION_LIMITS, CHILD_BINDING_ENV, safeText, prepareStorage: track("prepareStorage", prepareStorage),
     loadLocalConfig: track("loadLocalConfig", async (file) => { configFiles.push(file); return {}; }), getPackageDir: track("getPackageDir", () => extensionDir),
     getAgentDir: track("getAgentDir", () => agentDir), resolveCliEntrypoint: track("resolveCliEntrypoint", () => "/pi"),
     createTaskPreparer: track("createTaskPreparer", () => async () => ({})),

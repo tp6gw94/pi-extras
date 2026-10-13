@@ -15,7 +15,7 @@ pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on No
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |
 | `resume-handoff` | Starts a new session from a checked handoff file with `/resume-handoff`. | |
-| `rpc-subagents` | Runs subagent tasks and schedules as `pi --mode rpc` child processes, with `/rpc-subagents` to list them. Keeps its data and `config.json` in `~/.pi/agent/rpc-subagents/`. | [README](extensions/rpc-subagents/README.md) |
+| `rpc-subagents` | Runs subagent tasks and schedules as `pi --mode rpc` child processes, with `/rpc-subagents` to list them. Children load your own extensions from settings (minus `rpc-subagents`, `annotation`, `ux` and `hooks`), so your providers work there too. Keeps its data and `config.json` in `~/.pi/agent/rpc-subagents/`. | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | Gives skills in `~/.pi/agent/skills` and `~/.agents/skills` a valid name when their own name is not one. | |
 | `ux` | Pins your last prompt above the editor. | [README](extensions/ux/README.md) |
 
