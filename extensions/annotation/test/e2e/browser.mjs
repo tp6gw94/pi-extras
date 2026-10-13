@@ -3,10 +3,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [mode, url, outDir, ...files] = process.argv.slice(2);
-if (!["live", "switched", "closed"].includes(mode) || !url || !outDir) {
+if (!["live", "switched", "closed", "reload"].includes(mode) || !url || !outDir) {
 	console.error("usage: node browser.mjs live <url> <screenshot dir> <round 2 ready file> <round 3 ready file> <tree go file>");
 	console.error("       node browser.mjs switched <url> <screenshot dir> <ready file> <go file>");
 	console.error("       node browser.mjs closed <url> <screenshot dir> <ready file>");
+	console.error("       node browser.mjs reload <url> <screenshot dir> <ready file> <restarted file>");
 	console.error("env: PLAYWRIGHT_CORE (path to an installed playwright-core package), CHROME_BIN (Chrome or Chromium executable)");
 	process.exit(2);
 }
@@ -180,6 +181,43 @@ if (mode === "live") {
 		status: (await page.locator("#status").textContent()).includes("conversation changed"),
 	};
 	await shot("09-tree-reset");
+} else if (mode === "reload") {
+	const [readyFile, restartedFile] = files;
+	const sid = new URL(url).pathname.slice(1);
+	const storageState = () => page.evaluate(() => ({ session: { ...sessionStorage }, local: localStorage.length, cookie: document.cookie, href: location.href, history: history.length }));
+	result.checks.stored = await storageState();
+	await page.reload();
+	await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Live"));
+	result.checks.afterReload = await storageState();
+	result.checks.afterReload.status = await page.locator("#status").textContent();
+	await page.locator("#conversation .message").first().waitFor();
+	await dragSelect("#conversation .assistant .text", "Checking the cache stats.");
+	await page.keyboard.type("after reload");
+	await page.keyboard.press("Enter");
+	result.checks.reloadSend = await sendRound(1);
+	await shot("r1-reloaded-sent");
+	const fresh = await browser.newContext();
+	const other = await fresh.newPage();
+	await other.goto(url.split("#")[0]);
+	await other.waitForFunction(() => document.getElementById("status").textContent.length > 0);
+	result.checks.freshTab = await other.evaluate(() => ({ status: document.getElementById("status").textContent, sendDisabled: document.getElementById("send").disabled, stored: sessionStorage.length }));
+	await other.screenshot({ path: join(outDir, "r2-fresh-tab.png") });
+	await fresh.close();
+	writeFileSync(readyFile, "ready");
+	await waitForFile(restartedFile, 60_000);
+	errors.length = 0;
+	await page.reload();
+	await page.waitForFunction(() => document.getElementById("status").textContent.includes("no longer valid"), null, { timeout: 15_000 });
+	result.checks.stale = {
+		status: await page.locator("#status").textContent(),
+		sendDisabled: await page.locator("#send").isDisabled(),
+		stored: await page.evaluate((sid) => sessionStorage.getItem("annotate-token:" + sid), sid),
+	};
+	await page.waitForTimeout(3000);
+	result.checks.staleRequests = 0;
+	page.on("request", () => result.checks.staleRequests++);
+	await page.waitForTimeout(3000);
+	await shot("r3-stale-token");
 } else if (mode === "closed") {
 	const [readyFile] = files;
 	errors.length = 0;

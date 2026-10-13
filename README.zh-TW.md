@@ -57,7 +57,7 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 
 每個 pi 程序有自己的伺服器，只聽 `127.0.0.1`。預設 port 是 4747，有設定 `PI_ANNOTATE_PORT` 時用它。如果那個 port 被占用，會依序嘗試接下來九個 port（預設是 4748 到 4756），再不行就用隨機的空閒 port。所以同時開好幾個 pi，會分別拿到 4747、4748，依此類推。
 
-網址格式是 `http://127.0.0.1:<port>/<session id>#t=<token>`。token 放在 fragment（`#` 之後），瀏覽器不會把它放進網址送給伺服器；頁面會讀取它、把它從網址列移除，之後每個請求都用 `X-Annotate-Token` header 帶上它。因此重新整理分頁會失效，請執行兩次 `/annotate` 取得新的網址。請把網址當成密碼：任何拿到 token 又連得到這個 port 的人，都能把文字放進你的編輯器（但無法送給模型）。
+網址格式是 `http://127.0.0.1:<port>/<session id>#t=<token>`。token 放在 fragment（`#` 之後），瀏覽器不會把它放進網址送給伺服器；頁面會讀取它、把它從網址列移除，之後每個請求都用 `X-Annotate-Token` header 帶上它。頁面也會把 token 存在這個分頁的 `sessionStorage`（以 session id 為鍵），所以重新整理分頁仍然可以用；token 不會放進 `localStorage`、cookie、網址或瀏覽紀錄，沙箱化的圖表 iframe 也讀不到它。不帶 `#t=` 在新分頁打開網址時，頁面會顯示未授權。伺服器不再接受這個 token 時（例如 `/annotate` 停止又重新啟動，或 pi 重新啟動），頁面會把它從 `sessionStorage` 移除、停止，並提示改開 `/annotate` 印出的新網址。請把網址當成密碼：任何拿到 token 又連得到這個 port 的人，都能把文字放進你的編輯器（但無法送給模型）。
 
 ### 透過 SSH
 

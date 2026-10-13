@@ -94,9 +94,29 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 <script nonce="__NONCE__">
 (() => {
 	"use strict";
-	const token = new URLSearchParams(location.hash.slice(1)).get("t") || "";
-	history.replaceState(null, "", location.pathname);
 	const sessionPath = location.pathname.replace(/\/+$/, "");
+	const tokenKey = "annotate-token:" + sessionPath.slice(1);
+	const fragmentToken = new URLSearchParams(location.hash.slice(1)).get("t") || "";
+	history.replaceState(null, "", location.pathname);
+	function storedToken() {
+		try {
+			return sessionStorage.getItem(tokenKey) || "";
+		} catch {
+			return "";
+		}
+	}
+	function storeToken(value) {
+		try {
+			sessionStorage.setItem(tokenKey, value);
+		} catch {}
+	}
+	function forgetToken() {
+		try {
+			sessionStorage.removeItem(tokenKey);
+		} catch {}
+	}
+	if (fragmentToken) storeToken(fragmentToken);
+	const token = fragmentToken || storedToken();
 	const byId = (id) => document.getElementById(id);
 	const conversation = byId("conversation");
 	const list = byId("list");
@@ -443,7 +463,12 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 	}
 
 	const CLOSED = "Server closed. Your list is kept and can be copied; run /annotate and open the new URL to send it.";
-	const LOST_TOKEN = "This page's token is no longer valid. Run /annotate again to get the URL.";
+	const LOST_TOKEN = "This page's token is no longer valid (the server restarted or /annotate ran again). Open the new URL printed by /annotate.";
+	const NO_TOKEN = "Not authorized: this tab has no token. Open the URL printed by /annotate.";
+	function lostToken() {
+		forgetToken();
+		stop(LOST_TOKEN);
+	}
 	const SWITCHED = "Session switched, run /annotate again.";
 
 	sendButton.addEventListener("click", async () => {
@@ -482,7 +507,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 			nextSeq = data.expectedSeq;
 			setStatus("Another tab sent first. Your list is kept; press Send again.", true);
 		} else if (response.status === 403) {
-			return stop(LOST_TOKEN);
+			return lostToken();
 		} else {
 			setStatus((data && data.error) || "Send failed: HTTP " + response.status, true);
 		}
@@ -508,7 +533,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 				continue;
 			}
 			if (response.status === 410) return stop(SWITCHED);
-			if (response.status === 403) return stop(LOST_TOKEN);
+			if (response.status === 403) return lostToken();
 			if (response.status === 429) {
 				setStatus("Too many open annotate tabs; live updates paused. Retrying…", true);
 				await wait(5000);
@@ -532,7 +557,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 	}
 
 	async function load() {
-		if (!token) return stop("Missing token. Run /annotate again and open the URL it prints.");
+		if (!token) return stop(NO_TOKEN);
 		let response;
 		try {
 			response = await api("snapshot");
@@ -541,6 +566,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		}
 		const data = await response.json().catch(() => ({}));
 		if (response.status === 410) return stop(SWITCHED);
+		if (response.status === 403) return lostToken();
 		if (!response.ok) return stop((data && data.error) || "Could not load the conversation: HTTP " + response.status);
 		version = data.version;
 		nextSeq = data.nextSeq;
