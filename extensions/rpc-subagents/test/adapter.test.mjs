@@ -7,6 +7,7 @@ import { COORDINATION_LIMITS } from "../coordination.mjs";
 import { CHILD_BINDING_ENV } from "../runtime.mjs";
 import { safeText } from "../viewer.mjs";
 import { projectKey } from "../store.mjs";
+import { terminalTaskStates } from "../domain.mjs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { dirname, join } from "node:path";
@@ -25,7 +26,7 @@ const factorySource = source.replace(/^import .*?;\s*$/gm, "").replace("export d
 function load(env, context = {}, api = {}) {
   const tools = []; const commands = []; const commandHandlers = new Map(); const events = []; const handlers = new Map();
   const forbidden = () => { throw new Error("Factory attempted to initialize runtime resources"); };
-  const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, CHILD_BINDING_ENV, safeText,
+  const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, CHILD_BINDING_ENV, safeText, terminalTaskStates,
     getPackageDir: forbidden, getAgentDir: forbidden, loadLocalConfig: forbidden, prepareStorage: forbidden, setTimeout: forbidden, setInterval: forbidden, ...context });
   factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name, command) => { commands.push(name); commandHandlers.set(name, command.handler); },
     on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...api });
@@ -184,7 +185,7 @@ test("pending child asks wake the parent exactly once, forward explicit replies,
     { sendMessage: (message, options) => { attempts++; if (failNext) throw new Error("session is closing"); messages.push({ message, options }); } });
   const ctx = { mode: "print", hasUI: true, cwd: directory, ui: { notify: (message, type) => notices.push([message, type]) } };
   await registry.handlers.get("session_start")({ type: "session_start" }, ctx);
-  assert.equal(listeners.size, 2);
+  assert.equal(listeners.size, 3);
   const tick = () => { for (const listener of [...listeners]) listener(); };
   tasks.push({ taskId: "task-1", state: { status: "waiting_input", dialogs: [], requests: [{ requestId: "ask-1", question: "Approve?", expiresAt: 5 }] } });
   tick(); tick();
@@ -238,6 +239,48 @@ test("pending child asks wake the parent exactly once, forward explicit replies,
   assert.equal(calls[3][1], "task-1");
   assert.equal(calls[3][2].after, 3);
   assert.equal(calls[3][2].limit, 5);
+  await registry.handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx);
+  assert.equal(listeners.size, 0);
+});
+
+test("async run tasks wake the parent once when they finish, while sync and scheduled tasks stay silent", async (t) => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "rpc-subagents-completion-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const tasks = []; const listeners = new Set(); const messages = [];
+  let nextId = 0;
+  class FakeFleet {
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+    list() { return structuredClone(tasks); }
+    run(spec) {
+      const task = { taskId: `task-${++nextId}`, status: spec.async ? "queued" : "completed", state: { status: spec.async ? "queued" : "completed" } };
+      tasks.push(task);
+      return Promise.resolve(structuredClone(task));
+    }
+    shutdown() { return Promise.resolve(); }
+  }
+  const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
+    resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
+    FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules, normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }) },
+    { sendMessage: (message, options) => messages.push({ message, options }) });
+  const ctx = { mode: "print", hasUI: false, cwd: directory, model: { provider: "test", id: "model" } };
+  await registry.handlers.get("session_start")({ type: "session_start" }, ctx);
+  const tick = () => { for (const listener of [...listeners]) listener(); };
+  const finish = (taskId, status) => { const task = tasks.find((candidate) => candidate.taskId === taskId); task.status = status; task.state = { status }; tick(); };
+  const run = registry.tools.find((tool) => tool.name === "rpc_subagents_run");
+  const background = (await run.execute("run", { prompt: "work", cwd: directory, async: true }, undefined, undefined, ctx)).structuredContent;
+  await run.execute("run", { prompt: "work", cwd: directory }, undefined, undefined, ctx);
+  tasks.push({ taskId: "scheduled", status: "running", state: { status: "running" }, scheduleId: "schedule-1" });
+  tick();
+  assert.equal(messages.length, 0);
+  finish("scheduled", "completed");
+  finish(background.taskId, "failed");
+  tick();
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].message.customType, "rpc-subagents-completion");
+  assert.deepEqual({ ...messages[0].message.details }, { taskId: background.taskId, status: "failed" });
+  assert.equal(messages[0].options.deliverAs, "followUp");
+  assert.equal(messages[0].options.triggerTurn, true);
   await registry.handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx);
   assert.equal(listeners.size, 0);
 });

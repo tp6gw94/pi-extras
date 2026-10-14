@@ -93,7 +93,7 @@ return results;
 
 ## 執行背景任務
 
-`async: true` 在本機佇列接受任務後立即回傳 ID。回傳 `queued` 不代表 child 已完成啟動或 provider 已成功接受 prompt。請用 `status` 或 `wait` 取得後續結果。
+`async: true` 在本機佇列接受任務後立即回傳 ID。回傳 `queued` 不代表 child 已完成啟動或 provider 已成功接受 prompt。任務進入 terminal 狀態（`completed`、`failed`、`cancelled`、`interrupted`）時，主 Pi 會收到一次 follow-up 喚醒，訊息只帶 taskId 與狀態；主代理再用 `rpc_subagents_result` 讀取結果。排程觸發的任務不會喚醒主 Pi。需要在同一次呼叫內取得結果時，仍可用 `status` 或 `wait`。
 
 ```js
 const task = await tools.rpc_subagents_run({
