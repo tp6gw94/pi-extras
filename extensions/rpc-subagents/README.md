@@ -283,9 +283,16 @@ opener 不可用時，回傳 `status: "unavailable"`、原因與已 quote 的獨
 
 這些 bootstrap 來源必須能在不等待啟動期使用者對話的情況下完成 `session_start`。
 
-預設的 child provider 只有 npm 安裝的 `npm/node_modules/pi-claude-bridge`：agent 目錄裡有它時會自動加入明確 allowlist，所有 cwd 的 child 都能使用 `claude-bridge` provider。`extensions/opencode-provider` 不再預設載入；需要時請把它加入該 cwd 的 `providerSources`。child 使用 `--no-extensions --no-skills --no-prompt-templates`，只額外載入這些來源、child bridge，以及任務啟用網路能力時的受控 web wrapper。
+child 會自動載入你自己的 extension，所以主 pi 能用的 provider（例如 DeepInfra）在 child 裡也能用，不必寫 `providerSources`。每次啟動 child 時，主程序都用 pi 的 `DefaultPackageManager` 與 `SettingsManager` 重新解析一次清單（不安裝缺少的套件），所以改完設定後，下一個 child 就會套用：
 
-若需要其他 provider，參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。擴充功能不掃描任意 extension 來猜測 provider，也不安裝來源或修改使用者設定。`providerSources` 裡的路徑不存在時，任務不會啟動，錯誤訊息為 `Provider bootstrap source does not exist: <路徑> (from providerSources of <cwd> in <config.json 路徑>)`；請修正該路徑，或從該 cwd 的 `providerSources` 移除它。
+- 載入：個人設定 `settings.json` 的 `packages` 裡、依各套件的 extension 篩選後仍啟用的 extension，以及 `<agentDir>/extensions/` 裡的 extension。
+- 不載入：專案範圍（cwd 的 `.pi/`）的 extension 與套件、被篩選或停用的 extension。
+- 一律排除 pi-extras 的 `rpc-subagents`、`annotation`、`ux`、`hooks`（依套件 `package.json` 的 `name` 為 `pi-extras` 加上 extension 子資料夾名稱判斷）。pi-extras 的其他 extension（例如 `ralph`、`resume-handoff`）照常載入。
+- 若 pi-extras 以 symlink、複本或其他套件名稱安裝，名稱比對不到，實際路徑落在本擴充功能目錄內的項目會被略過，並在 TUI 顯示一次通知，不會讓 child 啟動失敗；其他 pi-extras extension（含 `annotation`）此時會載入。即使本擴充功能仍被載入到 child，它偵測到 child 環境變數就什麼都不註冊，只有 child bridge 運作。
+
+另外，若 agent 目錄有 npm 安裝的 `npm/node_modules/pi-claude-bridge`，也會加入。child 仍使用 `--no-extensions --no-skills --no-prompt-templates`，上面的清單、child bridge，以及任務啟用網路能力時的受控 web wrapper 都以明確的 `--extension` 傳入。
+
+若需要上面清單以外的 provider（例如只放在某個專案的 extension），參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。`providerSources` 是額外清單，與自動清單依實際路徑去重；擴充功能不安裝來源，也不修改使用者設定。若 `providerSources` 指向本擴充功能目錄本身，仍會報錯。`providerSources` 裡的路徑不存在時，任務不會啟動，錯誤訊息為 `Provider bootstrap source does not exist: <路徑> (from providerSources of <cwd> in <config.json 路徑>)`；請修正該路徑，或從該 cwd 的 `providerSources` 移除它。
 
 ## 執行靜態與單元檢查
 

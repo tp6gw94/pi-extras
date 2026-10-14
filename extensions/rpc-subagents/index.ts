@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildSessionProjection, getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, DefaultPackageManager, getAgentDir, getPackageDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,8 @@ import { projectKey } from "./store.mjs";
 import { normalizeTaskSpec, terminalTaskStates } from "./domain.mjs";
 import { COORDINATION_LIMITS } from "./coordination.mjs";
 import { captureBranch } from "./snapshot.mjs";
-import { canonicalCwd, createTaskPreparer, loadLocalConfig, resolveCliEntrypoint } from "./runtime.mjs";
+import { canonicalCwd, CHILD_BINDING_ENV, createTaskPreparer, loadLocalConfig, resolveCliEntrypoint } from "./runtime.mjs";
+import { userExtensionPaths } from "./user-extensions.mjs";
 import { prepareStorage } from "./storage.mjs";
 import { HerdrOpener, createHerdrCliAdapter, viewerCommand } from "./herdr.mjs";
 import { installFleetWidget, showFleetScreen, type FleetUIModel, type FleetWidgetController } from "./ui.ts";
@@ -86,7 +87,7 @@ const ScheduleIdParams = Type.Object({ scheduleId: Type.String(), cwd: Type.Opti
 const ViewOutput = Type.Object({ taskId: Type.String(), status: Type.Union([Type.Literal("opened"), Type.Literal("unavailable")]), command: Type.String(), paneId: Type.Optional(Type.String()), reused: Type.Optional(Type.Boolean()), error: Type.Optional(Type.String()) });
 
 export default function rpcSubagents(pi: ExtensionAPI) {
-  if (process.env.RPC_SUBAGENTS_CHILD === "1") return;
+  if (process.env[CHILD_BINDING_ENV.flag]) return;
   const extensionDir = dirname(fileURLToPath(import.meta.url));
   pi.on("resources_discover", () => ({ skillPaths: [join(extensionDir, "skills", "rpc-subagents", "SKILL.md")] }));
   let stopped = false;
@@ -104,7 +105,9 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     const cliPath = resolveCliEntrypoint(getPackageDir());
     const fleet = new FleetManager({ root, concurrency: config.concurrency, dialogTimeoutMs: config.dialogTimeoutMs,
       journalOptions: { maxBytes: config.maxEventBytes },
-      prepare: createTaskPreparer({ extensionDir, configDir: storage.configDir, configFile: storage.configFile, agentDir, cliPath, config }),
+      prepare: createTaskPreparer({ extensionDir, configDir: storage.configDir, configFile: storage.configFile, agentDir, cliPath, config,
+        resolveUserExtensions: (cwd: string) => userExtensionPaths({ pi: { DefaultPackageManager, SettingsManager }, cwd, agentDir }),
+        notify: (message: string) => { if (notificationCtx?.hasUI) notificationCtx.ui.notify(safeText(message), "info"); } }),
     });
     const schedules = new Map<string, ScheduleManager>();
     const listeners = new Set<() => void>();
