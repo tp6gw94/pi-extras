@@ -67,7 +67,7 @@ test("adapter factory registers unique codemode tools with directly accessible s
   assert.equal(steer.parameters.properties.message.maxLength, 8192);
   assert.equal(steer.outputSchema.properties.disposition.anyOf.some((value) => value.const === "queued"), true);
   assert.deepEqual(registry.commands, ["rpc-subagents", "rpc-subagents-output", "rpc-subagents-view"]);
-  assert.deepEqual(registry.events, ["resources_discover", "session_start", "session_shutdown"]);
+  assert.deepEqual(registry.events, ["resources_discover", "session_start", "agent_start", "agent_settled", "session_shutdown"]);
 });
 
 test("output command toggles installed TUI preview, resets on session start, and rejects unavailable modes", async () => {
@@ -290,22 +290,25 @@ async function loadWakeFixture(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   const tasks = []; const listeners = new Set(); const messages = [];
   let nextId = 0;
-  const fixture = { tasks, messages, waitImpl: undefined };
+  const fixture = { tasks, messages, waitImpl: undefined, failImmediately: false };
   const snapshot = (taskId) => structuredClone(tasks.find((task) => task.taskId === taskId));
   class FakeFleet {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
     list() { return structuredClone(tasks); }
-    run(spec) {
+    run() {
       const task = { taskId: `task-${++nextId}`, status: "queued", state: { status: "queued" } };
       tasks.push(task);
       const accepted = structuredClone(task);
-      if (spec.failImmediately) { task.status = "failed"; task.state = { status: "failed" }; }
+      if (fixture.failImmediately) { task.status = "failed"; task.state = { status: "failed" }; }
       return Promise.resolve(accepted);
     }
     status(taskId) { return Promise.resolve(snapshot(taskId)); }
     result(taskId) { return Promise.resolve(snapshot(taskId)); }
     wait(taskId, options) { return fixture.waitImpl(taskId, options); }
-    shutdown() { return Promise.resolve(); }
+    async shutdown() {
+      for (const task of tasks) if (task.status === "queued" || task.status === "running") { task.status = "interrupted"; task.state = { status: "interrupted" }; }
+      for (const listener of [...listeners]) listener();
+    }
   }
   const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
@@ -314,14 +317,25 @@ async function loadWakeFixture(t) {
     { sendMessage: (message, options) => messages.push({ message, options }) });
   const ctx = { mode: "print", hasUI: false, cwd: directory, model: { provider: "test", id: "model" } };
   await registry.handlers.get("session_start")({ type: "session_start" }, ctx);
-  const call = (name, params, signal) => registry.tools.find((tool) => tool.name === name).execute(name, params, signal, undefined, ctx);
+  const call = (name, params) => registry.tools.find((tool) => tool.name === name).execute(name, params, undefined, undefined, ctx);
+  const notify = () => { for (const listener of [...listeners]) listener(); };
   return Object.assign(fixture, {
-    emit: (name, event) => registry.handlers.get(name)?.(event),
-    runAsync: async (extra = {}) => (await call("rpc_subagents_run", { prompt: "work", cwd: directory, async: true, ...extra })).structuredContent,
+    emit: (name, event) => registry.handlers.get(name)(event),
+    runAsync: async () => (await call("rpc_subagents_run", { prompt: "work", cwd: directory, async: true })).structuredContent,
     call,
-    finish: (taskId, status) => { const task = tasks.find((candidate) => candidate.taskId === taskId); task.status = status; task.state = { status }; for (const listener of [...listeners]) listener(); },
+    shutdownSession: () => registry.handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx),
+    notify,
+    finish: (taskId, status) => { const task = tasks.find((candidate) => candidate.taskId === taskId); task.status = status; task.state = { status }; notify(); },
   });
 }
+
+test("no completion is sent for a task interrupted by session_shutdown while the parent is idle", async (t) => {
+  const f = await loadWakeFixture(t);
+  await f.runAsync();
+  await f.shutdownSession();
+  assert.equal(f.tasks[0].status, "interrupted");
+  assert.equal(f.messages.length, 0);
+});
 
 test("a task observed as terminal through wait in the same parent run does not wake the parent afterwards", async (t) => {
   const f = await loadWakeFixture(t);
@@ -335,6 +349,20 @@ test("a task observed as terminal through wait in the same parent run does not w
   assert.equal(f.messages.length, 0);
   release({ taskId: task.taskId, status: "completed", state: { status: "completed" } });
   await waited;
+  await f.emit("agent_settled", { type: "agent_settled", aborted: false });
+  assert.equal(f.messages.length, 0);
+});
+
+test("a task observed as terminal before subscribers are notified does not wake the parent", async (t) => {
+  const f = await loadWakeFixture(t);
+  await f.emit("agent_start", { type: "agent_start" });
+  const task = await f.runAsync();
+  const stored = f.tasks.find((candidate) => candidate.taskId === task.taskId);
+  stored.status = "completed";
+  stored.state = { status: "completed" };
+  const status = await f.call("rpc_subagents_status", { taskId: task.taskId });
+  assert.equal(status.structuredContent.status, "completed");
+  f.notify();
   await f.emit("agent_settled", { type: "agent_settled", aborted: false });
   assert.equal(f.messages.length, 0);
 });
@@ -411,13 +439,40 @@ test("an aborted parent run appends the wake without starting a new turn", async
 test("a task already terminal when its async run returns queued wakes the parent at agent_settled", async (t) => {
   const f = await loadWakeFixture(t);
   await f.emit("agent_start", { type: "agent_start" });
-  const task = await f.runAsync({ failImmediately: true });
+  f.failImmediately = true;
+  const task = await f.runAsync();
   assert.equal(task.status, "queued");
   assert.equal(f.messages.length, 0);
   await f.emit("agent_settled", { type: "agent_settled", aborted: false });
   assert.equal(f.messages.length, 1);
   assert.deepEqual({ ...f.messages[0].message.details }, { taskId: task.taskId, status: "failed" });
 });
+
+test("a task evicted from the fleet before agent_settled still wakes the parent once", async (t) => {
+  const f = await loadWakeFixture(t);
+  await f.emit("agent_start", { type: "agent_start" });
+  const task = await f.runAsync();
+  f.finish(task.taskId, "failed");
+  f.tasks.splice(0, f.tasks.length);
+  await f.emit("agent_settled", { type: "agent_settled", aborted: false });
+  assert.equal(f.messages.length, 1);
+  assert.deepEqual({ ...f.messages[0].message.details }, { taskId: task.taskId, status: "failed" });
+});
+
+for (const [aborted, expected] of [[false, [false, true]], [true, [false, false]]]) {
+  test(`several completions flushed at agent_settled with aborted=${aborted} trigger at most one turn`, async (t) => {
+    const f = await loadWakeFixture(t);
+    await f.emit("agent_start", { type: "agent_start" });
+    const first = await f.runAsync();
+    const second = await f.runAsync();
+    f.finish(first.taskId, "completed");
+    f.finish(second.taskId, "failed");
+    assert.equal(f.messages.length, 0);
+    await f.emit("agent_settled", { type: "agent_settled", aborted });
+    assert.deepEqual(f.messages.map(({ message }) => ({ ...message.details })), [{ taskId: first.taskId, status: "completed" }, { taskId: second.taskId, status: "failed" }]);
+    assert.deepEqual(f.messages.map(({ options }) => options.triggerTurn), expected);
+  });
+}
 
 test("wake bookkeeping follows currently pending request keys on a retained task", async (t) => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "rpc-subagents-notify-prune-")));
