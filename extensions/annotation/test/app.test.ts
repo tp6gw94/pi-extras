@@ -317,6 +317,19 @@ describe("annotation TUI shell", () => {
 		assert.match(t.app.render(60)[at]!, /\x1b\[2m/);
 	});
 
+	it("paints markdown markers, headings and code spans and keeps the source text", () => {
+		const t = setup([
+			{ id: "u1", kind: "user", label: "You", text: "## Cache" },
+			{ id: "a1", kind: "assistant", label: "Assistant", text: "run `ls` now" },
+		]);
+		const raw = t.app.render(60);
+		const heading = raw.find((line) => strip(line) === "  ## Cache")!;
+		assert.match(heading, /\x1b\[2m##\x1b\[0m/);
+		assert.match(heading, /\x1b\[1;34m Cache\x1b\[0m/);
+		const code = raw.find((line) => strip(line) === "  run `ls` now")!;
+		assert.match(code, /\x1b\[33mls\x1b\[0m/);
+	});
+
 	it("underlines every art row of a block covered by a note", () => {
 		const t = setup([items[0]!, diagramItem(FENCE)]);
 		t.keys("A", "x", ENTER);

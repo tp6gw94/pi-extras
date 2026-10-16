@@ -1,5 +1,7 @@
 import { render } from "grok-mermaid";
 import type { SnapshotItem } from "../snapshot.ts";
+import { fences, mermaidFences, type Fence, type FenceSpan } from "./fences.ts";
+import { highlight, type MdStyle } from "./highlight.ts";
 
 export type WidthOf = (text: string) => number;
 export type Shape = "char" | "line";
@@ -36,6 +38,7 @@ export interface Cell {
 	text: string;
 	width: number;
 	cls: number;
+	style: MdStyle;
 }
 
 export interface DiagramSpan {
@@ -162,11 +165,12 @@ function warningText(warnings: readonly string[]): string {
 export function layout(doc: Doc, width: number, widthOf: WidthOf): Layout {
 	const rows: Row[] = [];
 	const textWidth = Math.max(1, width - INDENT);
-	const emitLine = (itemId: string, lineStart: number, line: string): void => {
+	const emitLine = (itemId: string, lineStart: number, line: string, styles: readonly MdStyle[] | undefined): void => {
 		const cells: Cell[] = [];
 		for (const { segment, index: at } of segmenter.segment(line)) {
 			const offset = lineStart + at;
-			cells.push({ offset, end: offset + segment.length, text: segment, width: Math.min(textWidth, widthOf(segment)), cls: classOf(segment) });
+			const style = styles?.[offset] ?? "plain";
+			cells.push({ offset, end: offset + segment.length, text: segment, width: Math.min(textWidth, widthOf(segment)), cls: classOf(segment), style });
 		}
 		for (const chunk of wrapCells(cells, textWidth)) rows.push({ type: "text", itemId, start: chunk[0]?.offset ?? lineStart, cells: chunk });
 	};
@@ -180,7 +184,9 @@ export function layout(doc: Doc, width: number, widthOf: WidthOf): Layout {
 			offsets.push(at);
 			at += line.length + 1;
 		}
-		const blocks = item.kind === "tool" ? [] : mermaidFences(item.text);
+		const tool = item.kind === "tool";
+		const styles = tool ? undefined : highlight(item.text);
+		const blocks = tool ? [] : mermaidFences(item.text);
 		const emitFence = (start: number, fence: Fence): number => {
 			let end = start;
 			while (end < lines.length && offsets[end]! < fence.end) end++;
@@ -190,7 +196,7 @@ export function layout(doc: Doc, width: number, widthOf: WidthOf): Layout {
 			if (art && warning === undefined && !toggled && art.width <= textWidth) {
 				art.styled.forEach((spans, line) => rows.push({ type: "diagram", itemId: item.id, open: fence.open, end: fence.end, line, spans }));
 			} else {
-				for (let i = start; i < end; i++) emitLine(item.id, offsets[i]!, lines[i]!);
+				for (let i = start; i < end; i++) emitLine(item.id, offsets[i]!, lines[i]!, styles);
 				if (warning !== undefined) rows.push({ type: "notice", itemId: item.id, open: fence.open, end: fence.end, text: warning });
 			}
 			return end;
@@ -205,7 +211,7 @@ export function layout(doc: Doc, width: number, widthOf: WidthOf): Layout {
 				next++;
 				continue;
 			}
-			emitLine(item.id, lineStart, lines[index]!);
+			emitLine(item.id, lineStart, lines[index]!, styles);
 			index++;
 		}
 	}
@@ -304,43 +310,6 @@ export function firstNonBlankOffset(text: string, offset: number): number {
 		if (classOf(segment) !== 0) return index;
 	}
 	return start;
-}
-
-export interface FenceSpan {
-	open: number;
-	end: number;
-}
-
-interface Fence extends FenceSpan {
-	lang: string;
-	contentStart: number;
-	contentEnd: number;
-	closed: boolean;
-}
-
-function fences(text: string): Fence[] {
-	const found: Fence[] = [];
-	let open: { char: string; size: number; lang: string; open: number; contentStart: number } | undefined;
-	let lineStart = 0;
-	for (const line of text.split("\n")) {
-		const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-		const lineEnd = lineStart + line.length;
-		if (fence && !open) {
-			if (!(fence[1]![0] === "`" && fence[2]!.includes("`"))) {
-				open = { char: fence[1]![0]!, size: fence[1]!.length, lang: fence[2]!.trim().split(/\s+/)[0] ?? "", open: lineStart, contentStart: lineEnd + 1 };
-			}
-		} else if (fence && open && fence[1]![0] === open.char && fence[1]!.length >= open.size && fence[2]!.trim() === "") {
-			found.push({ lang: open.lang, open: open.open, contentStart: open.contentStart, contentEnd: lineStart, end: lineEnd, closed: true });
-			open = undefined;
-		}
-		lineStart = lineEnd + 1;
-	}
-	if (open) found.push({ lang: open.lang, open: open.open, contentStart: open.contentStart, contentEnd: text.length, end: text.length, closed: false });
-	return found;
-}
-
-function mermaidFences(text: string): Fence[] {
-	return fences(text).filter((fence) => fence.closed && fence.lang.toLowerCase() === "mermaid");
 }
 
 function inFence(fence: FenceSpan, offset: number): boolean {
