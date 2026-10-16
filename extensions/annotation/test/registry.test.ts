@@ -90,7 +90,7 @@ describe("session registry", () => {
 		assert.equal(pickEntry([a], undefined, "/x"), a);
 		assert.equal(pickEntry([a, b], undefined, "/work/b"), b);
 		assert.match(pickEntry([a, b], undefined, "/x") as string, /several annotate sessions/);
-		assert.match(pickEntry([], undefined, "/x") as string, /run \/annotate tui/);
+		assert.match(pickEntry([], undefined, "/x") as string, /run \/annotate in pi first/);
 	});
 
 	it("follows PI_CODING_AGENT_DIR like pi", () => {

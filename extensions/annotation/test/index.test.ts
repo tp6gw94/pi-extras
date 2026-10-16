@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import annotation, { annotateNotice, BIN_PATH, browserCommand } from "../index.ts";
+import annotation, { BIN_PATH } from "../index.ts";
 import { listEntries } from "../registry.ts";
 
 type Handler = (args: string, ctx: unknown) => Promise<void>;
@@ -46,10 +46,9 @@ async function freePort(): Promise<number> {
 
 const msg = (id: string, role: string, content: unknown) => ({ type: "message", id, message: { role, content } });
 
-async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string } = {}) {
+async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string } = {}) {
 	const commands = new Map<string, Handler>();
 	const listeners = new Map<string, Listener[]>();
-	const execs: { command: string; args: string[] }[] = [];
 	const notices: string[] = [];
 	const statuses: (string | undefined)[] = [];
 	const userMessages: unknown[] = [];
@@ -63,10 +62,6 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 	const pi = {
 		registerCommand: (name: string, spec: { handler: Handler }) => commands.set(name, spec.handler),
 		on: (event: string, handler: Listener) => listeners.set(event, [...(listeners.get(event) ?? []), handler]),
-		exec: async (command: string, args: string[]) => {
-			execs.push({ command, args });
-			return { stdout: "", stderr: "", code: 0, killed: false };
-		},
 		sendUserMessage: (message: unknown) => userMessages.push(message),
 	};
 	const ctx = {
@@ -107,12 +102,12 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 	const env = options.env ?? { PI_ANNOTATE_PORT: String(await freePort()) };
 	const registry = mkdtempSync(join(tmpdir(), "annotate-registry-"));
 	cleanups.push(() => rmSync(registry, { recursive: true, force: true }));
-	annotation(pi as never, { platform: options.platform ?? "linux", env, refreshDelayMs: 0, longPollMs: 3000, registryDir: registry });
+	annotation(pi as never, { env, refreshDelayMs: 0, longPollMs: 3000, registryDir: registry });
 	const emit = async (event: string) => {
 		for (const listener of listeners.get(event) ?? []) await listener({ type: event }, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	};
-	const lastUrl = () => /http:\/\/127\.0\.0\.1:\d+\/[\w-]+#t=[\w-]+/.exec(notices.filter((n) => n.startsWith("annotate: open")).at(-1) ?? "")![0];
+	const lastUrl = () => /http:\/\/127\.0\.0\.1:\d+\/[\w-]+#t=[\w-]+/.exec(notices.filter((n) => n.includes("Browser: ")).at(-1) ?? "")![0];
 	const parts = () => {
 		const url = new URL(lastUrl());
 		return { url, token: new URLSearchParams(url.hash.slice(1)).get("t")! };
@@ -124,7 +119,6 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 		emit,
 		lastUrl,
 		parts,
-		execs,
 		notices,
 		statuses,
 		userMessages,
@@ -159,9 +153,11 @@ describe("/annotate command", () => {
 		assert.equal(url.pathname, "/session-a");
 		assert.equal(url.search, "");
 		assert.match(token, /^[\w-]{32}$/);
-		assert.deepEqual(t.execs, [{ command: "xdg-open", args: [t.lastUrl()] }]);
 		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
-		assert.match(t.notices.at(-1)!, /Run \/annotate again to stop it\./);
+		assert.equal(
+			t.notices.at(-1),
+			[`annotate: live on 127.0.0.1:${port}`, `Browser: ${t.lastUrl()}`, `Terminal: '${BIN_PATH}' session-a`, "Run /annotate again to stop it."].join("\n"),
+		);
 	});
 
 	it("uses 4747 by default, or the next free port", async () => {
@@ -177,21 +173,21 @@ describe("/annotate command", () => {
 		assert.deepEqual([...t.commands.keys()], ["annotate"]);
 	});
 
-	it("does not open a browser over SSH and shows ssh -L usage", async () => {
+	it("adds the ssh -L hint to the notice over SSH", async () => {
 		const port = await freePort();
 		const t = await setup({ env: { SSH_CONNECTION: "1.2.3.4 5 6.7.8.9 22", PI_ANNOTATE_PORT: String(port) } });
 		cleanups.push(t.shutdown);
 		await t.run();
-		assert.equal(t.execs.length, 0);
-		assert.ok(t.notices.at(-1)!.includes(`ssh -L ${port}:127.0.0.1:${port} <host>`));
-	});
-
-	it("uses open on macOS and nothing elsewhere", () => {
-		assert.equal(browserCommand("darwin", {}), "open");
-		assert.equal(browserCommand("linux", {}), "xdg-open");
-		assert.equal(browserCommand("win32", {}), undefined);
-		assert.equal(browserCommand("darwin", { SSH_CONNECTION: "x" }), undefined);
-		assert.ok(!annotateNotice("u", 1, {}).includes("ssh"));
+		assert.equal(
+			t.notices.at(-1),
+			[
+				`annotate: live on 127.0.0.1:${port}`,
+				`Browser: ${t.lastUrl()}`,
+				`Terminal: '${BIN_PATH}' session-a`,
+				`Over SSH, forward the port from your machine first: ssh -L ${port}:127.0.0.1:${port} <host>`,
+				"Run /annotate again to stop it.",
+			].join("\n"),
+		);
 	});
 
 	it("does nothing without a UI", async () => {
@@ -295,7 +291,6 @@ describe("live updates and lifecycle", () => {
 		assert.ok(Date.now() - started < 1500);
 		assert.equal(t.notices.at(-1), `annotate: closed, port ${url.port} released`);
 		assert.equal(t.statuses.at(-1), undefined);
-		assert.equal(t.execs.length, 1);
 		await new Promise<void>((resolve, reject) => {
 			const probe = createServer();
 			probe.once("error", reject);
@@ -315,7 +310,6 @@ describe("live updates and lifecycle", () => {
 		assert.equal(fresh.url.port, String(port));
 		assert.equal(fresh.url.pathname, old.url.pathname);
 		assert.notEqual(fresh.token, old.token);
-		assert.deepEqual(t.execs.map((e) => e.args[0]), [old.url.href, fresh.url.href]);
 		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
 		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 403);
 		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 403);
@@ -328,7 +322,6 @@ describe("live updates and lifecycle", () => {
 		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
 		cleanups.push(t.shutdown);
 		await Promise.all([t.run(), t.run()]);
-		assert.equal(t.execs.length, 0);
 		assert.equal(t.notices.at(-1), `annotate: closed, port ${port} released`);
 		assert.equal(t.statuses.at(-1), undefined);
 		await new Promise<void>((resolve, reject) => {
@@ -339,7 +332,6 @@ describe("live updates and lifecycle", () => {
 		await t.run();
 		const { url, token } = t.parts();
 		assert.equal(url.port, String(port));
-		assert.equal(t.execs.length, 1);
 		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
 		assert.equal((await call(url, "GET", "snapshot", token)).status, 200);
 	});
@@ -350,7 +342,6 @@ describe("live updates and lifecycle", () => {
 		const run = t.run();
 		await t.shutdown();
 		await run;
-		assert.equal(t.execs.length, 0);
 		await new Promise<void>((resolve, reject) => {
 			const probe = createServer();
 			probe.once("error", reject);
@@ -370,7 +361,6 @@ describe("live updates and lifecycle", () => {
 		assert.equal(fresh.url.pathname, "/session-b");
 		assert.equal(fresh.url.port, String(port));
 		assert.notEqual(fresh.token, old.token);
-		assert.equal(t.execs.length, 2);
 		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
 		assert.equal((await call(fresh.url, "GET", "snapshot", fresh.token)).status, 200);
 		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 410);
@@ -408,33 +398,21 @@ describe("live updates and lifecycle", () => {
 	});
 });
 
-describe("/annotate tui", () => {
-	it("starts without a browser, registers the session and prints the attach command", async () => {
+describe("session registry and arguments", () => {
+	it("registers the session with its pi-tui module and serves the snapshot", async () => {
 		const t = await setup();
 		cleanups.push(t.shutdown);
-		await t.run("tui");
-		assert.deepEqual(t.execs, []);
+		await t.run();
 		const [entry] = listEntries(t.registry);
 		assert.equal(entry?.sessionId, "session-a");
 		assert.equal(entry?.pid, process.pid);
 		assert.equal(entry?.cwd, "/work/project");
 		assert.match(entry?.tuiModule ?? "", /pi-tui/);
-		assert.equal(t.notices.at(-1), `annotate: TUI session live on 127.0.0.1:${entry!.port}\nAttach from another terminal: '${BIN_PATH}' session-a\nRun /annotate again to stop it.`);
 		const url = new URL(`http://127.0.0.1:${entry!.port}/session-a`);
 		assert.equal((await call(url, "GET", "snapshot", entry!.token)).status, 200);
 	});
 
-	it("keeps a running server and repeats the attach command", async () => {
-		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run("tui");
-		const [first] = listEntries(t.registry);
-		await t.run("tui");
-		assert.deepEqual(listEntries(t.registry), [first]);
-		assert.equal(t.notices.filter((notice) => notice.includes("Attach from another terminal")).length, 2);
-	});
-
-	it("registers a browser session too and unregisters it when /annotate stops it", async () => {
+	it("registers the session and unregisters it when /annotate stops it", async () => {
 		const t = await setup();
 		cleanups.push(t.shutdown);
 		await t.run();
@@ -445,15 +423,17 @@ describe("/annotate tui", () => {
 
 	it("unregisters on session shutdown", async () => {
 		const t = await setup();
-		await t.run("tui");
+		await t.run();
 		await t.shutdown();
 		assert.deepEqual(listEntries(t.registry), []);
 	});
 
-	it("rejects unknown arguments", async () => {
+	it("ignores extra arguments and starts a server like plain /annotate", async () => {
 		const t = await setup();
-		await t.run("web");
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.equal(t.notices.at(-1), "annotate: usage /annotate [tui]");
+		cleanups.push(t.shutdown);
+		await t.run("web again");
+		assert.equal(t.notices.length, 1);
+		assert.match(t.notices.at(-1)!, /^annotate: live on 127\.0\.0\.1:\d+\nBrowser: http:\/\/127\.0\.0\.1:\d+\/session-a#t=[\w-]{32}\nTerminal: '.*pi-annotation\.ts' session-a\nRun \/annotate again to stop it\.$/);
+		assert.equal(listEntries(t.registry)[0]?.sessionId, "session-a");
 	});
 });

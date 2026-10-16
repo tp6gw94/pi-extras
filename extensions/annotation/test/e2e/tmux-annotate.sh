@@ -3,11 +3,12 @@ set -euo pipefail
 
 usage() {
 	cat >&2 <<'TXT'
-Runs /annotate in a real pi under tmux with a fake local model. Checks the URL, port
-fallback and request checks, sends several rounds of annotations, checks the editor and
-that the model got no new request, checks live updates after a new reply and after /tree,
-the long-poll limit, that a second /annotate stops the server and a third starts a new
-one, that an old page is rejected after /new, and that /annotation-end is not a command.
+Runs /annotate in a real pi under tmux with a fake local model. Checks the notice with the
+browser URL and the terminal command, port fallback and request checks, sends several rounds
+of annotations, checks the editor and that the model got no new request, checks live updates
+after a new reply and after /tree, the long-poll limit, that a second /annotate stops the
+server and a third starts a new one, that an old page is rejected after /new, and that
+/annotation-end is not a command.
 
 Usage:
   PI_BIN=~/.local/pi-1.1.0/bin extensions/annotation/test/e2e/tmux-annotate.sh
@@ -59,15 +60,8 @@ SCREENSHOTS=${SCREENSHOTS:-$WORK/screenshots}
 S=annotate-e2e-$$
 export WORK PORT ANNOTATE_PORT S HERE ROOT PI_BIN TUI_MODE DRIVER SCREENSHOTS
 PI_HOME=$WORK/home
-mkdir -p "$PI_HOME/.pi/agent" "$WORK/project" "$WORK/captures" "$WORK/bin"
-rm -f "$WORK/opened.txt" "$WORK/editor.json"
-
-cat >"$WORK/bin/xdg-open" <<SH
-#!/bin/sh
-echo "\$1" >>"$WORK/opened.txt"
-SH
-cp "$WORK/bin/xdg-open" "$WORK/bin/open"
-chmod +x "$WORK/bin/xdg-open" "$WORK/bin/open"
+mkdir -p "$PI_HOME/.pi/agent" "$WORK/project" "$WORK/captures"
+rm -f "$WORK/editor.json"
 
 node "$HERE/fake-openai.mjs" "$PORT" >"$WORK/fake.log" 2>&1 &
 FAKE_PID=$!
@@ -83,11 +77,11 @@ JSON
 
 echo "pi $(HOME=$PI_HOME "$PI_BIN/pi" --version 2>/dev/null), $TUI_MODE, driver $DRIVER, in $WORK"
 tmux new-session -d -s "$S" -x 120 -y 50 -c "$WORK/project" \
-	"export HOME='$PI_HOME' PATH='$WORK/bin:$PI_BIN:$PATH' TERM=xterm-256color PI_ANNOTATE_PORT='$ANNOTATE_PORT' ANNOTATE_EDITOR_PROBE='$WORK/editor.json'; unset PI_CODING_AGENT_DIR SSH_CONNECTION DISPLAY; pi --tui-mode $TUI_MODE --provider fake --model fake-model --extension '$ROOT/index.ts' --extension '$HERE/editor-probe.ts'; echo PI_EXITED \$?; sleep 600"
+	"export HOME='$PI_HOME' PATH='$PI_BIN:$PATH' TERM=xterm-256color PI_ANNOTATE_PORT='$ANNOTATE_PORT' ANNOTATE_EDITOR_PROBE='$WORK/editor.json'; unset PI_CODING_AGENT_DIR SSH_CONNECTION DISPLAY; pi --tui-mode $TUI_MODE --provider fake --model fake-model --extension '$ROOT/index.ts' --extension '$HERE/editor-probe.ts'; echo PI_EXITED \$?; sleep 600"
 
 set +e
 python3 - <<'PY'
-import http.client, json, os, socket, subprocess, sys, threading, time, urllib.request
+import http.client, json, os, re, socket, subprocess, sys, threading, time, urllib.request
 from urllib.parse import urlparse, parse_qs
 
 S, WORK, PORT, DRIVER = os.environ["S"], os.environ["WORK"], os.environ["PORT"], os.environ["DRIVER"]
@@ -113,6 +107,9 @@ def cap(name=None):
 
 def keys(*k): tmux("send-keys", "-t", S, *k)
 def text(s): tmux("send-keys", "-t", S, "-l", s); time.sleep(0.4)
+def footer_line():
+    lines = [l for l in tmux("capture-pane", "-p", "-J", "-t", S).split("\n") if l.strip()]
+    return lines[-1] if lines else ""
 
 def wait(pred, timeout=20):
     end = time.time() + timeout
@@ -140,16 +137,13 @@ def clear_editor():
         keys("C-c")
     wait(lambda: editor_text() == "", 5)
 
-def opened():
-    try:
-        return [l for l in open(f"{WORK}/opened.txt").read().split("\n") if l]
-    except FileNotFoundError:
-        return []
+URL_RE = re.compile(r"Browser: (http://127\.0\.0\.1:\d+/[\w-]+#t=[\w-]+)")
+
+def opened_urls():
+    return URL_RE.findall(cap())
 
 def command(line):
-    count = len(opened())
     text(line); keys("Enter")
-    return count
 
 def call(port, method, path, headers=None, body=None, timeout=5):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
@@ -247,9 +241,9 @@ try:
 except OSError:
     held = False
 command("/annotate")
-urls = wait(lambda: opened(), 10)
+urls = wait(lambda: opened_urls(), 10)
 hold.close()
-check("/annotate opened the browser with xdg-open", len(urls) == 1, repr(urls))
+check("/annotate printed the notice with the browser URL and the terminal command", len(urls) == 1 and "Terminal: " in cap(), repr(urls))
 if not urls:
     print(cap()[-1500:]); sys.exit(1)
 url = urls[0]
@@ -261,7 +255,7 @@ check(f"pi fell back to the next port while {BASE} was busy" if held else f"pi u
 screen = cap("02-annotate")
 flat = screen.replace("\n", "")
 check("the TUI shows the URL and how to stop it", url in flat and "Run/annotateagaintostopit." in "".join(screen.split()), screen[-800:])
-check("the status line shows the live server", f"annotate: live on 127.0.0.1:{page.port}" in screen)
+check("the status line shows the live server", f"annotate: live on 127.0.0.1:{page.port}" in footer_line())
 check("the editor is empty and still usable", editor_text() == "")
 
 status, snap = page.snapshot()
@@ -400,6 +394,7 @@ version = snap["version"]
 pollers = [page.poll_in_background(version) for _ in range(4)]
 status, body, took = page.events(version, timeout=5)
 check("a 5th concurrent long-poll gets 429", status == 429 and took < 2, f"{status} {took}")
+shown = set(opened_urls())
 started = time.time()
 command("/annotate")
 for thread, _ in pollers:
@@ -408,15 +403,16 @@ ends = [box.get("result", (None, None, 99)) for _, box in pollers]
 check("a second /annotate ends all pending long-polls at once", all(s is None for s, _, _ in ends) and time.time() - started < 3, [(s, round(t, 2)) for s, _, t in ends])
 check("a second /annotate releases the port", bool(wait(lambda: port_free(page.port), 3)), page.port)
 check("a second /annotate says the server closed and the port was released", bool(wait(lambda: f"annotate: closed, port {page.port} released" in cap(), 5)), cap()[-600:])
-check("a second /annotate opened no browser", len(opened()) == 1, repr(opened()))
-check("the status line no longer shows the server", bool(wait(lambda: "annotate: live on" not in cap(), 5)))
+check("a second /annotate printed no new browser URL", set(opened_urls()) <= shown, repr(opened_urls()))
+check("the status line no longer shows the server", bool(wait(lambda: "annotate: live on" not in footer_line(), 5)))
 cap("06-end")
 check("the model received no new request", requests() == before, f"{requests()} vs {before}")
 
 def annotate_again():
-    count = command("/annotate")
-    wait(lambda: len(opened()) == count + 1, 10)
-    return Page(opened()[-1])
+    seen = set(opened_urls())
+    command("/annotate")
+    urls = wait(lambda: [u for u in opened_urls() if u not in seen], 10)
+    return Page(urls[-1])
 
 fresh = annotate_again()
 check("a third /annotate starts a new server with a new token", fresh.token != page.token and fresh.sid == page.sid and (fresh.port == BASE or not held), fresh.url)
@@ -510,7 +506,7 @@ check("nothing was inserted into the new session", editor_text() == "" and "too 
 command("/annotate")
 check("/annotate stops the new server too", bool(wait(lambda: port_free(new.port), 5)) and bool(wait(lambda: f"annotate: closed, port {new.port} released" in cap(), 5)))
 check("the model received no new request", requests() == before, f"{requests()} vs {before}")
-shown = len(opened())
+shown = set(opened_urls())
 notices = cap().count("annotate: ")
 command("/annotation-end")
 got = wait(lambda: requests() == before + 1, 15)
@@ -518,7 +514,7 @@ last = urllib.request.urlopen(f"http://127.0.0.1:{PORT}/last-user").read().decod
 check("/annotation-end is not a command: pi sends it to the model as a prompt", bool(got) and "/annotation-end" in last, f"{requests()} vs {before}, {last!r}")
 check("the model's answer to /annotation-end is shown", bool(wait(lambda: "That is not a command I know." in cap(), 15)))
 screen = cap("08-annotation-end")
-check("/annotation-end does not start, stop or mention a server", len(opened()) == shown and port_free(new.port) and "annotate: live on" not in screen and screen.count("annotate: ") <= notices, screen[-800:])
+check("/annotation-end does not start, stop or mention a server", set(opened_urls()) <= shown and port_free(new.port) and "annotate: live on" not in footer_line() and screen.count("annotate: ") <= notices, screen[-800:])
 if DRIVER == "browser":
     last_page = annotate_again()
     ready = f"{WORK}/browser-closed-ready"

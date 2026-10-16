@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-pi-annotation 是 [pi](https://github.com/earendil-works/pi) 的 extension，讓你引用目前對話的段落、加上筆記，再附加到 pi 編輯器。你可以用 `/annotate` 在瀏覽器的即時頁面上引用，或用 `/annotate tui` 在另一個 pane 的終端機檢視裡引用。pi-annotation 不會把任何東西送給模型。文字由你在編輯器裡修改後自己送出。
+pi-annotation 是 [pi](https://github.com/earendil-works/pi) 的 extension，讓你引用目前對話的段落、加上筆記，再附加到 pi 編輯器。`/annotate` 會為這個 session 啟動伺服器，印出一則通知，裡面有瀏覽器網址與終端機連接指令。pi-annotation 不會把任何東西送給模型。文字由你在編輯器裡修改後自己送出。
 
 pi-annotation 不會卡住 pi。頁面或終端機檢視開著的時候，你可以繼續工作。pi 每完成一則訊息，訊息就會出現在上面。
 
@@ -30,7 +30,7 @@ pi --extension ./extensions/annotation/index.ts
 
 ## 在瀏覽器裡引用對話
 
-1. 執行 `/annotate`。pi 會為這個 session 啟動一個小伺服器，印出像 `http://127.0.0.1:4747/<session id>#t=<token>` 的網址。pi 會在 macOS 用 `open`、在 Linux 用 `xdg-open` 打開這個網址。瀏覽器沒有打開的話，自己打開這個網址。
+1. 執行 `/annotate`。pi 會為這個 session 啟動一個小伺服器，印出一則通知，裡面有像 `http://127.0.0.1:4747/<session id>#t=<token>` 的網址與連接終端機檢視的指令。pi 不會自己打開瀏覽器，請自己打開通知裡的網址。
 2. 在頁面上閱讀對話。頁面會列出你的訊息、assistant 的回覆與工具輸出。工具輸出預設收合，點一下可以展開。pi 在每則訊息完成時才把它加到頁面上，所以還在串流中的回覆不會顯示。如果對話以其他方式改變，例如 `/tree` 切到另一個分支，頁面會重新載入整段對話。清單裡已有的項目會保留你當時引用的文字。
 3. 選取文字。選取範圍旁邊會出現筆記框，選取的文字會維持反白。輸入筆記後按 Enter，就會把引用與筆記加進右邊的清單。Shift+Enter 換行。Esc 捨棄這則筆記。
 4. 編輯或刪除清單裡的項目。
@@ -39,7 +39,7 @@ pi --extension ./extensions/annotation/index.ts
 
 ### 用 `/annotate` 停止伺服器
 
-`/annotate` 是開關。這個 session 沒有伺服器在執行時，`/annotate` 會啟動伺服器並打開網址。有伺服器在執行時，`/annotate` 會停止它。等待中的請求立刻結束，pi 釋放 port，並顯示 `annotate: closed, port <port> released`。伺服器還在啟動時執行 `/annotate`，伺服器最後也會停止。
+`/annotate` 是開關。這個 session 沒有伺服器在執行時，`/annotate` 會啟動伺服器並印出通知。有伺服器在執行時，`/annotate` 會停止它。等待中的請求立刻結束，pi 釋放 port，並顯示 `annotate: closed, port <port> released`。伺服器還在啟動時執行 `/annotate`，伺服器最後也會停止。
 
 session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或離開 pi。伺服器沒有閒置逾時。切換 session 之後，`/annotate` 會為新的 session 啟動新的伺服器，舊分頁會顯示 session 已切換。
 
@@ -51,11 +51,12 @@ session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或�
 
 ## 在終端機裡引用對話
 
-`/annotate tui` 會啟動同一個伺服器，但不開啟瀏覽器。這樣你就能從另一個終端機或 pane 引用對話，同時繼續使用 pi。pi 會印出連接的指令：
+同一個 `/annotate` 伺服器也提供終端機檢視。這樣你就能從另一個終端機或 pane 引用對話，同時繼續使用 pi。通知會印出連接的指令：
 
 ```text
-annotate: TUI session live on 127.0.0.1:4747
-Attach from another terminal: '/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' 019ee068-1f2c-7a3b-9c4d-6e5f...
+annotate: live on 127.0.0.1:4747
+Browser: http://127.0.0.1:4747/<session id>#t=<token>
+Terminal: '/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' 019ee068-1f2c-7a3b-9c4d-6e5f...
 Run /annotate again to stop it.
 ```
 
@@ -63,7 +64,7 @@ Run /annotate again to stop it.
 
 執行檔的參數可以是完整的 session id，或其中唯一的一段。不帶參數時，它會連上唯一活著的 session，或唯一一個工作目錄與目前目錄相同的活著的 session。`pi-annotation --list` 會列出活著的 session，`pi-annotation --help` 會顯示用法。
 
-再執行一次 `/annotate tui` 會再印一次連接指令，不會重啟伺服器。單純的 `/annotate` 會停止伺服器，與瀏覽器頁面的情況相同。瀏覽器頁面與終端機檢視可以同時使用同一個伺服器。
+瀏覽器頁面與終端機檢視可以同時使用同一個伺服器。
 
 ### 用類似 vim 的按鍵移動與引用
 
@@ -163,7 +164,7 @@ iframe 碰不到頁面、token 或網路。它的 Content Security Policy 只允
 
 ## 透過 SSH 使用
 
-pi 在 SSH 裡執行時（有設定 `SSH_CONNECTION`），不會嘗試打開瀏覽器，而是印出網址與一行 `ssh -L` 指令。在你自己的電腦上轉發同一個 port，再在那邊打開網址：
+pi 在 SSH 裡執行時（有設定 `SSH_CONNECTION`），通知也會印出一行 `ssh -L` 指令。在你自己的電腦上轉發同一個 port，再在那邊打開網址：
 
 ```sh
 ssh -L 4747:127.0.0.1:4747 <host>
@@ -186,7 +187,7 @@ npm test
 - 引用格式、對話快照與頁面腳本。頁面腳本的測試會檢查內容一律當成文字顯示，不當 HTML。
 - 對真的本機伺服器做的 HTTP 測試：token、Host 與 session 檢查、送出序號、long-poll 即時更新與 port 遞補。伺服器測試也涵蓋 `/frame` 路由、它們的 CSP 與路徑穿越。
 - markdown：每種語法、無害化的 XSS 內容與程式碼區塊引用。
-- 終端機檢視：document 模型與 reducer、用真的 pi-tui 程式庫加假終端機的 app 測試、session registry 與 `/annotate tui`。
+- 終端機檢視：document 模型與 reducer、用真的 pi-tui 程式庫加假終端機的 app 測試、session registry 與 `/annotate` 指令。
 
 end-to-end 腳本會用假的模型跑真的 pi。每個腳本都需要把 `PI_BIN` 設成 pi 執行檔。
 

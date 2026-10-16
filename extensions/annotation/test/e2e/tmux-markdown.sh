@@ -48,14 +48,8 @@ CHROME_BIN=${CHROME_BIN:-$(command -v google-chrome || true)}
 S=annotate-md-$$
 export WORK PORT ANNOTATE_PORT S HERE ROOT PI_BIN TUI_MODE SCREENSHOTS PLAYWRIGHT_CORE CHROME_BIN
 PI_HOME=$WORK/home
-mkdir -p "$PI_HOME/.pi/agent" "$WORK/project" "$WORK/captures" "$WORK/bin"
-rm -f "$WORK/opened.txt" "$WORK/editor.json" "$WORK"/browser-*
-
-cat >"$WORK/bin/xdg-open" <<EOF
-#!/bin/sh
-echo "\$1" >>"$WORK/opened.txt"
-EOF
-chmod +x "$WORK/bin/xdg-open"
+mkdir -p "$PI_HOME/.pi/agent" "$WORK/project" "$WORK/captures"
+rm -f "$WORK/editor.json" "$WORK"/browser-*
 
 node "$HERE/fake-openai.mjs" "$PORT" >"$WORK/fake.log" 2>&1 &
 FAKE_PID=$!
@@ -71,11 +65,11 @@ JSON
 
 echo "pi $(HOME=$PI_HOME "$PI_BIN/pi" --version 2>/dev/null), $TUI_MODE, markdown, in $WORK"
 tmux new-session -d -s "$S" -x 120 -y 50 -c "$WORK/project" \
-	"export HOME='$PI_HOME' PATH='$WORK/bin:$PI_BIN:$PATH' TERM=xterm-256color PI_ANNOTATE_PORT='$ANNOTATE_PORT' ANNOTATE_EDITOR_PROBE='$WORK/editor.json'; unset PI_CODING_AGENT_DIR SSH_CONNECTION DISPLAY; pi --tui-mode $TUI_MODE --provider fake --model fake-model --extension '$ROOT/index.ts' --extension '$HERE/editor-probe.ts'; echo PI_EXITED \$?; sleep 600"
+	"export HOME='$PI_HOME' PATH='$PI_BIN:$PATH' TERM=xterm-256color PI_ANNOTATE_PORT='$ANNOTATE_PORT' ANNOTATE_EDITOR_PROBE='$WORK/editor.json'; unset PI_CODING_AGENT_DIR SSH_CONNECTION DISPLAY; pi --tui-mode $TUI_MODE --provider fake --model fake-model --extension '$ROOT/index.ts' --extension '$HERE/editor-probe.ts'; echo PI_EXITED \$?; sleep 600"
 
 set +e
 python3 - <<'PY'
-import json, os, subprocess, sys, time, urllib.request
+import json, os, re, subprocess, sys, time, urllib.request
 
 S, WORK, PORT, HERE, SHOTS = os.environ["S"], os.environ["WORK"], os.environ["PORT"], os.environ["HERE"], os.environ["SCREENSHOTS"]
 failures = 0
@@ -116,11 +110,10 @@ def editor_text():
     except Exception:
         return None
 
-def opened():
-    try:
-        return [l for l in open(f"{WORK}/opened.txt").read().split("\n") if l]
-    except FileNotFoundError:
-        return []
+URL_RE = re.compile(r"Browser: (http://127\.0\.0\.1:\d+/[\w-]+#t=[\w-]+)")
+
+def opened_urls():
+    return URL_RE.findall(cap())
 
 def signal(name):
     open(f"{WORK}/browser-{name}", "w").write("go")
@@ -136,8 +129,8 @@ check("the fake model answered in markdown", bool(wait(lambda: requests() >= 1 a
 time.sleep(1)
 cap("01-reply")
 text("/annotate"); keys("Enter")
-urls = wait(lambda: opened(), 10)
-check("/annotate opened the page", len(urls) == 1, repr(urls))
+urls = wait(lambda: opened_urls(), 10)
+check("/annotate printed the notice with the browser URL and the terminal command", len(urls) == 1 and "Terminal: " in cap(), repr(urls))
 if not urls:
     sys.exit(1)
 url = urls[0]

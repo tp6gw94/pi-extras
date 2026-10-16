@@ -19,10 +19,10 @@ describe("annotation docs", () => {
 	for (const { file, other } of readmes) {
 		it(`${file} documents the web flow, the terminal view and SSH forwarding`, () => {
 			const text = read(file);
-			for (const needle of ["/annotate", "/annotate tui", "pi-annotation --list", "annotate: closed, port <port> released", "Server closed", "127.0.0.1", "4747", "4756", "PI_ANNOTATE_PORT", "#t=<token>", "/<session id>", "ssh -L 4747:127.0.0.1:4747 <host>", "SSH_CONNECTION", "xdg-open", "X-Annotate-Token", "Send to pi editor", "/new", "/tree", "[paste #1]", "Show source", "Quote whole diagram", "```mermaid", "/frame", "allow-scripts", "securityLevel: \"strict\"", "5.5 MB", "grok-mermaid"]) {
+			for (const needle of ["/annotate", "annotate: live on 127.0.0.1:4747", "Browser:", "Terminal:", "pi-annotation --list", "annotate: closed, port <port> released", "Server closed", "127.0.0.1", "4747", "4756", "PI_ANNOTATE_PORT", "#t=<token>", "/<session id>", "ssh -L 4747:127.0.0.1:4747 <host>", "SSH_CONNECTION", "X-Annotate-Token", "Send to pi editor", "/new", "/tree", "[paste #1]", "Show source", "Quote whole diagram", "```mermaid", "/frame", "allow-scripts", "securityLevel: \"strict\"", "5.5 MB", "grok-mermaid"]) {
 				assert.ok(text.includes(needle), `${file}: ${needle}`);
 			}
-			assert.ok(!/alt\+q|\/quote\b|pbpaste|xclip/.test(text));
+			assert.ok(!/alt\+q|\/quote\b|pbpaste|xclip|\/annotate tui|xdg-open/.test(text));
 			assert.ok(!text.includes("/annotation-end"));
 			assert.ok(text.includes(`](${other})`));
 		});

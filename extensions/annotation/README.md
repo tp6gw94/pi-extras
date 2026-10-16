@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-annotation is a [pi](https://github.com/earendil-works/pi) extension that lets you quote parts of the current conversation with notes and append them to the pi editor. You quote from a live page in your browser with `/annotate`, or from a terminal view in another pane with `/annotate tui`. pi-annotation sends nothing to the model. You edit the text in the editor and send it yourself.
+pi-annotation is a [pi](https://github.com/earendil-works/pi) extension that lets you quote parts of the current conversation with notes and append them to the pi editor. `/annotate` starts a server for the session and prints one notice with the browser URL and the terminal attach command. pi-annotation sends nothing to the model. You edit the text in the editor and send it yourself.
 
 pi-annotation does not block pi. You can keep working while the page or the terminal view is open, and each new message appears there when pi finishes it.
 
@@ -30,7 +30,7 @@ pi --extension ./extensions/annotation/index.ts
 
 ## Quote the conversation in your browser
 
-1. Run `/annotate`. pi starts a small server for this session and prints a URL like `http://127.0.0.1:4747/<session id>#t=<token>`. pi opens the URL with `open` on macOS or `xdg-open` on Linux. If the browser does not open, open the URL yourself.
+1. Run `/annotate`. pi starts a small server for this session and prints a notice with a URL like `http://127.0.0.1:4747/<session id>#t=<token>` and the command to attach the terminal view. pi does not open the browser. Open the printed URL yourself.
 2. Read the conversation on the page. The page shows your messages, the assistant's replies, and tool outputs. Tool outputs are collapsed. Click one to expand it. pi adds each message to the page when the message is finished, so the page does not show a reply that is still streaming. If the conversation changes in another way, for example after `/tree` moves to another branch, the page reloads the whole conversation. Items already in your list keep the text you quoted.
 3. Select text. A note box appears next to the selection, and the selection stays highlighted. Type a note and press Enter to add the quote and the note to the list on the right. Shift+Enter starts a new line. Esc discards the note.
 4. Edit or delete items in the list.
@@ -39,7 +39,7 @@ pi --extension ./extensions/annotation/index.ts
 
 ### Stop the server with `/annotate`
 
-`/annotate` is a toggle. If no server is running for this session, `/annotate` starts one and opens the URL. If a server is running, `/annotate` stops it. Pending requests end at once, pi releases the port, and pi shows `annotate: closed, port <port> released`. If you run `/annotate` while the server is still starting, the server also ends up stopped.
+`/annotate` is a toggle. If no server is running for this session, `/annotate` starts one and prints the notice. If a server is running, `/annotate` stops it. Pending requests end at once, pi releases the port, and pi shows `annotate: closed, port <port> released`. If you run `/annotate` while the server is still starting, the server also ends up stopped.
 
 The server also stops when the session ends: `/new`, `/resume`, a fork, a reload, or quitting pi. The server has no idle timeout. After a session switch, `/annotate` starts a new server for the new session, and the old tab says that the session switched.
 
@@ -51,11 +51,12 @@ An open tab works only until its server stops. After that, the tab shows **Serve
 
 ## Quote the conversation from a terminal
 
-`/annotate tui` starts the same server without opening a browser. You can then quote the conversation from another terminal or pane while you keep using pi. pi prints the command to attach:
+The same `/annotate` server serves the terminal view. You can quote the conversation from another terminal or pane while you keep using pi. The notice prints the command to attach:
 
 ```text
-annotate: TUI session live on 127.0.0.1:4747
-Attach from another terminal: '/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' 019ee068-1f2c-7a3b-9c4d-6e5f...
+annotate: live on 127.0.0.1:4747
+Browser: http://127.0.0.1:4747/<session id>#t=<token>
+Terminal: '/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' 019ee068-1f2c-7a3b-9c4d-6e5f...
 Run /annotate again to stop it.
 ```
 
@@ -63,7 +64,7 @@ Copy the quoted command into the other terminal. The bin is at `extensions/annot
 
 The bin takes the whole session id or a unique part of it. With no argument, it attaches to the only live session, or to the only live session whose working directory is the current directory. `pi-annotation --list` lists the live sessions, and `pi-annotation --help` shows the usage.
 
-Run `/annotate tui` again to print the attach command again. It does not restart the server. Plain `/annotate` stops the server, as it does for the browser page. A browser page and a terminal view can use the same server at the same time.
+A browser page and a terminal view can use the same server at the same time.
 
 ### Move and quote with vim-like keys
 
@@ -163,7 +164,7 @@ Treat the URL like a password. Anyone who can reach the port with the token can 
 
 ## Use it over SSH
 
-When pi runs over SSH (`SSH_CONNECTION` is set), pi does not try to open a browser. pi prints the URL and an `ssh -L` command. Forward the same port number from your own machine, then open the URL there:
+When pi runs over SSH (`SSH_CONNECTION` is set), the notice also prints an `ssh -L` command. Forward the same port number from your own machine, then open the URL there:
 
 ```sh
 ssh -L 4747:127.0.0.1:4747 <host>
@@ -186,7 +187,7 @@ npm test
 - The quote format, the conversation snapshot, and the page script. The page script tests check that content is rendered as text, never as HTML.
 - The HTTP server against a real local server: token, Host, and session checks, send sequence numbers, long-poll live updates, and port fallback. The server tests also cover the `/frame` routes, their CSP, and path traversal.
 - Markdown: each construct, inert XSS payloads, and code-block quoting.
-- The terminal view: the document model and the reducer, the app shell against the real pi-tui library with a fake terminal, the session registry, and `/annotate tui`.
+- The terminal view: the document model and the reducer, the app shell against the real pi-tui library with a fake terminal, the session registry, and the `/annotate` command.
 
 The end-to-end scripts run a real pi with a fake model. Each one needs `PI_BIN` set to the pi binary.
 

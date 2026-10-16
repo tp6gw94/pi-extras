@@ -10,7 +10,7 @@ pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on No
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
-| `annotation` | Quotes parts of the conversation with notes and appends them to the editor, from a browser page with `/annotate` or a terminal view with `/annotate tui`. Run `/annotate` again to stop it. | [README](extensions/annotation/README.md) |
+| `annotation` | Quotes parts of the conversation with notes and appends them to the editor, from a browser page or a terminal view. `/annotate` starts the server, and `/annotate` again stops it. | [README](extensions/annotation/README.md) |
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |

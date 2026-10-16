@@ -10,7 +10,7 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 
 | Extension | 用途 | 文件 |
 | --- | --- | --- |
-| `annotation` | 引用對話段落並加上筆記，再附加到編輯器。用 `/annotate` 開瀏覽器頁面，或用 `/annotate tui` 開終端機檢視。再執行一次 `/annotate` 就會停止。 | [README](extensions/annotation/README.zh-TW.md) |
+| `annotation` | 引用對話段落並加上筆記，再附加到編輯器。`/annotate` 啟動伺服器，可從瀏覽器頁面或終端機檢視引用。再執行一次 `/annotate` 就會停止。 | [README](extensions/annotation/README.zh-TW.md) |
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
 | `ralph` | 用 `/ralph` 對同一個任務跑有上限的多輪全新 pi session，用 `/ralph-stop` 停止。 | |

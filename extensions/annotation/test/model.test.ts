@@ -526,11 +526,11 @@ describe("send", () => {
 
 	it("refuses further sends after the connection closed", () => {
 		const model = oneNote();
-		const closed = act(model, { type: "failed", reason: "annotate server closed; run /annotate tui in pi and attach again" });
-		assert.deepEqual(closed.model.connection, { status: "closed", reason: "annotate server closed; run /annotate tui in pi and attach again" });
+		const closed = act(model, { type: "failed", reason: "annotate server closed; run /annotate in pi and attach again" });
+		assert.deepEqual(closed.model.connection, { status: "closed", reason: "annotate server closed; run /annotate in pi and attach again" });
 		const refused = act(closed.model, { type: "send" });
 		assert.deepEqual(refused.effects, []);
-		assert.equal(refused.model.message?.text, "annotate server closed; run /annotate tui in pi and attach again");
+		assert.equal(refused.model.message?.text, "annotate server closed; run /annotate in pi and attach again");
 		assert.deepEqual(noteTexts(refused.model), ["first line"]);
 	});
 });

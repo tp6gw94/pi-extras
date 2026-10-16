@@ -10,7 +10,7 @@ const USAGE = `Usage: pi-annotation [session-id-part]
        pi-annotation --list
        pi-annotation --help
 
-Attach a terminal annotation view to a pi session started with /annotate tui.
+Attach a terminal annotation view to a pi session started with /annotate.
 Any unique part of the session id works. Without one it attaches to the only
 live session, or to the only one started in the current directory.`;
 
@@ -36,7 +36,7 @@ function fail(error: unknown): void {
 }
 
 async function attach(entry: SessionEntry): Promise<void> {
-	if (!entry.tuiModule) throw new Error("this session recorded no pi-tui module; run /annotate tui from a pi install that can resolve @earendil-works/pi-tui");
+	if (!entry.tuiModule) throw new Error("this session recorded no pi-tui module; run /annotate from a pi install that can resolve @earendil-works/pi-tui");
 	const lib = (await import(pathToFileURL(entry.tuiModule).href)) as TuiLib;
 	const client = createClient(entry);
 	const snapshot = await client.snapshot().catch((error: unknown) => {
