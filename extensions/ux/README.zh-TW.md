@@ -4,7 +4,7 @@
 
 pi-ux 是 [pi](https://github.com/earendil-works/pi) 的 extension，用來釘選上一則 prompt。它把你最後送出的 prompt 濃縮成一行，顯示在編輯器上方，長篇回覆捲過去時也看得到。按快捷鍵可以展開成完整內容，再按一次收合。
 
-pi-ux 以前可以把剪貼簿引用進編輯器。引用功能已移到 [annotation](../../README.zh-TW.md#annotation) extension：執行 `/annotate`，在瀏覽器裡選取對話內容、加上留言，再以引用的形式送進編輯器。
+pi-ux 以前可以把剪貼簿引用進編輯器。引用功能已移到 [annotation](../annotation/README.zh-TW.md) extension：執行 `/annotate`，在瀏覽器裡選取對話內容、加上留言，再以引用的形式送進編輯器。
 
 pi-ux 在 `@earendil-works/pi-coding-agent` 1.0.4 與 Node.js 22 上測試過，fullscreen 與 regular 兩種終端機模式都有測。不需要設定檔就能用。
 
