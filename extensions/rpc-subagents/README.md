@@ -127,7 +127,7 @@ const task = await tools.rpc_subagents_run({
 return task;
 ```
 
-在 `tools` 中指名已安裝的 pi-web-access 工具時，會自動載入網路支援，不需要 `webAccess: true`，而且只開放指名的功能工具：`web_search`（搜尋網路）、`source_check`（查核宣稱與來源）、`fetch_content`（抓取頁面或文件內容）、`get_search_content`（讀取已保存的結果內容）。`web_enable` 是 child 在 auto／dynamic 模式下的啟用機制，不能直接選取。重新命名或停用的工具依安裝設定處理：指名已停用或已改名的舊名稱會明確失敗，使用目前名稱則成功。
+在 `tools` 中指名已安裝的 pi-web-access 工具時，會自動載入網路支援，而且只開放指名的功能工具：`web_search`（搜尋網路）、`source_check`（查核宣稱與來源）、`fetch_content`（抓取頁面或文件內容）、`get_search_content`（讀取已保存的結果內容）。`web_enable` 是 child 在 auto／dynamic 模式下的啟用機制，不能直接選取。重新命名或停用的工具依安裝設定處理：指名已停用或已改名的舊名稱會明確失敗，使用目前名稱則成功。
 
 ```js
 const fetched = await tools.rpc_subagents_run({
@@ -145,7 +145,7 @@ return [fetched.webTools, renamed.webTools];
 
 `+fetch_content` 保留五個預設執行工具並只加入該網路工具；純名稱 `["read", "get_page"]` 則把執行工具換成 `read`。回傳的 `webTools` 是解析後的網路工具清單。
 
-`webAccess` 是相容用的舊選項，也是完整 family 的開關：省略 `tools` 時預設為 `true`；明確提供 `tools`（包含 `[]`）時預設為 `false`。指名網路工具時不需要 `webAccess: true`，也不能用它擴張選取；`webAccess: false` 與指名網路工具互相矛盾，會明確失敗。
+省略 `tools` 時，會提供五個預設執行工具與所有已啟用的網路工具。明確提供 `tools` 時，只啟用指名的網路工具；`[]` 不提供執行工具或網路工具。
 
 啟用時只載入已安裝的本機 `pi-web-access` 入口，不下載、安裝套件或開啟其他 extension。沿用既有設定與繼承的憑證；支援 `auto`、`dynamic`、`eager`、重新命名及停用工具。若有可用的 `web_enable`，child 依其 prompt 指示啟用，且只能啟用被選取的功能工具；eager 模式不要求 loader。`capabilities.webTools` 列出解析後的網路工具，`active`／`reachable` 在啟用後更新。套件、入口、factory 缺失或全部工具停用時，任務明確失敗，不宣稱可用。`--tools` 只包含執行工具、parent，以及被選取的功能工具與必要的 loader，parent 仍拒絕其他額外可呼叫工具。
 

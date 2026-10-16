@@ -36,6 +36,6 @@ describe("pi-annotation bin", () => {
 	it("explains how to start a session and exits 1 when there is nothing to attach to", () => {
 		const result = run([]);
 		assert.equal(result.status, 1);
-		assert.match(result.stderr, /run \/annotate tui/);
+		assert.match(result.stderr, /run \/annotate in pi first/);
 	});
 });

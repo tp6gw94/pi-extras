@@ -16,28 +16,17 @@ export function isStaleContextError(error: unknown): boolean {
 	return error instanceof Error && /ctx is stale/i.test(error.message);
 }
 
-export function browserCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | undefined {
-	if (env.SSH_CONNECTION) return undefined;
-	if (platform === "darwin") return "open";
-	if (platform === "linux") return "xdg-open";
-	return undefined;
-}
-
-export function annotateNotice(url: string, port: number, env: NodeJS.ProcessEnv): string {
-	const lines = [`annotate: open ${url}`];
-	if (env.SSH_CONNECTION) lines.push(`Over SSH, forward the port from your machine first: ssh -L ${port}:127.0.0.1:${port} <host>`);
-	lines.push("Run /annotate again to stop it.");
-	return lines.join("\n");
-}
-
 export const BIN_PATH = fileURLToPath(new URL("./bin/pi-annotation.ts", import.meta.url));
 
 export function attachCommand(sessionId: string): string {
 	return `'${BIN_PATH.replaceAll("'", `'\\''`)}' ${sessionId}`;
 }
 
-export function attachNotice(sessionId: string, port: number): string {
-	return [`annotate: TUI session live on 127.0.0.1:${port}`, `Attach from another terminal: ${attachCommand(sessionId)}`, "Run /annotate again to stop it."].join("\n");
+export function liveNotice(sessionId: string, url: string, port: number, env: NodeJS.ProcessEnv): string {
+	const lines = [`annotate: live on 127.0.0.1:${port}`, `Browser: ${url}`, `Terminal: ${attachCommand(sessionId)}`];
+	if (env.SSH_CONNECTION) lines.push(`Over SSH, forward the port from your machine first: ssh -L ${port}:127.0.0.1:${port} <host>`);
+	lines.push("Run /annotate again to stop it.");
+	return lines.join("\n");
 }
 
 export function resolveTuiModule(): string | undefined {
@@ -49,7 +38,6 @@ export function resolveTuiModule(): string | undefined {
 }
 
 export interface AnnotationDeps {
-	platform?: NodeJS.Platform;
 	env?: NodeJS.ProcessEnv;
 	longPollMs?: number;
 	refreshDelayMs?: number;
@@ -57,7 +45,6 @@ export interface AnnotationDeps {
 }
 
 export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}): void {
-	const platform = deps.platform ?? process.platform;
 	const env = deps.env ?? process.env;
 	const refreshDelayMs = deps.refreshDelayMs ?? 30;
 	const sessionsDir = deps.registryDir ?? registryDir(getAgentDir());
@@ -67,17 +54,6 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 	let closeWhenStarted = false;
 
 	const running = () => (mine && !mine.closed && store[ACTIVE] === mine ? mine : undefined);
-
-	const openBrowser = (url: string) => {
-		const command = browserCommand(platform, env);
-		if (!command) return;
-		pi.exec(command, [url], { timeout: 10_000 }).catch(() => {});
-	};
-
-	const show = (ctx: ExtensionContext, server: AnnotateServer) => {
-		openBrowser(server.url);
-		ctx.ui.notify(annotateNotice(server.url, server.port, env), "info");
-	};
 
 	const refresh = (ctx: ExtensionContext) => {
 		const server = running();
@@ -155,26 +131,15 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 	};
 
 	pi.registerCommand("annotate", {
-		description: "Toggle a live browser page of this conversation to quote parts of it with notes; /annotate tui starts it for the pi-annotation terminal view instead",
-		getArgumentCompletions: (prefix: string) => ("tui".startsWith(prefix.trim()) ? [{ value: "tui", label: "tui", description: "attach with pi-annotation instead of a browser" }] : null),
-		handler: async (args, ctx) => {
+		description: "Toggle a live view of this conversation to quote parts of it with notes, in a browser page or a terminal view",
+		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
-			const mode = args.trim();
-			if (mode !== "" && mode !== "tui") {
-				ctx.ui.notify("annotate: usage /annotate [tui]", "warning");
-				return;
-			}
-			const tui = mode === "tui";
 			if (starting) {
-				if (!tui) closeWhenStarted = true;
+				closeWhenStarted = true;
 				return;
 			}
 			const server = running();
 			if (server && server.sessionId === ctx.sessionManager.getSessionId()) {
-				if (tui) {
-					ctx.ui.notify(attachNotice(server.sessionId, server.port), "info");
-					return;
-				}
 				const port = server.port;
 				server.close("end");
 				closeNotice(ctx, port);
@@ -194,8 +159,7 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 				closeNotice(ctx, port);
 				return;
 			}
-			if (tui) ctx.ui.notify(attachNotice(started.sessionId, started.port), "info");
-			else show(ctx, started);
+			ctx.ui.notify(liveNotice(started.sessionId, started.url, started.port, env), "info");
 		},
 	});
 

@@ -117,9 +117,9 @@ export function createClient(target: AttachTarget, fetchImpl: typeof fetch = fet
 
 export function disconnectReason(error: unknown): string {
 	if (error instanceof ProtocolError) {
-		if (error.code === "switched") return "pi switched session; run /annotate tui and attach again";
+		if (error.code === "switched") return "pi switched session; run /annotate and attach again";
 		if (error.code === "unauthorized") return "token rejected; attach to the new session";
-		if (error.code === "unreachable") return "annotate server closed; run /annotate tui in pi and attach again";
+		if (error.code === "unreachable") return "annotate server closed; run /annotate in pi and attach again";
 		return error.message;
 	}
 	return error instanceof Error ? error.message : String(error);
