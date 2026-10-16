@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import * as lib from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
+import { render } from "grok-mermaid";
 import type { Annotation } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
 import { AnnotateApp } from "../tui/app.ts";
@@ -17,6 +18,13 @@ const items: SnapshotItem[] = [
 	{ id: "u1", kind: "user", label: "You", text: "explain the cache" },
 	{ id: "a1", kind: "assistant", label: "Assistant", text: "The cache is LRU.\nIt holds 100 entries." },
 ];
+
+const FLOW = "flowchart TD\n  A[Start] --> B[End]";
+const FENCE = "```mermaid\n" + FLOW + "\n```";
+const ART = render(FLOW)!;
+const WARN_FENCE = "```mermaid\nflowchart TD\n  A --> B\n  --> C\n```";
+const WARN_NOTICE = 'Mermaid diagram not rendered: dropped, does not start with a node: "--> C"';
+const diagramItem = (text: string): SnapshotItem => ({ id: "a1", kind: "assistant", label: "Assistant", text });
 
 function setup(source: SnapshotItem[], options: { send?: (seq: number, items: readonly Annotation[]) => SendOutcome | Promise<SendOutcome>; rows?: number; columns?: number } = {}) {
 	const sent: { seq: number; items: Annotation[] }[] = [];
@@ -285,6 +293,85 @@ describe("annotation TUI shell", () => {
 		t.keys(ENTER);
 		assert.ok(t.screen().some((line) => line.startsWith("▾ Tool")));
 		assert.ok(t.screen().some((line) => line.includes("called bash")));
+	});
+
+	it("draws mermaid art with class SGR and the caret while hiding the fence source", () => {
+		const t = setup([items[0]!, diagramItem(FENCE)]);
+		const screen = t.screen();
+		for (const line of ART.plain) assert.ok(screen.includes("  " + line), `missing art line ${JSON.stringify(line)}\n${screen.join("\n")}`);
+		assert.ok(!screen.some((line) => line.includes("flowchart TD")), screen.join("\n"));
+		const first = screen.indexOf("  " + ART.plain[0]!);
+		assert.ok(first > 0, screen.join("\n"));
+		const raw = t.app.render(60);
+		assert.match(raw[first]!, /\x1b\[2;7m/);
+		assert.match(raw[first + 1]!, /\x1b\[2m│/);
+	});
+
+	it("draws the dim notice row under the source when warnings fall back", () => {
+		const t = setup([items[0]!, diagramItem(WARN_FENCE)]);
+		const screen = t.screen();
+		assert.ok(screen.includes("  flowchart TD"), screen.join("\n"));
+		const at = screen.findIndex((line) => line.startsWith("  Mermaid diagram not rendered:"));
+		assert.ok(at > 0, screen.join("\n"));
+		assert.equal(screen[at], strip(lib.truncateToWidth("  " + WARN_NOTICE, 60)));
+		assert.match(t.app.render(60)[at]!, /\x1b\[2m/);
+	});
+
+	it("underlines every art row of a block covered by a note", () => {
+		const t = setup([items[0]!, diagramItem(FENCE)]);
+		t.keys("A", "x", ENTER);
+		const screen = t.screen();
+		const raw = t.app.render(60);
+		for (const line of ART.plain) {
+			const at = screen.indexOf("  " + line);
+			assert.ok(at > 0, screen.join("\n"));
+			assert.match(raw[at]!, /\x1b\[[0-9;]*4[0-9;]*m/, `no underline on ${line}`);
+		}
+	});
+
+	it("paints the selection background across every art row of the block", () => {
+		const t = setup([items[0]!, diagramItem(FENCE)]);
+		t.keys("j", "v", "j");
+		const screen = t.screen();
+		const raw = t.app.render(60);
+		for (const line of ART.plain) {
+			const at = screen.indexOf("  " + line);
+			assert.ok(at > 0, screen.join("\n"));
+			assert.ok(raw[at]!.includes("48;5;24"), `no selection on ${line}`);
+		}
+	});
+
+	it("paints the notice row with the selection background when the selection covers the fence", () => {
+		const t = setup([items[0]!, diagramItem(WARN_FENCE)]);
+		t.keys("v", "j", "j", "j", "j", "j");
+		const at = t.screen().findIndex((line) => line.startsWith("  Mermaid diagram not rendered:"));
+		assert.ok(at > 0, t.screen().join("\n"));
+		assert.match(t.app.render(60)[at]!, /\x1b\[2;48;5;24m/);
+	});
+
+	it("leaves the notice row unpainted when the selection covers only part of the fence", () => {
+		const t = setup([items[0]!, diagramItem(WARN_FENCE)]);
+		t.keys("v", "j", "j", "j", "j");
+		const at = t.screen().findIndex((line) => line.startsWith("  Mermaid diagram not rendered:"));
+		assert.ok(at > 0, t.screen().join("\n"));
+		assert.doesNotMatch(t.app.render(60)[at]!, /48;5;24/);
+	});
+
+	it("underlines the notice row only when a note covers the whole fence", () => {
+		const underlined = /(\x1b\[|;)4(;|m)/;
+		const noticeRow = (t: ReturnType<typeof setup>) => t.app.render(60)[t.screen().findIndex((line) => line.startsWith("  Mermaid diagram not rendered:"))]!;
+		const partial = setup([items[0]!, diagramItem(WARN_FENCE)]);
+		partial.keys("v", "j", "j", "j", "j", "a", "x", ENTER);
+		assert.doesNotMatch(noticeRow(partial), underlined);
+		const whole = setup([items[0]!, diagramItem(WARN_FENCE)]);
+		whole.keys("v", "j", "j", "j", "j", "j", "a", "x", ENTER);
+		assert.match(noticeRow(whole), underlined);
+	});
+
+	it("lists the diagram toggle in the help screen at 60 columns", () => {
+		const t = setup(items);
+		t.keys("?", ..."j".repeat(15).split(""));
+		assert.ok(t.screen().some((line) => /^ {2}Enter za +fold tool or diagram +normal$/.test(line)), t.screen().join("\n"));
 	});
 
 	it("shows the bindings-derived help screen with labels and modes, scrolls it and closes it", () => {

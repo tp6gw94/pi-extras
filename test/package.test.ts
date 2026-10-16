@@ -56,8 +56,8 @@ describe("package layout", () => {
 		}
 	});
 
-	it("takes pi's own packages as * peers and bundles only croner and mermaid, at exact versions", () => {
-		assert.deepEqual(pkg.dependencies, { croner: "9.1.0", mermaid: "12.1.0" });
+	it("takes pi's own packages as * peers and bundles only grok-mermaid, croner and mermaid, at exact versions", () => {
+		assert.deepEqual(pkg.dependencies, { croner: "9.1.0", "grok-mermaid": "0.2.3", mermaid: "12.1.0" });
 		assert.deepEqual(pkg.peerDependencies, {
 			"@earendil-works/pi-coding-agent": "*",
 			"@earendil-works/pi-tui": "*",

@@ -2,7 +2,7 @@ import type * as PiTui from "@earendil-works/pi-tui";
 import type { Component, Editor, Focusable, Input, TUI } from "@earendil-works/pi-tui";
 import type { Annotation } from "../quote.ts";
 import { type AnnotateClient, disconnectReason, type InitialSnapshot, ProtocolError } from "./client.ts";
-import { type Doc, INDENT, itemOf, type Layout, layoutCache, locate, selectionRange, type Span, spansOf } from "./document.ts";
+import { type DiagramCls, type Doc, INDENT, itemOf, type Layout, layoutCache, locate, selectionRange, type Span, spansOf } from "./document.ts";
 import { type Action, type Effect, type Env, type HelpEntry, helpRows, hintFor, initialModel, keyAction, type Model, modeTag, pendingText, quitWarning, reduce } from "./model.ts";
 
 export type TuiLib = typeof PiTui;
@@ -25,6 +25,47 @@ const green = sgr("32");
 const KIND_STYLE = { user: sgr("1;32"), assistant: sgr("1;36"), tool: sgr("33") };
 const SELECTED = "48;5;24";
 const MARKED = "4";
+const DIAGRAM_SGR: Record<DiagramCls, string> = { border: "2", text: "", edge: "36", edgeLabel: "2", title: "1;36", none: "" };
+
+interface Piece {
+	text: string;
+	base: string;
+	caret: boolean;
+	selected: boolean;
+	marked: boolean;
+}
+
+const paint = (pieces: readonly Piece[]): string => {
+	let out = "";
+	let style = "";
+	let buffer = "";
+	const flush = () => {
+		if (buffer === "") return;
+		out += style === "" ? buffer : `\x1b[${style}m${buffer}\x1b[0m`;
+		buffer = "";
+	};
+	for (const piece of pieces) {
+		const codes: string[] = [];
+		if (piece.base !== "") codes.push(piece.base);
+		if (piece.caret) codes.push("7");
+		else if (piece.selected) codes.push(SELECTED);
+		if (piece.marked) codes.push(MARKED);
+		const next = codes.join(";");
+		if (next !== style) {
+			flush();
+			style = next;
+		}
+		buffer += piece.text;
+	}
+	flush();
+	return out;
+};
+
+const coversBlock = (spans: readonly Span[], itemId: string, start: number, end: number): boolean =>
+	spans.some((span) => span.itemId === itemId && span.start < end && span.end > start);
+
+const spansWhole = (spans: readonly Span[], itemId: string, start: number, end: number): boolean =>
+	spans.some((span) => span.itemId === itemId && span.start <= start && span.end >= end);
 
 const NAMED_KEYS = ["escape", "enter", "tab", "up", "down", "left", "right", "pageUp", "pageDown", "home", "end", "ctrl+c", "ctrl+d", "ctrl+u", "ctrl+f", "ctrl+b"] as const;
 
@@ -271,14 +312,13 @@ export class AnnotateApp implements Component, Focusable {
 		if (model.items.length === 0) return ["", dim("  Waiting for messages…")];
 		const draft = model.mode.kind === "note" ? model.mode.draft : undefined;
 		const visual = model.mode.kind === "visual" ? model.mode : undefined;
-		const doc = { items: model.items, expanded: model.expanded };
-		const canvas = this.layouts(doc, width);
+		const canvas = this.layouts(model, width);
 		const caret = model.caret ? locate(canvas, model.caret) : undefined;
 		const showCaret = model.mode.kind === "normal";
 		let selections: Span[] = [];
 		if (visual && model.caret) {
-			const range = selectionRange(doc, visual.shape, visual.anchor, model.caret);
-			selections = range ? spansOf(doc, range) : [];
+			const range = selectionRange(model, visual.shape, visual.anchor, model.caret, canvas);
+			selections = range ? spansOf(model, range) : [];
 		}
 		const marks: Span[] = [...(draft?.spans ?? []), ...model.notes.flatMap((note) => note.spans)];
 		const noteCounts = new Map<string, number>();
@@ -295,7 +335,7 @@ export class AnnotateApp implements Component, Focusable {
 		const lines: string[] = [];
 		for (let row = top; row < Math.min(canvas.rows.length, top + height); row++) {
 			const current = canvas.rows[row]!;
-			const item = itemOf(doc, current.itemId)!;
+			const item = itemOf(model, current.itemId)!;
 			if (current.type === "header") {
 				const glyph = item.kind === "tool" ? (model.expanded.has(item.id) ? "▾" : "▸") : "●";
 				const label = `${glyph} ${item.label}`;
@@ -305,34 +345,28 @@ export class AnnotateApp implements Component, Focusable {
 				lines.push(`${head}${badge} ${dim("─".repeat(width))}`);
 				continue;
 			}
-			let out = " ".repeat(INDENT);
-			if (current.cells.length === 0) {
-				if (showCaret && caret && caret.row === row) out += inverse(" ");
-				else if (covers(selections, current.itemId, current.start)) out += `\x1b[${SELECTED}m \x1b[0m`;
-				lines.push(out);
+			const careted = showCaret && caret?.row === row;
+			if (current.type === "diagram" || current.type === "notice") {
+				const markRule = current.type === "diagram" ? coversBlock : spansWhole;
+				const flags = { caret: careted, selected: spansWhole(selections, current.itemId, current.open, current.end), marked: markRule(marks, current.itemId, current.open, current.end) };
+				const pieces =
+					current.type === "diagram"
+						? current.spans.map((span) => ({ ...flags, text: span.text, base: DIAGRAM_SGR[span.cls] }))
+						: [{ ...flags, text: current.text, base: "2" }];
+				lines.push(" ".repeat(INDENT) + paint(pieces));
 				continue;
 			}
-			let style = "";
-			let buffer = "";
-			const flush = () => {
-				if (buffer === "") return;
-				out += style === "" ? buffer : `\x1b[${style}m${buffer}\x1b[0m`;
-				buffer = "";
-			};
-			current.cells.forEach((cell, col) => {
-				const codes: string[] = [];
-				if (showCaret && caret && caret.row === row && caret.col === col) codes.push("7");
-				else if (covers(selections, current.itemId, cell.offset)) codes.push(SELECTED);
-				if (covers(marks, current.itemId, cell.offset)) codes.push(MARKED);
-				const next = codes.join(";");
-				if (next !== style) {
-					flush();
-					style = next;
-				}
-				buffer += cell.text;
-			});
-			flush();
-			lines.push(out);
+			const pieces: Piece[] = current.cells.map((cell, col) => ({
+				text: cell.text,
+				base: "",
+				caret: careted && caret?.col === col,
+				selected: covers(selections, current.itemId, cell.offset),
+				marked: covers(marks, current.itemId, cell.offset),
+			}));
+			if (current.cells.length === 0 && (careted || covers(selections, current.itemId, current.start))) {
+				pieces.push({ text: " ", base: "", caret: careted, selected: true, marked: false });
+			}
+			lines.push(" ".repeat(INDENT) + paint(pieces));
 		}
 		return lines;
 	}
