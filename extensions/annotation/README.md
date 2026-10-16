@@ -95,6 +95,22 @@ The keys take an optional count prefix, for example `3j` or `2}`.
 
 A note is a plain `> quote` block and the note text, the same as on the browser page. **Send** appends every note to the pi editor and does not submit it to the model. New messages arrive while the view is open, and your notes, caret, and selection stay. If the conversation moves to another branch and the message under a selection changed, the view drops the selection and shows a short notice.
 
+### Read markdown with its syntax
+
+The terminal view shows your messages and the assistant's replies as markdown source and colors it. Every `#`, `**`, backtick, `>`, `-`, and `|` stays on screen, so a selection quotes the exact source. The view dims the syntax characters and colors the text they mark:
+
+| Markdown | Look |
+| --- | --- |
+| Headings | `#` dim. Level 1 is bold magenta, level 2 bold blue, and level 3 and deeper bold. |
+| `**bold**`, `*italic*`, `~~strike~~` | Markers dim. Text bold, italic, or struck through. |
+| `` `code` `` and code blocks | Backticks and fence lines dim. Code yellow, in one color for every language. |
+| Links | Brackets and parentheses dim. Link text blue, URL dim. |
+| Lists and blockquotes | `-`, `1.`, `[ ]`, and `>` cyan. Quote text dim italic. |
+| Tables and rules | Pipes, delimiter rows, and `---` dim. |
+| Escapes such as `\*` | Backslash dim. The escaped character keeps the color around it. |
+
+The colors come from the terminal's 16-color palette, so they follow your terminal theme. Markdown never uses underline or a background color, because underline marks a note, a blue background marks the selection, and reverse video marks the caret. Tool output stays plain text. A code block that never closes gets no code color, and the view colors its lines as ordinary markdown. ` ```mermaid ` blocks become diagrams, as the next section describes.
+
 ### Read diagrams as text
 
 The terminal view draws ` ```mermaid ` blocks in your messages and the assistant's replies as Unicode text diagrams with `grok-mermaid`. Flowcharts, state, class, ER, and sequence diagrams all render. Enter or `za` on a diagram switches it to its source and back. `a` on a diagram quotes the whole fence, so the note carries the ` ```mermaid ` source.
