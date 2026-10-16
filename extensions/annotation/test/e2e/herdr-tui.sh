@@ -5,9 +5,10 @@ usage() {
 	cat >&2 <<'TXT'
 Runs /annotate tui in a real pi and the pi-annotation bin in two panes of one
 background herdr tab, with a fake local model. Checks the attach notice, the
-session registry record, the note flow into the pi editor, that sending made no
-model request, that a new reply appears live, that q exits the TUI while pi keeps
-running, and that /annotate removes the record.
+session registry record, the note flow into the pi editor, the diagram toggle
+and quote, that sending made no model request, that a new reply appears live,
+that q exits the TUI while pi keeps running, and that /annotate removes the
+record.
 
 Usage:
   PI_BIN=~/.local/pi-1.1.0/bin extensions/annotation/test/e2e/herdr-tui.sh
@@ -120,6 +121,40 @@ const shq = (value) => `'${String(value).replaceAll("'", `'\\''`)}'`;
 
 const flat = (text) => String(text ?? "").replace(/\s+/g, " ");
 
+const DIAGRAM_FENCE = [
+	"```mermaid",
+	"flowchart TD",
+	"    A[Request] --> B{In memory?}",
+	"    B -->|yes| C[Return value]",
+	"    B -->|no| D[Read disk]",
+	"    D --> C",
+	"```",
+];
+const DIAGRAM_ART = [
+	"   ┌─────────┐",
+	"   │ Request │",
+	"   └────┬────┘",
+	"        │",
+	"        ▼",
+	" ╭────────────╮",
+	" │ In memory? ├──────┐",
+	" ╰──────┬─────╯      │",
+	"        │            │",
+	"        ▼no          │",
+	"  ┌───────────┐      │",
+	"  │ Read disk │      │",
+	"  └─────┬─────┘      │",
+	"        │            │",
+	"        ▼            │",
+	"┌──────────────┐ yes │",
+	"│ Return value │◄────┘",
+	"└──────────────┘",
+];
+const DIAGRAM_REQUEST_LINE = DIAGRAM_ART.find((line) => line.includes("Request")).trim();
+const DIAGRAM_RESULT_LINE = DIAGRAM_ART.find((line) => line.includes("Return value")).trim();
+const DIAGRAM_COLUMNS = Math.max(...DIAGRAM_ART.map((line) => [...line].length)) + 2;
+const EXPECTED_DIAGRAM_QUOTE = `${DIAGRAM_FENCE.map((line) => `> ${line}`).join("\n")}\n\ne2e-diagram-note\n\n`;
+
 function herdr(...args) {
 	const output = execFileSync("herdr", args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }).trim();
 	if (output === "") return {};
@@ -153,6 +188,13 @@ async function shellReady(paneId) {
 function readPane(paneId) {
 	const result = herdr("pane", "read", paneId, "--source", "visible", "--format", "text");
 	return result.read?.text ?? result.text ?? "";
+}
+
+function paneRect(paneId) {
+	const result = herdr("pane", "layout", "--pane", paneId);
+	const snapshot = result.layout ?? result;
+	const pane = (snapshot.panes ?? []).find((item) => item.pane_id === paneId);
+	return pane?.rect;
 }
 
 function editor() {
@@ -202,10 +244,15 @@ async function run() {
 	const piPane = tab.root_pane?.pane_id;
 	if (!tabId || !piPane) throw new Error(`herdr tab create returned no tab or root pane: ${JSON.stringify(tab)}`);
 	fs.writeFileSync(TAB_FILE, `${tabId}\n`);
-	const split = herdr("pane", "split", piPane, "--direction", "right", "--cwd", PROJECT, "--no-focus");
+	const tabWidth = paneRect(piPane)?.width;
+	if (!tabWidth) throw new Error(`herdr pane layout returned no geometry for the tab root pane ${piPane}`);
+	const ratio = Math.max(0.1, Math.min(0.5, 1 - DIAGRAM_COLUMNS / tabWidth));
+	const split = herdr("pane", "split", piPane, "--direction", "right", "--ratio", ratio.toFixed(3), "--cwd", PROJECT, "--no-focus");
 	const attachPane = split.pane?.pane_id;
 	if (!attachPane) throw new Error(`herdr pane split returned no pane: ${JSON.stringify(split)}`);
 	check("created one background tab and split its root pane", piPane !== attachPane, `${piPane} ${attachPane}`);
+	const attachWidth = paneRect(attachPane)?.width;
+	check("the attach pane is wide enough for the diagram art", (attachWidth ?? 0) >= DIAGRAM_COLUMNS, `${attachWidth} columns, need ${DIAGRAM_COLUMNS}`);
 
 	const panePath = `${WORK}/bin:${PI_BIN}:${process.env.PATH ?? ""}`;
 	const piScript = writeScript(
@@ -302,6 +349,52 @@ async function run() {
 	herdr("pane", "send-keys", piPane, "ctrl+c");
 	const cleared = await waitFor(() => (editor()?.editor === "" ? true : undefined), 10000);
 	check("ctrl+c cleared the annotation from the pi editor", Boolean(cleared), JSON.stringify(editor()));
+
+	herdr("pane", "run", piPane, "markdown cache overview");
+	const markdown = await waitFor(() => (flat(readPane(piPane)).includes("this is not a diagram") ? true : undefined), 60000);
+	check("the fake model answered with the mermaid markdown reply", Boolean(markdown), flat(readPane(piPane)).slice(-500));
+
+	const arrived = await waitFor(() => {
+		herdr("pane", "send-keys", attachPane, "G");
+		const text = flat(readPane(attachPane));
+		return text.includes("this is not a diagram") ? text : undefined;
+	}, 30000, 1000);
+	check("the markdown reply reached the attach TUI", Boolean(arrived), flat(readPane(attachPane)).slice(-500));
+
+	herdr("pane", "send-keys", attachPane, "/");
+	await sleep(300);
+	herdr("pane", "send-text", attachPane, "flowchart TD");
+	await sleep(300);
+	herdr("pane", "send-keys", attachPane, "enter");
+	const sourceShown = await waitFor(() => (flat(readPane(attachPane)).includes("flowchart TD") ? true : undefined), 10000);
+	check("searching the diagram source switched the block to its source", Boolean(sourceShown), flat(readPane(attachPane)).slice(-400));
+	herdr("pane", "send-keys", attachPane, "enter");
+	const artShown = await waitFor(() => (flat(readPane(attachPane)).includes(DIAGRAM_REQUEST_LINE) ? true : undefined), 10000);
+	check("Enter switched the block back to its diagram", Boolean(artShown), flat(readPane(attachPane)).slice(-400));
+	const renderedPane = flat(readPane(attachPane));
+	check("the attach pane shows the flowchart art, not its source", renderedPane.includes(DIAGRAM_RESULT_LINE) && !renderedPane.includes("flowchart TD"), renderedPane.slice(-600));
+
+	herdr("pane", "send-keys", attachPane, "a");
+	const diagramNote = await waitFor(() => (flat(readPane(attachPane)).includes("NOTE") ? true : undefined), 10000);
+	check("a opened the note box on the diagram", Boolean(diagramNote), flat(readPane(attachPane)).slice(-400));
+	herdr("pane", "send-text", attachPane, "e2e-diagram-note");
+	await sleep(300);
+	herdr("pane", "send-keys", attachPane, "enter");
+
+	const beforeDiagram = await requestCount();
+	herdr("pane", "send-keys", attachPane, "s");
+	const insertedDiagram = await waitFor(() => {
+		const state = editor();
+		return state && typeof state.editor === "string" && state.editor.includes("e2e-diagram-note") ? state : undefined;
+	}, 10000);
+	check("s appended the diagram fence and note to the pi editor", insertedDiagram?.editor === EXPECTED_DIAGRAM_QUOTE, JSON.stringify(insertedDiagram?.editor));
+	const afterDiagram = await requestCount();
+	check("sending the diagram note made no model request", afterDiagram === beforeDiagram, `${beforeDiagram} -> ${afterDiagram}`);
+
+	herdr("pane", "send-keys", piPane, "ctrl+c");
+	const diagramCleared = await waitFor(() => (editor()?.editor === "" ? true : undefined), 10000);
+	check("ctrl+c cleared the diagram quote from the pi editor", Boolean(diagramCleared), JSON.stringify(editor()));
+
 	herdr("pane", "run", piPane, "Tell me about eviction");
 	const second = await waitFor(() => (flat(readPane(piPane)).includes("Old keys leave in order") ? true : undefined), 60000);
 	check("the fake model answered the second prompt", Boolean(second), flat(readPane(piPane)).slice(-500));
