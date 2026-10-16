@@ -93,6 +93,31 @@ describe("layout", () => {
 		assert.deepEqual(rowTexts(laid([assistant("a", "快取使用最近最少使用策略")], 12)), ["<header:a>", "快取使用最", "近最少使用", "策略"]);
 	});
 
+	it("takes one markdown style per cell from its first code unit and leaves tool cells plain", () => {
+		const rows = laid([user("u", "# Q **x**"), tool("t", "# Q **x**")], 40, ["t"]);
+		const head = rows.rows[1]!;
+		assert.equal(head.type, "text");
+		if (head.type !== "text") return;
+		assert.deepEqual(
+			head.cells.map((cell) => [cell.text, cell.style]),
+			[
+				["#", "marker"],
+				[" ", "heading1"],
+				["Q", "heading1"],
+				[" ", "heading1"],
+				["*", "marker"],
+				["*", "marker"],
+				["x", "strong"],
+				["*", "marker"],
+				["*", "marker"],
+			],
+		);
+		const body = rows.rows[3]!;
+		assert.equal(body.type, "text");
+		if (body.type !== "text") return;
+		assert.deepEqual(body.cells.map((cell) => cell.style), ["plain", "plain", "plain", "plain", "plain", "plain", "plain", "plain", "plain"]);
+	});
+
 	it("hides tool text until its id is in expanded", () => {
 		const items = [user("u", "hi"), tool("t", "line 1\nline 2")];
 		assert.deepEqual(rowTexts(laid(items)), ["<header:u>", "hi", "<header:t>"]);
@@ -199,6 +224,12 @@ describe("mermaid layout", () => {
 	it("shows source rows when the block's key is in sourceFences", () => {
 		const rows = laid([assistant("a", FENCE)], 40, [], [fenceKey("a", 0)]);
 		assert.deepEqual(rowTexts(rows), ["<header:a>", "```mermaid", "flowchart TD", "  A[Start] --> B[End]", "```"]);
+	});
+
+	it("styles a toggled mermaid fence as marker, code and marker cells", () => {
+		const rows = laid([assistant("a", FENCE)], 40, [], [fenceKey("a", 0)]);
+		const styles = rows.rows.slice(1).map((row) => (row.type === "text" ? [...new Set(row.cells.map((cell) => cell.style))] : []));
+		assert.deepEqual(styles, [["marker"], ["code"], ["code"], ["marker"]]);
 	});
 
 	it("only renders closed mermaid fences and matches the info word case-insensitively", () => {

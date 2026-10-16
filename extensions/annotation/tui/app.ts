@@ -3,6 +3,7 @@ import type { Component, Editor, Focusable, Input, TUI } from "@earendil-works/p
 import type { Annotation } from "../quote.ts";
 import { type AnnotateClient, disconnectReason, type InitialSnapshot, ProtocolError } from "./client.ts";
 import { type DiagramCls, type Doc, INDENT, itemOf, type Layout, layoutCache, locate, selectionRange, type Span, spansOf } from "./document.ts";
+import type { MdStyle } from "./highlight.ts";
 import { type Action, type Effect, type Env, type HelpEntry, helpRows, hintFor, initialModel, keyAction, type Model, modeTag, pendingText, quitWarning, reduce } from "./model.ts";
 
 export type TuiLib = typeof PiTui;
@@ -26,6 +27,7 @@ const KIND_STYLE = { user: sgr("1;32"), assistant: sgr("1;36"), tool: sgr("33") 
 const SELECTED = "48;5;24";
 const MARKED = "4";
 const DIAGRAM_SGR: Record<DiagramCls, string> = { border: "2", text: "", edge: "36", edgeLabel: "2", title: "1;36", none: "" };
+const MD_SGR: Record<MdStyle, string> = { plain: "", marker: "2", heading1: "1;35", heading2: "1;34", heading3: "1", strong: "1", emphasis: "3", strike: "9", code: "33", link: "34", url: "2", quote: "2;3", bullet: "36" };
 
 interface Piece {
 	text: string;
@@ -358,7 +360,7 @@ export class AnnotateApp implements Component, Focusable {
 			}
 			const pieces: Piece[] = current.cells.map((cell, col) => ({
 				text: cell.text,
-				base: "",
+				base: MD_SGR[cell.style],
 				caret: careted && caret?.col === col,
 				selected: covers(selections, current.itemId, cell.offset),
 				marked: covers(marks, current.itemId, cell.offset),
