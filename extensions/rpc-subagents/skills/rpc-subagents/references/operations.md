@@ -22,7 +22,7 @@ return schedule;
 
 For recurrence, use `{ type: "interval", every: "30m" }`. For cron, use five fields and an explicit IANA timezone, such as `{ type: "cron", expression: "0 9 * * 1-5", timezone: "Asia/Taipei" }`. Cron needs the installed dependency described in the [setup guide](../../../README.md). For an absolute `at`, include `Z` or a UTC offset.
 
-A scheduled fork captures context once at creation. Each fire starts a new child from that immutable template. Later conversation does not change the template. A schedule keeps its resolved execution and web tool selection across persistence and every fire; it never reinterprets `+`/`-` entries. Legacy schedules with explicit tools normalize to web access disabled unless they name an installed web tool or already specify `webAccess: true`. Schedules reject `session`: create them as `fresh` or `fork`.
+A scheduled fork captures context once at creation. Each fire starts a new child from that immutable template. Later conversation does not change the template. A schedule keeps its resolved execution and web tool selection across persistence and every fire; it never reinterprets `+`/`-` entries. Schedules reject `session`: create them as `fresh` or `fork`.
 
 Read `rpc_subagents_schedule_list` without expecting it to acquire ownership or arm timers. Main `session_start` and explicit schedule-management operations start the cwd owner. After an offline period, one-time overdue schedules become `missed`. Recurring schedules choose strictly future triggers. A schedule skips a fire while its previous task is active.
 
