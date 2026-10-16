@@ -1,17 +1,22 @@
+import { render } from "grok-mermaid";
 import type { SnapshotItem } from "../snapshot.ts";
 
 export type WidthOf = (text: string) => number;
 export type Shape = "char" | "line";
+export type DiagramCls = "border" | "text" | "edge" | "edgeLabel" | "title" | "none";
 
 export interface Doc {
 	readonly items: readonly SnapshotItem[];
 	readonly expanded: ReadonlySet<string>;
+	readonly sourceFences: ReadonlySet<string>;
 }
 
 export interface Position {
 	itemId: string;
 	offset: number;
 	header?: true;
+	diagram?: number;
+	notice?: true;
 }
 
 export interface Span {
@@ -33,9 +38,25 @@ export interface Cell {
 	cls: number;
 }
 
+export interface DiagramSpan {
+	text: string;
+	cls: DiagramCls;
+}
+
+export interface DiagramRow {
+	type: "diagram";
+	itemId: string;
+	open: number;
+	end: number;
+	line: number;
+	spans: readonly DiagramSpan[];
+}
+
 export type Row =
 	| { type: "header"; itemId: string }
-	| { type: "text"; itemId: string; start: number; cells: readonly Cell[] };
+	| { type: "text"; itemId: string; start: number; cells: readonly Cell[] }
+	| DiagramRow
+	| { type: "notice"; itemId: string; open: number; end: number; text: string };
 
 export interface Layout {
 	rows: readonly Row[];
@@ -76,6 +97,10 @@ export const INDENT = 2;
 
 export function headerAt(itemId: string): Position {
 	return { itemId, offset: 0, header: true };
+}
+
+export function isSlot(pos: Position): boolean {
+	return pos.diagram !== undefined || pos.notice === true;
 }
 const EMPTY = -1;
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -129,38 +154,103 @@ export function startOf(doc: Doc, item: SnapshotItem): Position {
 	return settle(doc, { itemId: item.id, offset: 0 });
 }
 
+function warningText(warnings: readonly string[]): string {
+	const extra = warnings.length > 1 ? ` (+${warnings.length - 1} more)` : "";
+	return `Mermaid diagram not rendered: ${warnings[0]}${extra}`;
+}
+
 export function layout(doc: Doc, width: number, widthOf: WidthOf): Layout {
 	const rows: Row[] = [];
 	const textWidth = Math.max(1, width - INDENT);
+	const emitLine = (itemId: string, lineStart: number, line: string): void => {
+		const cells: Cell[] = [];
+		for (const { segment, index: at } of segmenter.segment(line)) {
+			const offset = lineStart + at;
+			cells.push({ offset, end: offset + segment.length, text: segment, width: Math.min(textWidth, widthOf(segment)), cls: classOf(segment) });
+		}
+		for (const chunk of wrapCells(cells, textWidth)) rows.push({ type: "text", itemId, start: chunk[0]?.offset ?? lineStart, cells: chunk });
+	};
 	for (const item of doc.items) {
 		rows.push({ type: "header", itemId: item.id });
 		if (isFolded(doc, item)) continue;
-		let lineStart = 0;
-		for (const line of item.text.split("\n")) {
-			const cells: Cell[] = [];
-			for (const { segment, index: at } of segmenter.segment(line)) {
-				const offset = lineStart + at;
-				cells.push({ offset, end: offset + segment.length, text: segment, width: Math.min(textWidth, widthOf(segment)), cls: classOf(segment) });
+		const lines = item.text.split("\n");
+		const offsets: number[] = [];
+		let at = 0;
+		for (const line of lines) {
+			offsets.push(at);
+			at += line.length + 1;
+		}
+		const blocks = item.kind === "tool" ? [] : mermaidFences(item.text);
+		const emitFence = (start: number, fence: Fence): number => {
+			let end = start;
+			while (end < lines.length && offsets[end]! < fence.end) end++;
+			const art = render(item.text.slice(fence.contentStart, fence.contentEnd));
+			const warning = art && art.warnings.length > 0 ? warningText(art.warnings) : undefined;
+			const toggled = doc.sourceFences.has(fenceKey(item.id, fence.open));
+			if (art && warning === undefined && !toggled && art.width <= textWidth) {
+				art.styled.forEach((spans, line) => rows.push({ type: "diagram", itemId: item.id, open: fence.open, end: fence.end, line, spans }));
+			} else {
+				for (let i = start; i < end; i++) emitLine(item.id, offsets[i]!, lines[i]!);
+				if (warning !== undefined) rows.push({ type: "notice", itemId: item.id, open: fence.open, end: fence.end, text: warning });
 			}
-			for (const chunk of wrapCells(cells, textWidth)) rows.push({ type: "text", itemId: item.id, start: chunk[0]?.offset ?? lineStart, cells: chunk });
-			lineStart += line.length + 1;
+			return end;
+		};
+		let next = 0;
+		let index = 0;
+		while (index < lines.length) {
+			const fence = blocks[next];
+			const lineStart = offsets[index]!;
+			if (fence && fence.open === lineStart) {
+				index = emitFence(index, fence);
+				next++;
+				continue;
+			}
+			emitLine(item.id, lineStart, lines[index]!);
+			index++;
 		}
 	}
 	return { rows, width };
 }
 
 export function layoutCache(widthOf: WidthOf): (doc: Doc, width: number) => Layout {
-	let last: { items: readonly SnapshotItem[]; expanded: ReadonlySet<string>; width: number; layout: Layout } | undefined;
+	let last: { items: readonly SnapshotItem[]; expanded: ReadonlySet<string>; sourceFences: ReadonlySet<string>; width: number; layout: Layout } | undefined;
 	return (doc, width) => {
-		if (last && last.items === doc.items && last.expanded === doc.expanded && last.width === width) return last.layout;
+		if (last && last.items === doc.items && last.expanded === doc.expanded && last.sourceFences === doc.sourceFences && last.width === width) return last.layout;
 		const next = layout(doc, width, widthOf);
-		last = { items: doc.items, expanded: doc.expanded, width, layout: next };
+		last = { items: doc.items, expanded: doc.expanded, sourceFences: doc.sourceFences, width, layout: next };
 		return next;
 	};
 }
 
 export function itemOf(doc: Doc, itemId: string): SnapshotItem | undefined {
 	return doc.items.find((item) => item.id === itemId);
+}
+
+export interface MermaidBlock {
+	key: string;
+	open: number;
+	end: number;
+	rendered: boolean;
+}
+
+export function mermaidBlockAt(doc: Doc, pos: Position, layout: Layout): MermaidBlock | undefined {
+	const item = itemOf(doc, pos.itemId);
+	if (!item || item.kind === "tool" || pos.header) return undefined;
+	const fence = mermaidFences(item.text).find((candidate) => inFence(candidate, pos.offset));
+	if (!fence) return undefined;
+	const key = fenceKey(item.id, fence.open);
+	const rendered = layout.rows.some((row) => row.type === "diagram" && row.itemId === item.id && row.open === fence.open);
+	return { key, open: fence.open, end: fence.end, rendered };
+}
+
+export function pruneSourceFences(items: readonly SnapshotItem[], sourceFences: ReadonlySet<string>): ReadonlySet<string> {
+	const live = new Set<string>();
+	for (const item of items) {
+		if (item.kind === "tool") continue;
+		for (const fence of mermaidFences(item.text)) live.add(fenceKey(item.id, fence.open));
+	}
+	const kept = [...sourceFences].filter((key) => live.has(key));
+	return kept.length === sourceFences.size ? sourceFences : new Set(kept);
 }
 
 export function lineStartAt(text: string, offset: number): number {
@@ -216,38 +306,82 @@ export function firstNonBlankOffset(text: string, offset: number): number {
 	return start;
 }
 
-export function fenceLang(text: string, start: number, end: number): string | undefined {
-	let open: { char: string; size: number; lang: string; content: number } | undefined;
+export interface FenceSpan {
+	open: number;
+	end: number;
+}
+
+interface Fence extends FenceSpan {
+	lang: string;
+	contentStart: number;
+	contentEnd: number;
+	closed: boolean;
+}
+
+function fences(text: string): Fence[] {
+	const found: Fence[] = [];
+	let open: { char: string; size: number; lang: string; open: number; contentStart: number } | undefined;
 	let lineStart = 0;
 	for (const line of text.split("\n")) {
 		const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
 		const lineEnd = lineStart + line.length;
 		if (fence && !open) {
 			if (!(fence[1]![0] === "`" && fence[2]!.includes("`"))) {
-				open = { char: fence[1]![0]!, size: fence[1]!.length, lang: fence[2]!.trim().split(/\s+/)[0] ?? "", content: lineEnd + 1 };
+				open = { char: fence[1]![0]!, size: fence[1]!.length, lang: fence[2]!.trim().split(/\s+/)[0] ?? "", open: lineStart, contentStart: lineEnd + 1 };
 			}
 		} else if (fence && open && fence[1]![0] === open.char && fence[1]!.length >= open.size && fence[2]!.trim() === "") {
-			if (start >= open.content && end <= lineStart) return open.lang;
+			found.push({ lang: open.lang, open: open.open, contentStart: open.contentStart, contentEnd: lineStart, end: lineEnd, closed: true });
 			open = undefined;
 		}
 		lineStart = lineEnd + 1;
 	}
-	if (open && start >= open.content && end <= text.length) return open.lang;
-	return undefined;
+	if (open) found.push({ lang: open.lang, open: open.open, contentStart: open.contentStart, contentEnd: text.length, end: text.length, closed: false });
+	return found;
 }
 
-export function locate(doc: Layout, pos: Position): ScreenPos | undefined {
-	const headerRow = doc.rows.findIndex((row) => row.type === "header" && row.itemId === pos.itemId);
+function mermaidFences(text: string): Fence[] {
+	return fences(text).filter((fence) => fence.closed && fence.lang.toLowerCase() === "mermaid");
+}
+
+function inFence(fence: FenceSpan, offset: number): boolean {
+	return fence.open <= offset && offset <= fence.end;
+}
+
+function slotFence(doc: Doc, pos: Position): FenceSpan | undefined {
+	const item = isSlot(pos) ? itemOf(doc, pos.itemId) : undefined;
+	return item && mermaidFences(item.text).find((fence) => fence.open === pos.offset);
+}
+
+export function fenceKey(itemId: string, open: number): string {
+	return `${itemId}:${open}`;
+}
+
+export function fenceLang(text: string, start: number, end: number): string | undefined {
+	return fences(text).find((fence) => start >= fence.contentStart && end <= fence.contentEnd)?.lang;
+}
+
+export function locate(layout: Layout, pos: Position): ScreenPos | undefined {
+	const headerRow = layout.rows.findIndex((row) => row.type === "header" && row.itemId === pos.itemId);
 	if (headerRow < 0) return undefined;
 	if (pos.header) return { row: headerRow, col: 0 };
-	let found = headerRow;
-	for (let i = headerRow + 1; i < doc.rows.length; i++) {
-		const row = doc.rows[i]!;
-		if (row.itemId !== pos.itemId || row.type !== "text") break;
-		if (row.start <= pos.offset) found = i;
+	if (pos.notice) {
+		const notice = layout.rows.findIndex((row) => row.type === "notice" && row.itemId === pos.itemId && row.open === pos.offset);
+		if (notice >= 0) return { row: notice, col: 0 };
+	} else if (pos.diagram !== undefined) {
+		const exact = layout.rows.findIndex((row) => row.type === "diagram" && row.itemId === pos.itemId && row.open === pos.offset && row.line === pos.diagram);
+		const line = exact >= 0 ? exact : layout.rows.findIndex((row) => row.type === "diagram" && row.itemId === pos.itemId && row.open === pos.offset);
+		if (line >= 0) return { row: line, col: 0 };
 	}
-	const row = doc.rows[found]!;
-	if (row.type === "header") return { row: found, col: 0 };
+	const block = layout.rows.findIndex((row) => row.type === "diagram" && row.itemId === pos.itemId && inFence(row, pos.offset));
+	if (block >= 0) return { row: block, col: 0 };
+	let found = headerRow;
+	for (let i = headerRow + 1; i < layout.rows.length; i++) {
+		const row = layout.rows[i]!;
+		if (row.itemId !== pos.itemId) break;
+		if (row.type === "text" && row.start <= pos.offset) found = i;
+	}
+	const row = layout.rows[found]!;
+	if (row.type !== "text") return { row: found, col: 0 };
 	let col = 0;
 	row.cells.forEach((cell, index) => {
 		if (cell.offset <= pos.offset) col = index;
@@ -259,6 +393,8 @@ export function positionAt(layout: Layout, row: number, x: number): Position | u
 	const found = layout.rows[row];
 	if (!found) return undefined;
 	if (found.type === "header") return headerAt(found.itemId);
+	if (found.type === "diagram") return { itemId: found.itemId, offset: found.open, diagram: found.line };
+	if (found.type === "notice") return { itemId: found.itemId, offset: found.open, notice: true };
 	let used = 0;
 	for (const cell of found.cells) {
 		used += cell.width;
@@ -282,6 +418,9 @@ interface Stop {
 	cls: number;
 	virtual: boolean;
 	header: boolean;
+	diagram?: number;
+	notice?: boolean;
+	block?: string;
 }
 
 function stops(layout: Layout): Stop[] {
@@ -290,6 +429,10 @@ function stops(layout: Layout): Stop[] {
 	for (const row of layout.rows) {
 		if (row.type === "header") {
 			out.push({ itemId: row.itemId, offset: 0, cls: 0, virtual: false, header: true });
+		} else if (row.type === "diagram") {
+			out.push({ itemId: row.itemId, offset: row.open, cls: EMPTY, virtual: false, header: false, diagram: row.line, block: fenceKey(row.itemId, row.open) });
+		} else if (row.type === "notice") {
+			out.push({ itemId: row.itemId, offset: row.open, cls: EMPTY, virtual: false, header: false, notice: true, block: fenceKey(row.itemId, row.open) });
 		} else {
 			const continues = previous?.type === "text" && previous.itemId === row.itemId && previous.cells.length > 0 && previous.cells.at(-1)!.end === row.start;
 			if (!continues) out.push({ itemId: row.itemId, offset: row.start, cls: 0, virtual: true, header: false });
@@ -304,7 +447,15 @@ function stops(layout: Layout): Stop[] {
 function stopIndex(stops: readonly Stop[], pos: Position): number {
 	return Math.max(
 		0,
-		stops.findIndex((stop) => stop.itemId === pos.itemId && stop.offset === pos.offset && !stop.virtual && stop.header === (pos.header === true)),
+		stops.findIndex(
+			(stop) =>
+				stop.itemId === pos.itemId &&
+				stop.offset === pos.offset &&
+				!stop.virtual &&
+				stop.header === (pos.header === true) &&
+				stop.diagram === pos.diagram &&
+				(stop.notice === true) === (pos.notice === true),
+		),
 	);
 }
 
@@ -312,18 +463,23 @@ function land(stops: readonly Stop[], index: number): Position {
 	let at = Math.max(0, Math.min(stops.length - 1, index));
 	while (at > 0 && stops[at]!.virtual) at--;
 	const stop = stops[at]!;
-	return stop.header ? headerAt(stop.itemId) : { itemId: stop.itemId, offset: stop.offset };
+	if (stop.header) return headerAt(stop.itemId);
+	if (stop.diagram !== undefined) return { itemId: stop.itemId, offset: stop.offset, diagram: stop.diagram };
+	if (stop.notice) return { itemId: stop.itemId, offset: stop.offset, notice: true };
+	return { itemId: stop.itemId, offset: stop.offset };
 }
 
 function wordForward(layout: Layout, pos: Position): Position {
 	const list = stops(layout);
 	const index = stopIndex(list, pos);
-	const cls = list[index]?.cls ?? 0;
+	const stop = list[index];
+	const cls = stop?.cls ?? 0;
 	let at = index;
 	if (cls > 0) {
 		while (at < list.length && list[at]!.cls === cls) at++;
 	} else if (cls === EMPTY) {
 		at++;
+		if (stop?.block !== undefined) while (at < list.length && list[at]!.block === stop.block) at++;
 	}
 	while (at < list.length && list[at]!.cls === 0) at++;
 	return land(list, at < list.length ? at : list.length - 1);
@@ -332,41 +488,61 @@ function wordForward(layout: Layout, pos: Position): Position {
 function wordEnd(layout: Layout, pos: Position): Position {
 	const list = stops(layout);
 	let at = stopIndex(list, pos) + 1;
-	while (at < list.length && list[at]!.cls <= 0) at++;
+	while (at < list.length && list[at]!.cls <= 0) {
+		const stop = list[at]!;
+		if (stop.block !== undefined) {
+			while (at + 1 < list.length && list[at + 1]!.block === stop.block) at++;
+			break;
+		}
+		at++;
+	}
 	if (at >= list.length) return land(list, list.length - 1);
 	const cls = list[at]!.cls;
-	while (at + 1 < list.length && list[at + 1]!.cls === cls) at++;
+	if (cls > 0) while (at + 1 < list.length && list[at + 1]!.cls === cls) at++;
 	return land(list, at);
 }
 
 function wordBackward(layout: Layout, pos: Position): Position {
 	const list = stops(layout);
-	let at = stopIndex(list, pos) - 1;
+	const index = stopIndex(list, pos);
+	const current = list[index];
+	let at = index - 1;
+	if (current?.block !== undefined) while (at >= 0 && list[at]!.block === current.block) at--;
 	while (at >= 0 && list[at]!.cls === 0) at--;
 	if (at < 0) return land(list, 0);
+	const stop = list[at]!;
+	if (stop.block !== undefined) while (at > 0 && list[at - 1]!.block === stop.block) at--;
 	const cls = list[at]!.cls;
 	if (cls !== EMPTY) while (at > 0 && list[at - 1]!.cls === cls) at--;
 	return land(list, at);
 }
 
-function stepPosition(doc: Doc, pos: Position, direction: 1 | -1): Position {
+export function normalizePosition(layout: Layout, pos: Position): Position {
+	if (pos.header) return pos;
+	const at = locate(layout, pos);
+	if (!at) return pos;
+	if (!isSlot(pos) && layout.rows[at.row]!.type !== "diagram") return pos;
+	return positionAt(layout, at.row, 0)!;
+}
+
+function stepPosition(doc: Doc, pos: Position, direction: 1 | -1): Position | undefined {
 	const index = doc.items.findIndex((item) => item.id === pos.itemId);
-	if (index < 0) return pos;
+	if (index < 0) return undefined;
 	const item = doc.items[index]!;
 	if (direction > 0) {
 		if (isFolded(doc, item)) {
 			const after = doc.items[index + 1];
-			return after ? { itemId: after.id, offset: 0 } : pos;
+			return after ? { itemId: after.id, offset: 0 } : undefined;
 		}
 		if (pos.header) return { itemId: item.id, offset: 0 };
 		const next = graphemeEnd(item.text, pos.offset);
 		if (next < item.text.length) return { itemId: item.id, offset: next };
 		const after = doc.items[index + 1];
-		return after ? { itemId: after.id, offset: 0 } : pos;
+		return after ? { itemId: after.id, offset: 0 } : undefined;
 	}
 	if (!isFolded(doc, item) && pos.offset > 0) return { itemId: item.id, offset: graphemeStart(item.text, pos.offset) };
 	const before = doc.items[index - 1];
-	if (!before) return pos;
+	if (!before) return undefined;
 	return { itemId: before.id, offset: isFolded(doc, before) ? 0 : lastGraphemeOffset(before.text) };
 }
 
@@ -399,12 +575,18 @@ export function move(doc: Doc, layout: Layout, pos: Position, goalX: number, mot
 		const at = settle(doc, next);
 		return { pos: at, goalX: columnX(layout, at) };
 	};
-	if (pos.header && (motion === "lineStart" || motion === "firstNonBlank" || motion === "lineEnd")) return horizontal(pos);
+	const step = (direction: 1 | -1): MoveResult => {
+		const fence = slotFence(doc, pos);
+		const from = fence ? { itemId: pos.itemId, offset: direction < 0 && !pos.notice ? fence.open : fence.end } : pos;
+		const stepped = stepPosition(doc, from, direction);
+		return horizontal(stepped ? normalizePosition(layout, stepped) : pos);
+	};
+	if ((pos.header || isSlot(pos)) && (motion === "lineStart" || motion === "firstNonBlank" || motion === "lineEnd")) return horizontal(pos);
 	switch (motion) {
 		case "left":
-			return horizontal(stepPosition(doc, pos, -1));
+			return step(-1);
 		case "right":
-			return horizontal(stepPosition(doc, pos, 1));
+			return step(1);
 		case "up":
 			return moveRows(layout, pos, goalX, -1);
 		case "down":
@@ -437,9 +619,14 @@ export function move(doc: Doc, layout: Layout, pos: Position, goalX: number, mot
 			return first ? horizontal(headerAt(first.id)) : { pos, goalX };
 		}
 		case "docEnd": {
-			const row = layout.rows.at(-1);
+			const last = layout.rows.length - 1;
+			const row = layout.rows[last];
 			if (!row) return { pos, goalX };
 			if (row.type === "header") return horizontal(headerAt(row.itemId));
+			if (row.type === "diagram" || row.type === "notice") {
+				const target = positionAt(layout, last, 0);
+				return target ? horizontal(target) : { pos, goalX };
+			}
 			const target = itemOf(doc, row.itemId);
 			return horizontal(target ? { itemId: target.id, offset: firstNonBlankOffset(target.text, row.start) } : { itemId: row.itemId, offset: row.start });
 		}
@@ -461,22 +648,41 @@ export function comparePositions(doc: Doc, a: Position, b: Position): number {
 	);
 }
 
-export function selectionRange(doc: Doc, shape: Shape, anchor: Position, caret: Position): Range | undefined {
-	const forward = comparePositions(doc, anchor, caret) <= 0;
-	const start = forward ? anchor : caret;
-	const end = forward ? caret : anchor;
-	const startItem = itemOf(doc, start.itemId);
-	const endItem = itemOf(doc, end.itemId);
-	if (!startItem || !endItem) return undefined;
-	if (shape === "line") {
-		return { start: { itemId: start.itemId, offset: lineStartAt(startItem.text, start.offset) }, end: { itemId: end.itemId, offset: lineEndAt(endItem.text, end.offset) } };
-	}
-	return { start: { itemId: start.itemId, offset: clampOffset(startItem.text, start.offset) }, end: { itemId: end.itemId, offset: graphemeEnd(endItem.text, end.offset) } };
+interface Extent {
+	itemId: string;
+	start: number;
+	end: number;
+}
+
+function extentOf(doc: Doc, shape: Shape, pos: Position): Extent | undefined {
+	const item = itemOf(doc, pos.itemId);
+	if (!item) return undefined;
+	const fence = slotFence(doc, pos);
+	if (fence) return { itemId: item.id, start: fence.open, end: fence.end };
+	if (shape === "line") return { itemId: item.id, start: lineStartAt(item.text, pos.offset), end: lineEndAt(item.text, pos.offset) };
+	return { itemId: item.id, start: clampOffset(item.text, pos.offset), end: graphemeEnd(item.text, pos.offset) };
+}
+
+export function selectionRange(doc: Doc, shape: Shape, anchor: Position, caret: Position, canvas: Layout): Range | undefined {
+	const a = extentOf(doc, shape, anchor);
+	const b = extentOf(doc, shape, caret);
+	if (!a || !b) return undefined;
+	const itemIndex = (extent: Extent) => doc.items.findIndex((item) => item.id === extent.itemId);
+	const [first, last] = (itemIndex(a) - itemIndex(b) || a.start - b.start) <= 0 ? [a, b] : [b, a];
+	const start = first.start;
+	const end = first.itemId === last.itemId ? Math.max(first.end, last.end) : last.end;
+	const around = (itemId: string, offset: number) => canvas.rows.find((row): row is DiagramRow => row.type === "diagram" && row.itemId === itemId && row.open < offset && offset < row.end);
+	return {
+		start: { itemId: first.itemId, offset: around(first.itemId, start)?.open ?? start },
+		end: { itemId: last.itemId, offset: around(last.itemId, end)?.end ?? end },
+	};
 }
 
 export function lineRange(doc: Doc, pos: Position): Range | undefined {
 	const item = itemOf(doc, pos.itemId);
 	if (!item) return undefined;
+	const fence = slotFence(doc, pos);
+	if (fence) return { start: { itemId: item.id, offset: fence.open }, end: { itemId: item.id, offset: fence.end } };
 	return { start: { itemId: item.id, offset: lineStartAt(item.text, pos.offset) }, end: { itemId: item.id, offset: lineEndAt(item.text, pos.offset) } };
 }
 

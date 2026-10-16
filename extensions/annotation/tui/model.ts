@@ -16,9 +16,12 @@ import {
 	lineRange,
 	locate,
 	messageRange,
+	mermaidBlockAt,
 	move,
+	normalizePosition,
 	pageScroll,
 	positionAt,
+	pruneSourceFences,
 	quote,
 	remap,
 	search as findMatch,
@@ -81,6 +84,7 @@ export type Connection = { status: "live" } | { status: "closed"; reason: string
 export interface Model {
 	items: readonly SnapshotItem[];
 	expanded: ReadonlySet<string>;
+	sourceFences: ReadonlySet<string>;
 	caret: Position | undefined;
 	goalX: number;
 	viewport: Position | undefined;
@@ -189,7 +193,7 @@ export const bindings: readonly Binding[] = [
 	{ keys: ["a"], modes: NORMAL_VISUAL, action: { type: "annotate", scope: "selectionOrLine" }, group: "Annotate", label: "note on selection/line" },
 	{ keys: ["A"], modes: NORMAL_VISUAL, action: { type: "annotate", scope: "message" }, group: "Annotate", label: "note on whole message" },
 	{ keys: ["enter"], modes: VISUAL, action: { type: "annotate", scope: "selectionOrLine" }, group: "Annotate", label: "note on selection" },
-	{ keys: ["enter", "za"], modes: NORMAL, action: { type: "fold" }, group: "Tool output", label: "fold or unfold tool" },
+	{ keys: ["enter", "za"], modes: NORMAL, action: { type: "fold" }, group: "Tool output", label: "fold tool or diagram" },
 	{ keys: ["zR"], modes: NORMAL_VISUAL, action: { type: "foldAll", folded: false }, group: "Tool output", label: "unfold all tools" },
 	{ keys: ["zM"], modes: NORMAL_VISUAL, action: { type: "foldAll", folded: true }, group: "Tool output", label: "fold all tools" },
 	{ keys: ["zz"], modes: NORMAL_VISUAL, action: { type: "center" }, group: "View", label: "center the caret" },
@@ -361,11 +365,13 @@ export function keyAction(model: Model, key: string): Action | undefined {
 }
 
 export function initialModel(items: readonly SnapshotItem[], version: number, seq: number): Model {
+	const doc: Doc = { items, expanded: new Set(), sourceFences: new Set() };
 	const last = items.at(-1);
 	return {
 		items,
-		expanded: new Set(),
-		caret: last && startOf({ items, expanded: new Set() }, last),
+		expanded: doc.expanded,
+		sourceFences: doc.sourceFences,
+		caret: last && startOf(doc, last),
 		goalX: 0,
 		viewport: last && headerAt(last.id),
 		version,
@@ -379,8 +385,29 @@ export function initialModel(items: readonly SnapshotItem[], version: number, se
 	};
 }
 
-function docOf(model: Model): Doc {
-	return { items: model.items, expanded: model.expanded };
+function normalizePrior<T extends PriorMode>(canvas: Layout, prior: T): T {
+	return prior.kind === "visual" ? { ...prior, anchor: normalizePosition(canvas, prior.anchor) } : prior;
+}
+
+function normalizeMode(canvas: Layout, mode: Mode): Mode {
+	switch (mode.kind) {
+		case "visual":
+			return { ...mode, anchor: normalizePosition(canvas, mode.anchor) };
+		case "note":
+			return { ...mode, draft: { ...mode.draft, from: normalizePrior(canvas, mode.draft.from) } };
+		case "search":
+			return { ...mode, prior: normalizePrior(canvas, mode.prior) };
+		case "help":
+			return { ...mode, back: normalizePrior(canvas, mode.back) };
+		default:
+			return mode;
+	}
+}
+
+function normalize(model: Model, canvas: Layout): void {
+	if (model.caret) model.caret = normalizePosition(canvas, model.caret);
+	if (model.viewport) model.viewport = normalizePosition(canvas, model.viewport);
+	model.mode = normalizeMode(canvas, model.mode);
 }
 
 function resetBrowse(mode: Mode): Mode {
@@ -412,15 +439,22 @@ function scrollViewport(model: Model, canvas: Layout, height: number, delta: num
 }
 
 function settleFolded(model: Model): void {
-	const doc = docOf(model);
-	if (model.caret) model.caret = settle(doc, model.caret);
-	if (model.mode.kind === "visual") model.mode = { ...model.mode, anchor: settle(doc, model.mode.anchor) };
+	if (model.caret) model.caret = settle(model, model.caret);
+	if (model.mode.kind === "visual") model.mode = { ...model.mode, anchor: settle(model, model.mode.anchor) };
+}
+
+function revealHit(model: Model, pos: Position, env: Env): void {
+	expandTool(model, pos.itemId);
+	const block = mermaidBlockAt(model, pos, env.layoutOf(model));
+	if (!block || !block.rendered) return;
+	const sourceFences = new Set(model.sourceFences);
+	sourceFences.add(block.key);
+	model.sourceFences = sourceFences;
 }
 
 function expandTool(model: Model, itemId: string): void {
-	const doc = docOf(model);
-	const item = itemOf(doc, itemId);
-	if (!item || !isFolded(doc, item)) return;
+	const item = itemOf(model, itemId);
+	if (!item || !isFolded(model, item)) return;
 	const expanded = new Set(model.expanded);
 	expanded.add(item.id);
 	model.expanded = expanded;
@@ -444,19 +478,19 @@ function applyUpdate(model: Model, action: Extract<Action, { type: "update" }>):
 	const items = action.reset ? [...action.items] : [...previous, ...action.items];
 	model.items = items;
 	model.version = action.version;
-	const doc = docOf(model);
 	if (!action.reset) {
 		const last = items.at(-1);
 		if (!model.caret && last) {
-			model.caret = startOf(doc, last);
+			model.caret = startOf(model, last);
 			model.viewport = headerAt(last.id);
 		}
 		return;
 	}
 
-	const before: Doc = { items: previous, expanded: model.expanded };
+	model.sourceFences = pruneSourceFences(items, model.sourceFences);
+	const before: Doc = { items: previous, expanded: model.expanded, sourceFences: model.sourceFences };
 	const changed = (pos: Position): boolean => {
-		const after = itemOf(doc, pos.itemId);
+		const after = itemOf(model, pos.itemId);
 		const prior = itemOf(before, pos.itemId);
 		return !after || !prior || after.text !== prior.text;
 	};
@@ -468,7 +502,7 @@ function applyUpdate(model: Model, action: Extract<Action, { type: "update" }>):
 			cleared = true;
 			return { kind: "normal", count: "", prefix: "" };
 		}
-		return { ...mode, anchor: remap(doc, mode.anchor) ?? mode.anchor };
+		return { ...mode, anchor: remap(model, mode.anchor) ?? mode.anchor };
 	};
 	const mode = model.mode;
 	switch (mode.kind) {
@@ -485,14 +519,15 @@ function applyUpdate(model: Model, action: Extract<Action, { type: "update" }>):
 			model.mode = { ...mode, back: carry(mode.back) };
 			break;
 	}
-	if (caret) model.caret = remap(doc, caret) ?? nearestPosition(doc, previous, caret);
-	if (model.viewport) model.viewport = remap(doc, model.viewport) ?? nearestPosition(doc, previous, model.viewport);
+	if (caret) model.caret = remap(model, caret) ?? nearestPosition(model, previous, caret);
+	if (model.viewport) model.viewport = remap(model, model.viewport) ?? nearestPosition(model, previous, model.viewport);
 	if (cleared) model.message = { text: "selection cleared: conversation changed", error: false };
 }
 
 export function reduce(model: Model, action: Action, env: Env): Transition {
 	const effects: Effect[] = [];
 	const next: Model = { ...model };
+	normalize(next, env.layoutOf(next));
 	if (!PASS_THROUGH.has(action.type)) {
 		next.message = undefined;
 		if (action.type !== "quit") next.quitArmed = false;
@@ -509,10 +544,9 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 		case "move": {
 			if (!next.caret) break;
 			const times = countOf(next.mode);
-			const doc = docOf(next);
-			const canvas = env.layoutOf(doc);
+			const canvas = env.layoutOf(next);
 			let result = { pos: next.caret, goalX: next.goalX };
-			for (let i = 0; i < times; i++) result = move(doc, canvas, result.pos, result.goalX, action.motion, env.height);
+			for (let i = 0; i < times; i++) result = move(next, canvas, result.pos, result.goalX, action.motion, env.height);
 			next.caret = result.pos;
 			next.goalX = result.goalX;
 			next.mode = resetBrowse(next.mode);
@@ -531,7 +565,7 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			const anchor = next.mode.anchor;
 			next.mode = { ...next.mode, anchor: next.caret };
 			next.caret = anchor;
-			next.goalX = columnX(env.layoutOf(docOf(next)), anchor);
+			next.goalX = columnX(env.layoutOf(next), anchor);
 			break;
 		}
 		case "escape": {
@@ -547,44 +581,53 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			if (!next.caret) break;
 			const mode = next.mode;
 			if (mode.kind !== "normal" && mode.kind !== "visual") break;
-			const doc = docOf(next);
 			let range: Range | undefined;
 			let includeFolded = false;
 			if (action.scope === "message") {
-				range = messageRange(doc, next.caret);
+				range = messageRange(next, next.caret);
 				includeFolded = true;
 			} else if (mode.kind === "visual") {
-				range = selectionRange(doc, mode.shape, mode.anchor, next.caret);
+				range = selectionRange(next, mode.shape, mode.anchor, next.caret, env.layoutOf(next));
 			} else {
 				if (next.caret.header) {
-					range = messageRange(doc, next.caret);
+					range = messageRange(next, next.caret);
 					includeFolded = true;
 				} else {
-					range = lineRange(doc, next.caret);
+					range = lineRange(next, next.caret);
 				}
 			}
-			const text = range ? quote(doc, range, includeFolded) : undefined;
+			const text = range ? quote(next, range, includeFolded) : undefined;
 			if (!range || text === undefined) {
 				next.message = { text: "nothing to quote here", error: true };
 				break;
 			}
-			next.mode = { kind: "note", draft: { quote: text, spans: spansOf(doc, range), source: range.start, from: mode } };
+			next.mode = { kind: "note", draft: { quote: text, spans: spansOf(next, range), source: range.start, from: mode } };
 			effects.push({ type: "editNote", initialText: "" });
 			break;
 		}
 		case "fold": {
+			next.mode = resetBrowse(next.mode);
 			if (!next.caret) break;
-			const item = itemOf(docOf(next), next.caret.itemId);
-			if (!item || item.kind !== "tool") break;
-			const folding = next.expanded.has(item.id);
-			const expanded = new Set(next.expanded);
-			if (folding) expanded.delete(item.id);
-			else expanded.add(item.id);
-			next.expanded = expanded;
-			settleFolded(next);
+			const item = itemOf(next, next.caret.itemId);
+			if (item?.kind === "tool") {
+				const folding = next.expanded.has(item.id);
+				const expanded = new Set(next.expanded);
+				if (folding) expanded.delete(item.id);
+				else expanded.add(item.id);
+				next.expanded = expanded;
+				settleFolded(next);
+				break;
+			}
+			const block = mermaidBlockAt(next, next.caret, env.layoutOf(next));
+			if (!block || (!block.rendered && !next.sourceFences.has(block.key))) break;
+			const sourceFences = new Set(next.sourceFences);
+			if (block.rendered) sourceFences.add(block.key);
+			else sourceFences.delete(block.key);
+			next.sourceFences = sourceFences;
 			break;
 		}
 		case "foldAll": {
+			next.mode = resetBrowse(next.mode);
 			const expanded = new Set<string>();
 			if (!action.folded) {
 				for (const item of next.items) {
@@ -596,8 +639,9 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			break;
 		}
 		case "center": {
+			next.mode = resetBrowse(next.mode);
 			if (!next.caret) break;
-			const canvas = env.layoutOf(docOf(next));
+			const canvas = env.layoutOf(next);
 			const at = locate(canvas, next.caret);
 			if (at) next.viewport = positionAt(canvas, Math.max(0, at.row - Math.floor(env.height / 2)), 0) ?? next.viewport;
 			break;
@@ -614,15 +658,15 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			next.mode = mode.prior;
 			const query = action.query;
 			if (query.trim() === "" || !next.caret) break;
-			const hit = findMatch(docOf(next), next.caret, query, 1);
+			const hit = findMatch(next, next.caret, query, 1);
 			if (!hit) {
 				next.message = { text: `not found: ${query}`, error: true };
 				break;
 			}
 			next.caret = hit;
 			next.lastSearch = { query, direction: 1 };
-			expandTool(next, hit.itemId);
-			next.goalX = columnX(env.layoutOf(docOf(next)), hit);
+			revealHit(next, hit, env);
+			next.goalX = columnX(env.layoutOf(next), hit);
 			break;
 		}
 		case "searchRepeat": {
@@ -632,14 +676,14 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			}
 			if (!next.caret) break;
 			const direction = (action.reverse ? -next.lastSearch.direction : next.lastSearch.direction) as 1 | -1;
-			const hit = findMatch(docOf(next), next.caret, next.lastSearch.query, direction);
+			const hit = findMatch(next, next.caret, next.lastSearch.query, direction);
 			if (!hit) {
 				next.message = { text: `not found: ${next.lastSearch.query}`, error: true };
 				break;
 			}
 			next.caret = hit;
-			expandTool(next, hit.itemId);
-			next.goalX = columnX(env.layoutOf(docOf(next)), hit);
+			revealHit(next, hit, env);
+			next.goalX = columnX(env.layoutOf(next), hit);
 			break;
 		}
 		case "openHelp": {
@@ -665,7 +709,7 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			if (next.mode.kind !== "list") break;
 			const note = next.notes[next.mode.index];
 			if (!note) break;
-			const item = itemOf(docOf(next), note.source.itemId);
+			const item = itemOf(next, note.source.itemId);
 			if (!item) {
 				next.message = { text: "the note's source is gone", error: true };
 				break;
@@ -775,6 +819,8 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 		}
 	}
 	if (next.notes.length === 0) next.quitArmed = false;
-	reveal(next, env.layoutOf(docOf(next)), env.height);
+	const canvas = env.layoutOf(next);
+	normalize(next, canvas);
+	reveal(next, canvas, env.height);
 	return { model: next, effects };
 }

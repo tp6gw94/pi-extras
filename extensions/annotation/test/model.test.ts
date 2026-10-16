@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { render } from "grok-mermaid";
 import type { SnapshotItem } from "../snapshot.ts";
-import { type Doc, layout, locate } from "../tui/document.ts";
+import { type Doc, fenceKey, layout, locate } from "../tui/document.ts";
 import { type Action, type Effect, type Env, type Model, type ModeKind, bindings, displayKey, helpLines, helpRows, HINTS, hintFor, initialModel, keyAction, pendingText, reduce } from "../tui/model.ts";
 
 const WIDTH = 80;
@@ -19,13 +20,15 @@ const env: Env = { height: HEIGHT, layoutOf };
 const head = (itemId: string) => ({ itemId, offset: 0, header: true });
 
 const onScreen = (model: Model): boolean => {
-	const canvas = layoutOf({ items: model.items, expanded: model.expanded });
+	const canvas = layoutOf(model);
 	const top = locate(canvas, model.viewport!)!.row;
 	const row = locate(canvas, model.caret!)!.row;
 	return row >= top && row < top + HEIGHT;
 };
 
 const act = (model: Model, action: Action): { model: Model; effects: Effect[] } => reduce(model, action, env);
+
+const atWidth = (width: number): Env => ({ height: HEIGHT, layoutOf: (doc) => layout(doc, width, visibleWidth) });
 
 const press = (model: Model, key: string): { model: Model; effects: Effect[] } => {
 	const action = keyAction(model, key);
@@ -111,6 +114,314 @@ describe("folds", () => {
 		const opened = press(start([user("u", "one"), tool("t", "line 1\nline 2")]), "A");
 		if (opened.model.mode.kind !== "note") throw new Error("expected note mode");
 		assert.equal(opened.model.mode.draft.quote, "line 1\nline 2");
+	});
+});
+
+const FLOW = "flowchart TD\n  A[Start] --> B[End]";
+const FENCE = "```mermaid\n" + FLOW + "\n```";
+const ART = render(FLOW)!;
+const HIT = FENCE.indexOf("Start");
+const WARN_FENCE = "```mermaid\nflowchart TD\n  A --> B\n  --> C\n```";
+
+describe("mermaid diagrams", () => {
+	it("toggles a rendered diagram to its source and back with Enter and za", () => {
+		let model = start([assistant("a", FENCE)]);
+		model = press(model, "enter").model;
+		assert.deepEqual([...model.sourceFences], [fenceKey("a", 0)]);
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0 });
+		model = keys(model, ["z", "a"]).model;
+		assert.deepEqual([...model.sourceFences], []);
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0, diagram: 0 });
+		model = press(model, "enter").model;
+		assert.deepEqual([...model.sourceFences], [fenceKey("a", 0)]);
+	});
+
+	it("toggles with za from an art row and returns the caret to the art", () => {
+		let model = keys(start([assistant("a", FENCE)]), ["j", "j"]).model;
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0, diagram: 2 });
+		model = keys(model, ["z", "a"]).model;
+		assert.deepEqual([...model.sourceFences], [fenceKey("a", 0)]);
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0 });
+		model = press(model, "enter").model;
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0, diagram: 0 });
+	});
+
+	it("keeps zR and zM on tool output", () => {
+		let model = start([assistant("a", FENCE), tool("t", "line 1\nline 2")]);
+		model = keys(model, ["z", "R"]).model;
+		assert.equal(model.expanded.has("t"), true);
+		assert.deepEqual([...model.sourceFences], []);
+		model = keys(model, ["z", "M"]).model;
+		assert.equal(model.expanded.has("t"), false);
+		assert.deepEqual([...model.sourceFences], []);
+	});
+
+	it("does not toggle a block that fell back to source", () => {
+		const warn = press(start([assistant("a", WARN_FENCE)]), "enter").model;
+		assert.deepEqual([...warn.sourceFences], []);
+		const narrow = reduce(start([assistant("a", FENCE)]), { type: "fold" }, atWidth(11)).model;
+		assert.deepEqual([...narrow.sourceFences], []);
+	});
+
+	it("switches rendered blocks to source when / and n find text inside them", () => {
+		let model = start([assistant("a", FENCE), assistant("b", FENCE)]);
+		model = act(press(model, "/").model, { type: "searchSubmit", query: "Start" }).model;
+		assert.deepEqual([...model.sourceFences], [fenceKey("b", 0)]);
+		assert.deepEqual(model.caret, { itemId: "b", offset: HIT });
+		model = press(model, "n").model;
+		assert.deepEqual([...model.sourceFences], [fenceKey("b", 0), fenceKey("a", 0)]);
+		assert.deepEqual(model.caret, { itemId: "a", offset: HIT });
+	});
+
+	it("prunes toggled keys on reset and keeps the set object when nothing was pruned", () => {
+		let model = press(start([assistant("a", FENCE)]), "enter").model;
+		const toggled = model.sourceFences;
+		assert.deepEqual([...toggled], [fenceKey("a", 0)]);
+		model = act(model, { type: "update", version: 2, reset: true, items: [assistant("a", FENCE)] }).model;
+		assert.equal(model.sourceFences, toggled);
+		model = act(model, { type: "update", version: 3, reset: true, items: [assistant("a", "plain text")] }).model;
+		assert.notEqual(model.sourceFences, toggled);
+		assert.deepEqual([...model.sourceFences], []);
+	});
+
+	it("drops a caret on art to the source rows when the width falls below the diagram", () => {
+		const model = keys(start([assistant("a", FENCE)]), ["j", "j"]).model;
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0, diagram: 2 });
+		const narrow = reduce(model, { type: "otherKey" }, atWidth(11)).model;
+		assert.deepEqual(narrow.caret, { itemId: "a", offset: 0 });
+		const wide = reduce(narrow, { type: "otherKey" }, env).model;
+		assert.deepEqual(wide.caret, { itemId: "a", offset: 0, diagram: 0 });
+	});
+
+	it("quotes the whole fence when a is pressed on art", () => {
+		const opened = press(keys(start([assistant("a", FENCE)]), ["j"]).model, "a");
+		if (opened.model.mode.kind !== "note") throw new Error("expected note mode");
+		assert.equal(opened.model.mode.draft.quote, FENCE);
+	});
+});
+
+describe("plain text stepping", () => {
+	const caretsOf = (model: Model, sequence: string[]): number[] => {
+		const out: number[] = [];
+		let current = model;
+		for (const key of sequence) {
+			current = press(current, key).model;
+			out.push(current.caret!.offset);
+		}
+		return out;
+	};
+
+	it("visits every offset including the newline with l and h", () => {
+		const model = start([assistant("a", "ab\ncd")]);
+		assert.deepEqual(caretsOf(model, ["l", "l", "l", "l"]), [1, 2, 3, 4]);
+		const end = keys(model, ["l", "l", "l", "l"]).model;
+		assert.deepEqual(caretsOf(end, ["h", "h", "h", "h"]), [3, 2, 1, 0]);
+	});
+
+	it("stops on the newline when walking back from G", () => {
+		const model = keys(start([assistant("a", "ab\ncd")]), ["G"]).model;
+		assert.deepEqual(model.caret, { itemId: "a", offset: 3 });
+		assert.deepEqual(caretsOf(model, ["h", "h", "h"]), [2, 1, 0]);
+	});
+});
+
+describe("counted moves over a diagram", () => {
+	const tail = FENCE.length + 1;
+	const withTail = () => start([assistant("a", FENCE + "\ntail")]);
+	const atHeader = () => keys(withTail(), ["g", "g"]).model;
+
+	it("treats the diagram as one unit so 2l equals l l", () => {
+		const stepped = keys(atHeader(), ["l", "l"]).model.caret;
+		assert.deepEqual(stepped, { itemId: "a", offset: tail });
+		assert.deepEqual(keys(atHeader(), ["2", "l"]).model.caret, stepped);
+	});
+
+	it("enters the diagram from the header with one step", () => {
+		assert.deepEqual(keys(atHeader(), ["l"]).model.caret, { itemId: "a", offset: 0, diagram: 0 });
+	});
+
+	it("reaches the diagram slot with a single h from the line after it and quotes the whole fence", () => {
+		const from = keys(withTail(), ["G"]).model;
+		assert.deepEqual(from.caret, { itemId: "a", offset: tail });
+		const stepped = press(from, "h").model;
+		assert.deepEqual(stepped.caret, { itemId: "a", offset: 0, diagram: 0 });
+		assert.deepEqual(keys(from, ["2", "h"]).model.caret, stepped.caret);
+		const opened = press(stepped, "a").model;
+		if (opened.mode.kind !== "note") throw new Error("expected note mode");
+		assert.equal(opened.mode.draft.quote, FENCE);
+	});
+
+	it("draws the caret on the art row after h from the line after the diagram", () => {
+		const model = keys(withTail(), ["G", "h"]).model;
+		const canvas = layoutOf(model);
+		assert.equal(canvas.rows[locate(canvas, model.caret!)!.row]!.type, "diagram");
+	});
+
+	it("moves monotonically up through a diagram between two lines", () => {
+		const model = keys(start([assistant("a", "pre\n" + FENCE + "\npost")]), ["G", "0"]).model;
+		const canvas = layoutOf(model);
+		const rows = [model.caret!];
+		let current = model;
+		for (let i = 0; i < 3; i++) {
+			current = press(current, "h").model;
+			rows.push(current.caret!);
+		}
+		const at = rows.map((pos) => locate(canvas, pos)!.row);
+		assert.equal(canvas.rows[at[1]!]!.type, "diagram");
+		assert.equal(canvas.rows[at[2]!]!.type, "text");
+		assert.ok(at[0]! > at[1]! && at[1]! > at[2]! && at[2]! >= at[3]!, JSON.stringify(at));
+	});
+});
+
+describe("stepping around a diagram", () => {
+	const items = () => [assistant("a", "x\n" + FENCE), user("b", "yy")];
+
+	it("goes from a trailing diagram to the next item's first character, not its header", () => {
+		const model = keys(start(items()), ["g", "g", "l", "l", "l"]).model;
+		assert.deepEqual(model.caret, { itemId: "a", offset: 2, diagram: 0 });
+		assert.deepEqual(press(model, "l").model.caret, { itemId: "b", offset: 0 });
+	});
+
+	it("visits on h the same stops that l visited", () => {
+		const forward = ["l", "l", "l", "l", "l"];
+		let model = keys(start(items()), ["g", "g"]).model;
+		const seen = [model.caret];
+		for (const key of forward) {
+			model = press(model, key).model;
+			seen.push(model.caret);
+		}
+		const back = [model.caret];
+		for (let i = 0; i < forward.length - 1; i++) {
+			model = press(model, "h").model;
+			back.push(model.caret);
+		}
+		assert.deepEqual(back, seen.slice(1).reverse());
+	});
+});
+
+describe("slot endpoints cover whole fences", () => {
+	const GRAPH = "```mermaid\ngraph LR\nA-->B\n```";
+	const BROKEN = "```mermaid\nflowchart TD\n  A-->\n```";
+	const broken = () => start([assistant("a", "x\n" + BROKEN + "\ny")]);
+	const quoted = (model: Model, sequence: string[]): string | undefined => {
+		const opened = keys(model, [...sequence, "enter"]).model;
+		return opened.mode.kind === "note" ? opened.mode.draft.quote : undefined;
+	};
+
+	for (const sequence of [
+		["G", "k", "v", "k", "k"],
+		["G", "k", "k", "v", "j"],
+		["G", "k", "V", "k", "k"],
+	]) {
+		it(`quotes the whole warnings fence for ${sequence.join(" ")}`, () => {
+			assert.equal(quoted(broken(), sequence), BROKEN);
+		});
+	}
+
+	for (const sequence of [["g", "g", "v"], ["g", "g", "V"], ["g", "g", "v", "j", "k"], ["g", "g", "v", "l", "h"]]) {
+		it(`quotes the whole diagram for ${sequence.join(" ")} from a header over a leading diagram`, () => {
+			assert.equal(quoted(start([assistant("a", GRAPH + "\ntail")]), sequence), GRAPH);
+		});
+	}
+
+	it("widens a selection from a previous item to the whole diagram that starts the next", () => {
+		assert.equal(quoted(start([user("u", "one"), assistant("a", GRAPH)]), ["g", "g", "j", "v", "}"]), "one\n\n" + GRAPH);
+	});
+
+	it("steps h from a notice to the closing fence line", () => {
+		const model = keys(broken(), ["G", "k", "h"]).model;
+		const text = "x\n" + BROKEN + "\ny";
+		assert.deepEqual(model.caret, { itemId: "a", offset: text.lastIndexOf("```") + 2 });
+	});
+
+	it("keeps the slot when l cannot move past the document end", () => {
+		const model = keys(start([assistant("a", GRAPH)]), ["G"]).model;
+		assert.equal(model.caret?.diagram, render("graph LR\nA-->B")!.plain.length - 1);
+		assert.deepEqual(press(model, "l").model.caret, model.caret);
+	});
+
+	it("keeps the slot when h cannot move before the document start", () => {
+		const model = keys(start([assistant("a", GRAPH + "\ntail")]), ["g", "g", "l", "j"]).model;
+		assert.deepEqual(model.caret, { itemId: "a", offset: 0, diagram: 1 });
+		assert.deepEqual(press(model, "h").model.caret, model.caret);
+	});
+
+	it("toggles a source-shown fence back with h from the next line then Enter", () => {
+		const toggled = keys(start([assistant("a", GRAPH + "\ny")]), ["g", "g", "l", "enter"]).model;
+		assert.deepEqual([...toggled.sourceFences], [fenceKey("a", 0)]);
+		const back = keys(toggled, ["G", "h", "enter"]).model;
+		assert.deepEqual([...back.sourceFences], []);
+	});
+
+	it("never lets l move up or h move down across random documents with diagrams", () => {
+		let seed = 7;
+		const random = () => {
+			seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+			return seed / 0x100000000;
+		};
+		const pick = <T,>(options: readonly T[]): T => options[Math.floor(random() * options.length)]!;
+		const pieces = [GRAPH, BROKEN, FENCE, "", "foo bar", "x", "```ts", "```"];
+		const sequence = ["h", "l", "h", "l", "j", "k", "w", "b", "e", "0", "$", "g", "G", "{", "}", "v", "V", "o", "escape", "z", "a", "enter"];
+		for (let run = 0; run < 300; run++) {
+			const items = Array.from({ length: 1 + Math.floor(random() * 3) }, (_, i) =>
+				assistant(`i${i}`, Array.from({ length: Math.floor(random() * 5) }, () => pick(pieces)).join("\n")),
+			);
+			let model = start(items);
+			for (let step = 0; step < 40; step++) {
+				const key = pick(sequence);
+				const action = keyAction(model, key);
+				if (!action || action.type === "quit") continue;
+				const before = model;
+				const rowBefore = before.caret ? locate(layoutOf(before), before.caret)?.row : undefined;
+				model = act(model, action).model;
+				if (rowBefore === undefined || !model.caret || action.type !== "move" || before.mode.kind === "note") continue;
+				if (before.sourceFences !== model.sourceFences || before.mode.kind !== "normal" && before.mode.kind !== "visual" || before.mode.count !== "") continue;
+				const row = locate(layoutOf(model), model.caret)?.row;
+				if (action.motion === "right") assert.ok(row! >= rowBefore, `l moved up in run ${run}`);
+				if (action.motion === "left") assert.ok(row! <= rowBefore, `h moved down in run ${run}`);
+			}
+		}
+	});
+});
+
+describe("prefix and count reset", () => {
+	const lines = () => start([assistant("a", "l1\nl2\nl3\nl4\nl5")]);
+
+	for (const second of ["a", "z", "R", "M"]) {
+		it(`moves one row for 3 z ${second} j`, () => {
+			const model = keys(lines(), ["3", "z", second, "j"]).model;
+			assert.deepEqual(model.caret, { itemId: "a", offset: 3 });
+			assert.deepEqual(model.mode, { kind: "normal", count: "", prefix: "" });
+		});
+	}
+
+	for (const second of ["a", "R", "M"]) {
+		it(`clears count and prefix for 3 z ${second} without a caret`, () => {
+			const model = keys(start([]), ["3", "z", second]).model;
+			assert.deepEqual(model.mode, { kind: "normal", count: "", prefix: "" });
+		});
+	}
+
+	it("clears count and prefix for 3 z z without a caret", () => {
+		const model = keys(start([]), ["3", "z", "z"]).model;
+		assert.deepEqual(model.mode, { kind: "normal", count: "", prefix: "" });
+	});
+
+	it("toggles twice for za then Enter", () => {
+		let model = start([assistant("a", FENCE)]);
+		model = keys(model, ["z", "a"]).model;
+		assert.deepEqual([...model.sourceFences], [fenceKey("a", 0)]);
+		model = press(model, "enter").model;
+		assert.deepEqual([...model.sourceFences], []);
+	});
+});
+
+describe("diagram toggle from the header", () => {
+	it("leaves a diagram that starts the message alone on Enter and za at the header", () => {
+		const header = keys(start([assistant("a", FENCE)]), ["g", "g"]).model;
+		assert.deepEqual(header.caret, head("a"));
+		assert.deepEqual([...press(header, "enter").model.sourceFences], []);
+		assert.deepEqual([...keys(header, ["z", "a"]).model.sourceFences], []);
 	});
 });
 
