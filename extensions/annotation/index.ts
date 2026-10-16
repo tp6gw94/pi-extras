@@ -1,5 +1,9 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { annotationsText, type Annotation } from "./quote.ts";
+import { registryDir, removeEntry, writeEntry } from "./registry.ts";
 import { type AnnotateServer, type CloseReason, preferredPort, SessionSwitchedError, startAnnotateServer } from "./server.ts";
 import { buildSnapshot } from "./snapshot.ts";
 
@@ -26,17 +30,37 @@ export function annotateNotice(url: string, port: number, env: NodeJS.ProcessEnv
 	return lines.join("\n");
 }
 
+export const BIN_PATH = fileURLToPath(new URL("./bin/pi-annotation.ts", import.meta.url));
+
+export function attachCommand(sessionId: string): string {
+	return `'${BIN_PATH.replaceAll("'", `'\\''`)}' ${sessionId}`;
+}
+
+export function attachNotice(sessionId: string, port: number): string {
+	return [`annotate: TUI session live on 127.0.0.1:${port}`, `Attach from another terminal: ${attachCommand(sessionId)}`, "Run /annotate again to stop it."].join("\n");
+}
+
+export function resolveTuiModule(): string | undefined {
+	try {
+		return createRequire(join(getPackageDir(), "package.json")).resolve("@earendil-works/pi-tui");
+	} catch {
+		return undefined;
+	}
+}
+
 export interface AnnotationDeps {
 	platform?: NodeJS.Platform;
 	env?: NodeJS.ProcessEnv;
 	longPollMs?: number;
 	refreshDelayMs?: number;
+	registryDir?: string;
 }
 
 export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}): void {
 	const platform = deps.platform ?? process.platform;
 	const env = deps.env ?? process.env;
 	const refreshDelayMs = deps.refreshDelayMs ?? 30;
+	const sessionsDir = deps.registryDir ?? registryDir(getAgentDir());
 	const store = globalThis as GlobalWithServer;
 	let mine: AnnotateServer | undefined;
 	let starting: Promise<AnnotateServer> | undefined;
@@ -99,6 +123,7 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 				}
 			},
 			onClose: (_reason: CloseReason) => {
+				removeEntry(sessionsDir, process.pid, server.token);
 				if (mine === server) mine = undefined;
 				if (store[ACTIVE] === server) delete store[ACTIVE];
 				try {
@@ -108,6 +133,15 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 		});
 		mine = server;
 		store[ACTIVE] = server;
+		writeEntry(sessionsDir, {
+			sessionId,
+			port: server.port,
+			token: server.token,
+			pid: process.pid,
+			cwd: ctx.cwd,
+			startedAt: new Date().toISOString(),
+			tuiModule: resolveTuiModule(),
+		});
 		try {
 			ctx.ui.setStatus(STATUS_KEY, `annotate: live on 127.0.0.1:${server.port}`);
 		} catch {}
@@ -121,15 +155,26 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 	};
 
 	pi.registerCommand("annotate", {
-		description: "Toggle a live browser page of this conversation to quote parts of it with notes; Send appends them to the editor",
-		handler: async (_args, ctx) => {
+		description: "Toggle a live browser page of this conversation to quote parts of it with notes; /annotate tui starts it for the pi-annotation terminal view instead",
+		getArgumentCompletions: (prefix: string) => ("tui".startsWith(prefix.trim()) ? [{ value: "tui", label: "tui", description: "attach with pi-annotation instead of a browser" }] : null),
+		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
+			const mode = args.trim();
+			if (mode !== "" && mode !== "tui") {
+				ctx.ui.notify("annotate: usage /annotate [tui]", "warning");
+				return;
+			}
+			const tui = mode === "tui";
 			if (starting) {
-				closeWhenStarted = true;
+				if (!tui) closeWhenStarted = true;
 				return;
 			}
 			const server = running();
 			if (server && server.sessionId === ctx.sessionManager.getSessionId()) {
+				if (tui) {
+					ctx.ui.notify(attachNotice(server.sessionId, server.port), "info");
+					return;
+				}
 				const port = server.port;
 				server.close("end");
 				closeNotice(ctx, port);
@@ -149,7 +194,8 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 				closeNotice(ctx, port);
 				return;
 			}
-			show(ctx, started);
+			if (tui) ctx.ui.notify(attachNotice(started.sessionId, started.port), "info");
+			else show(ctx, started);
 		},
 	});
 
