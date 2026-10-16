@@ -4,7 +4,7 @@
 
 pi-ux is a [pi](https://github.com/earendil-works/pi) extension that pins your last prompt. It shows the last prompt you sent on one line above the editor, so it stays in view while a long reply scrolls past. A shortcut expands it to the full text and collapses it again.
 
-pi-ux used to quote the clipboard into the editor. Quoting moved to the [annotation](../../README.md#annotation) extension: run `/annotate`, select text from the conversation in your browser, add notes, and send them into the editor as quotes.
+pi-ux used to quote the clipboard into the editor. Quoting moved to the [annotation](../annotation/README.md) extension: run `/annotate`, select text from the conversation in your browser, add notes, and send them into the editor as quotes.
 
 pi-ux is tested with `@earendil-works/pi-coding-agent` 1.0.4 on Node.js 22 in both the fullscreen and the regular terminal mode. It needs no config file.
 
