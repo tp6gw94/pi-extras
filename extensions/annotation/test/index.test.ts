@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import annotation, { annotateNotice, browserCommand } from "../index.ts";
+import annotation, { annotateNotice, BIN_PATH, browserCommand } from "../index.ts";
+import { listEntries } from "../registry.ts";
 
 type Handler = (args: string, ctx: unknown) => Promise<void>;
 type Listener = (event: unknown, ctx: unknown) => unknown;
@@ -67,6 +71,7 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 	};
 	const ctx = {
 		hasUI: options.hasUI ?? true,
+		cwd: "/work/project",
 		sessionManager: {
 			getBranch: () => {
 				guard();
@@ -100,7 +105,9 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 		},
 	};
 	const env = options.env ?? { PI_ANNOTATE_PORT: String(await freePort()) };
-	annotation(pi as never, { platform: options.platform ?? "linux", env, refreshDelayMs: 0, longPollMs: 3000 });
+	const registry = mkdtempSync(join(tmpdir(), "annotate-registry-"));
+	cleanups.push(() => rmSync(registry, { recursive: true, force: true }));
+	annotation(pi as never, { platform: options.platform ?? "linux", env, refreshDelayMs: 0, longPollMs: 3000, registryDir: registry });
 	const emit = async (event: string) => {
 		for (const listener of listeners.get(event) ?? []) await listener({ type: event }, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -111,7 +118,8 @@ async function setup(options: { platform?: NodeJS.Platform; env?: NodeJS.Process
 		return { url, token: new URLSearchParams(url.hash.slice(1)).get("t")! };
 	};
 	return {
-		run: () => commands.get("annotate")!("", ctx),
+		run: (args = "") => commands.get("annotate")!(args, ctx),
+		registry,
 		commands,
 		emit,
 		lastUrl,
@@ -397,5 +405,55 @@ describe("live updates and lifecycle", () => {
 		assert.equal(b.parts().url.port, String(port));
 		assert.notEqual(b.parts().token, first.token);
 		assert.equal((await call(first.url, "GET", "snapshot", first.token)).status, 403);
+	});
+});
+
+describe("/annotate tui", () => {
+	it("starts without a browser, registers the session and prints the attach command", async () => {
+		const t = await setup();
+		cleanups.push(t.shutdown);
+		await t.run("tui");
+		assert.deepEqual(t.execs, []);
+		const [entry] = listEntries(t.registry);
+		assert.equal(entry?.sessionId, "session-a");
+		assert.equal(entry?.pid, process.pid);
+		assert.equal(entry?.cwd, "/work/project");
+		assert.match(entry?.tuiModule ?? "", /pi-tui/);
+		assert.equal(t.notices.at(-1), `annotate: TUI session live on 127.0.0.1:${entry!.port}\nAttach from another terminal: '${BIN_PATH}' session-a\nRun /annotate again to stop it.`);
+		const url = new URL(`http://127.0.0.1:${entry!.port}/session-a`);
+		assert.equal((await call(url, "GET", "snapshot", entry!.token)).status, 200);
+	});
+
+	it("keeps a running server and repeats the attach command", async () => {
+		const t = await setup();
+		cleanups.push(t.shutdown);
+		await t.run("tui");
+		const [first] = listEntries(t.registry);
+		await t.run("tui");
+		assert.deepEqual(listEntries(t.registry), [first]);
+		assert.equal(t.notices.filter((notice) => notice.includes("Attach from another terminal")).length, 2);
+	});
+
+	it("registers a browser session too and unregisters it when /annotate stops it", async () => {
+		const t = await setup();
+		cleanups.push(t.shutdown);
+		await t.run();
+		assert.equal(listEntries(t.registry)[0]?.token, t.parts().token);
+		await t.run();
+		assert.deepEqual(listEntries(t.registry), []);
+	});
+
+	it("unregisters on session shutdown", async () => {
+		const t = await setup();
+		await t.run("tui");
+		await t.shutdown();
+		assert.deepEqual(listEntries(t.registry), []);
+	});
+
+	it("rejects unknown arguments", async () => {
+		const t = await setup();
+		await t.run("web");
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.equal(t.notices.at(-1), "annotate: usage /annotate [tui]");
 	});
 });

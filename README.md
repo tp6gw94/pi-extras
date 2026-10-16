@@ -36,6 +36,46 @@ Each extension lives in `extensions/<name>/`, with its tests and any skills it s
 
 If you lose the URL, run `/annotate` twice: the first run stops the server and the second starts a new one with a new URL and token. Open tabs keep working only until the server stops; then they show **Server closed**, disable **Send to pi editor** and keep your unsent list, so you can copy it or switch to the new URL and add it again. The old token is rejected by the new server.
 
+### Terminal view
+
+`/annotate tui` starts the same server without opening a browser, so you can quote the conversation from another terminal or pane while you keep using pi. It prints where to attach:
+
+```text
+annotate: TUI session live on 127.0.0.1:4747
+Attach from another terminal: '/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' 019ee068-1f2c-7a3b-9c4d-6e5f...
+Run /annotate again to stop it.
+```
+
+Copy the quoted command into the other terminal. The package ships the bin at `extensions/annotation/bin/pi-annotation.ts`, and pi does not put it on your `PATH`, so use the absolute path from the notice. The bin runs TypeScript directly, so it needs Node 22.6 or later. Give it the whole session id or a unique part of it; with no argument it attaches to the only live session, or to the only one whose working directory is the current one; `pi-annotation --list` lists the live sessions, and `pi-annotation --help` shows the usage.
+
+The terminal view shows the same conversation as the browser page, with tool output folded by default and vim-like keys:
+
+| Keys | Action |
+| --- | --- |
+| `h` `j` `k` `l`, arrow keys | Move; `j` and `k` move by screen row |
+| `w` `b` `e` | Move by word |
+| `0` `^` `$`, Home, End | Line start, first non-blank, line end |
+| `gg` `G` | Start and end of the conversation |
+| `{` `}` | Previous and next message |
+| Ctrl-d, Ctrl-u | Half page |
+| Ctrl-f, Ctrl-b, PageUp, PageDown | Full page |
+| `v`, `V` | Start character or line selection; `o` swaps the ends; Esc leaves selection |
+| `a` | Note on the selection, or on the line under the caret; on a message header, the whole message |
+| `A` | Note on the whole message, folded tool output included |
+| Enter, `za` | Fold or unfold the tool output under the caret |
+| `zR`, `zM` | Unfold or fold every tool output |
+| `zz` | Center the caret |
+| `/` | Search; `n` and `N` repeat forwards and backwards |
+| Tab | Notes list: `j` and `k` move, Enter jumps to the source, `e` edits, `d` deletes, Tab/Esc/`q` goes back |
+| Note box (after `a` or `A`) | Enter saves; Ctrl-J, or Shift+Enter where the terminal reports it, adds a line; Esc cancels |
+| `s` | Send every note to the pi editor |
+| `?` | Show the keys |
+| `q` | Quit; press it twice to quit with unsent notes |
+
+The keys take an optional count prefix, for example `3j` or `2}`. A note is a plain `> quote` block and the note text, exactly like the browser page, and **Send** appends every note to the pi editor without submitting it to the model. New messages arrive while the view is open and keep your notes, caret and selection. If the conversation moves to another branch, a selection whose message changed is dropped with a short notice. Running `/annotate tui` again prints the attach command without restarting the server; plain `/annotate` still opens the browser and stops the server, and a browser page and a terminal view can use the same server at the same time.
+
+pi writes one record for the server under the agent directory, at `<agent dir>/annotation/sessions/<pi pid>.json`, with the port, the token and the pi process id. The directory is owner-only (`0700`) and each file is `0600`. The record is removed when the server stops and when pi exits, and records of pi processes that are no longer running are deleted on the next attach. The token is the same secret the browser URL carries, so treat it like a password.
+
 ### Markdown and diagrams
 
 Your messages and the assistant's replies are shown as markdown: headings, paragraphs, bold, italic, strikethrough, inline code, lists (nested and numbered), blockquotes, tables, horizontal rules, links and code blocks. Code blocks keep their indentation, use a monospace font and show their language in the corner. Tool outputs stay collapsed plain text.
@@ -153,7 +193,7 @@ npm run typecheck
 
 - `npm test` runs the tests of every extension, both `.ts` and `.mjs`. The `rpc-subagents` tests that need an installed pi skip unless you set `RPC_SUBAGENTS_PI_PACKAGE` to a global pi install, for example `~/.local/pi-1.1.0/lib/node_modules/@earendil-works/pi-coding-agent`.
 - `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`.
-- The `annotation` tests cover the quote format, the conversation snapshot, the page script (content is rendered as text, never as HTML) and the HTTP server against a real local server (token, Host and session checks, send sequence numbers, long-poll live updates, port fallback). `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` in a real pi under tmux with a fake model and checks the editor, live updates, `/tree`, stopping and restarting with `/annotate`, the page after the server closes, and session switches; set `PI_BIN` to the pi binary. The markdown tests cover each construct, inert XSS payloads and code-block quoting, and the server tests cover the `/frame` routes, their CSP and path traversal. `extensions/annotation/test/e2e/browser.mjs` drives the page in headless Chromium; it needs `playwright-core`, which is not a dependency of this package. `extensions/annotation/test/e2e/tmux-markdown.sh` runs pi with a markdown reply and drives `extensions/annotation/test/e2e/markdown.mjs`, which checks rendering, the diagram iframes, quoting, live updates, the timeout fallback, CSP violations and network requests; it needs `PI_BIN`, `PLAYWRIGHT_CORE` and `CHROME_BIN`.
+- The `annotation` tests cover the quote format, the conversation snapshot, the page script (content is rendered as text, never as HTML) and the HTTP server against a real local server (token, Host and session checks, send sequence numbers, long-poll live updates, port fallback). `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` in a real pi under tmux with a fake model and checks the editor, live updates, `/tree`, stopping and restarting with `/annotate`, the page after the server closes, and session switches; set `PI_BIN` to the pi binary. The markdown tests cover each construct, inert XSS payloads and code-block quoting, and the server tests cover the `/frame` routes, their CSP and path traversal. The terminal view has tests for the document model and the reducer, the app shell against the real pi-tui library with a fake terminal, the session registry and `/annotate tui`; `extensions/annotation/test/e2e/herdr-tui.sh` runs pi and the bin in two herdr panes with the fake model and checks the note flow, live replies, quitting and stopping, and it needs `HERDR_ENV=1` (run it from inside herdr) and `PI_BIN`. `extensions/annotation/test/e2e/browser.mjs` drives the page in headless Chromium; it needs `playwright-core`, which is not a dependency of this package. `extensions/annotation/test/e2e/tmux-markdown.sh` runs pi with a markdown reply and drives `extensions/annotation/test/e2e/markdown.mjs`, which checks rendering, the diagram iframes, quoting, live updates, the timeout fallback, CSP violations and network requests; it needs `PI_BIN`, `PLAYWRIGHT_CORE` and `CHROME_BIN`.
 - `scripts/acceptance.sh` installs pi-extras from git into a throwaway home directory and checks what pi loads, with all extensions, with a settings filter, and after `pi config`.
 
 pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions, so `package.json` lists them as `"*"` peer dependencies. The runtime dependencies are `croner` (for cron in `rpc-subagents`) and `mermaid` (for diagrams in `annotation`), both pinned to exact versions.

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "A collection of extensions for the pi coding agent.",
   "type": "module",
+  "bin": {
+    "pi-annotation": "./extensions/annotation/bin/pi-annotation.ts"
+  },
   "keywords": [
     "pi-package"
   ],
