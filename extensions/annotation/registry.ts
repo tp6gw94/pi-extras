@@ -84,7 +84,7 @@ export function pickEntry(entries: readonly SessionEntry[], query: string | unde
 		return matches.length === 0 ? `no live annotate session matches "${query}"` : `"${query}" matches ${matches.length} sessions; use a longer part of the id`;
 	}
 	if (entries.length === 1) return entries[0]!;
-	if (entries.length === 0) return "no live annotate session; run /annotate tui in pi first";
+	if (entries.length === 0) return "no live annotate session; run /annotate in pi first";
 	const here = entries.filter((entry) => entry.cwd === cwd);
 	if (here.length === 1) return here[0]!;
 	return "several annotate sessions are live; pass part of a session id";

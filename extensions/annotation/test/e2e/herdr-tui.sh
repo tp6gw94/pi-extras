@@ -3,12 +3,12 @@ set -euo pipefail
 
 usage() {
 	cat >&2 <<'TXT'
-Runs /annotate tui in a real pi and the pi-annotation bin in two panes of one
-background herdr tab, with a fake local model. Checks the attach notice, the
-session registry record, the note flow into the pi editor, the diagram toggle
-and quote, that sending made no model request, that a new reply appears live,
-that q exits the TUI while pi keeps running, and that /annotate removes the
-record.
+Runs /annotate in a real pi and the pi-annotation bin in two panes of one
+background herdr tab, with a fake local model. Checks the printed notice with
+the browser URL and the terminal command, the session registry record, the note
+flow into the pi editor, the diagram toggle and quote, that sending made no model
+request, that a new reply appears live, that q exits the TUI while pi keeps
+running, and that /annotate removes the record.
 
 Usage:
   PI_BIN=~/.local/pi-1.1.0/bin extensions/annotation/test/e2e/herdr-tui.sh
@@ -60,16 +60,9 @@ PROJECT=$WORK/project
 TAB_FILE=$WORK/tab-id
 export WORK PI_HOME PI_AGENT PROJECT PI_BIN ROOT HERE PORT TAB_FILE
 
-mkdir -p "$PI_HOME" "$PI_AGENT" "$PROJECT" "$WORK/bin"
+mkdir -p "$PI_HOME" "$PI_AGENT" "$PROJECT"
 PROJECT=$(cd "$PROJECT" && pwd -P)
 export PROJECT
-
-cat >"$WORK/bin/xdg-open" <<SH
-#!/bin/sh
-echo "\$1" >>"$WORK/opened.txt"
-SH
-cp "$WORK/bin/xdg-open" "$WORK/bin/open"
-chmod +x "$WORK/bin/xdg-open" "$WORK/bin/open"
 
 cat >"$PI_AGENT/models.json" <<JSON
 { "providers": { "fake": { "baseUrl": "http://127.0.0.1:$PORT/v1", "api": "openai-completions", "apiKey": "fake", "models": [{ "id": "fake-model", "name": "Fake model" }] } } }
@@ -102,7 +95,6 @@ const path = require("node:path");
 
 const { WORK, PI_HOME, PI_AGENT, PROJECT, PI_BIN, ROOT, HERE, PORT, TAB_FILE } = process.env;
 const EDITOR = path.join(WORK, "editor.json");
-const OPENED = path.join(WORK, "opened.txt");
 const REGISTRY = path.join(PI_AGENT, "annotation", "sessions");
 const PI_INDEX = path.join(ROOT, "index.ts");
 const PROBE = path.join(HERE, "editor-probe.ts");
@@ -254,7 +246,7 @@ async function run() {
 	const attachWidth = paneRect(attachPane)?.width;
 	check("the attach pane is wide enough for the diagram art", (attachWidth ?? 0) >= DIAGRAM_COLUMNS, `${attachWidth} columns, need ${DIAGRAM_COLUMNS}`);
 
-	const panePath = `${WORK}/bin:${PI_BIN}:${process.env.PATH ?? ""}`;
+	const panePath = `${PI_BIN}:${process.env.PATH ?? ""}`;
 	const piScript = writeScript(
 		"pi.sh",
 		[
@@ -280,14 +272,13 @@ async function run() {
 	const answered = await waitFor(() => (flat(readPane(piPane)).includes("It evicts the oldest entry first") ? true : undefined), 60000);
 	check("the fake model answered through a tool call", Boolean(answered), flat(readPane(piPane)).slice(-500));
 
-	herdr("pane", "run", piPane, "/annotate tui");
+	herdr("pane", "run", piPane, "/annotate");
 	const notice = await waitFor(() => {
 		const text = flat(readPane(piPane));
-		return text.includes("annotate: TUI session live on 127.0.0.1:") && text.includes("Attach from another terminal:") ? text : undefined;
+		return text.includes("annotate: live on 127.0.0.1:") && text.includes("Browser: http://127.0.0.1:") && text.includes("Terminal:") ? text : undefined;
 	}, 15000);
-	check("/annotate tui printed the attach notice", Boolean(notice), flat(readPane(piPane)).slice(-500));
+	check("/annotate printed the notice with the browser URL and the terminal command", Boolean(notice), flat(readPane(piPane)).slice(-500));
 	check("the notice points at the shipped bin path", Boolean(notice?.includes("bin/pi-annotation.ts")), notice?.slice(-300));
-	check("no browser was opened", !fs.existsSync(OPENED) || fs.readFileSync(OPENED, "utf8").trim() === "", fs.existsSync(OPENED) ? fs.readFileSync(OPENED, "utf8") : "");
 
 	const record = await waitFor(() => {
 		const names = registryNames();

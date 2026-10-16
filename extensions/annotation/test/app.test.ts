@@ -166,11 +166,11 @@ describe("annotation TUI shell", () => {
 		t.fail(new ProtocolError("switched", "session switched", 410));
 		await settle();
 		assert.match(t.screen()[0]!, /○ closed$/);
-		assert.match(t.screen().at(-1)!, /pi switched session; run \/annotate tui/);
+		assert.match(t.screen().at(-1)!, /pi switched session; run \/annotate and attach again/);
 		t.keys("A", "late", ENTER, "s");
 		await settle();
 		assert.deepEqual(t.sent, []);
-		assert.match(t.screen().at(-1)!, /pi switched session; run \/annotate tui/);
+		assert.match(t.screen().at(-1)!, /pi switched session; run \/annotate and attach again/);
 		t.app.stop();
 	});
 
