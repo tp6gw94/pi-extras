@@ -283,6 +283,14 @@ describe("motions", () => {
 		assert.deepEqual(step([assistant("a", ""), user("u", "hello")], at("a", 0), "wordForward").pos, at("u", 0));
 	});
 
+	it("moves w b e from a caret on a line break instead of from the top", () => {
+		const items = [user("u", "intro"), assistant("a", "foo b\nbaz qux")];
+		assert.deepEqual(step(items, at("a", 5), "wordForward").pos, at("a", 6));
+		assert.deepEqual(step(items, at("a", 5), "wordBackward").pos, at("a", 4));
+		assert.deepEqual(step(items, at("a", 5), "wordEnd").pos, at("a", 8));
+		assert.deepEqual(step([alpha()], at("a", OPEN - 1), "wordForward").pos, { itemId: "a", offset: OPEN, diagram: 0 });
+	});
+
 	it("keeps horizontal and line motions on a folded tool header", () => {
 		const items = [user("u", "abc"), tool("t", "hidden text"), assistant("a", "def")];
 		assert.deepEqual(step(items, at("u", 2), "right").pos, headerAt("t"));

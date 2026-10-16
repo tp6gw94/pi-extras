@@ -427,6 +427,9 @@ function stops(layout: Layout): Stop[] {
 	const out: Stop[] = [];
 	let previous: Row | undefined;
 	for (const row of layout.rows) {
+		const lineEnd = previous?.type === "text" && previous.itemId === row.itemId ? previous.cells.at(-1)?.end : undefined;
+		const continues = row.type === "text" && lineEnd === row.start;
+		if (lineEnd !== undefined && !continues) out.push({ itemId: row.itemId, offset: lineEnd, cls: 0, virtual: false, header: false });
 		if (row.type === "header") {
 			out.push({ itemId: row.itemId, offset: 0, cls: 0, virtual: false, header: true });
 		} else if (row.type === "diagram") {
@@ -434,7 +437,6 @@ function stops(layout: Layout): Stop[] {
 		} else if (row.type === "notice") {
 			out.push({ itemId: row.itemId, offset: row.open, cls: EMPTY, virtual: false, header: false, notice: true, block: fenceKey(row.itemId, row.open) });
 		} else {
-			const continues = previous?.type === "text" && previous.itemId === row.itemId && previous.cells.length > 0 && previous.cells.at(-1)!.end === row.start;
 			if (!continues) out.push({ itemId: row.itemId, offset: row.start, cls: 0, virtual: true, header: false });
 			if (row.cells.length === 0) out.push({ itemId: row.itemId, offset: row.start, cls: EMPTY, virtual: false, header: false });
 			for (const cell of row.cells) out.push({ itemId: row.itemId, offset: cell.offset, cls: cell.cls, virtual: false, header: false });
