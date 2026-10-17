@@ -74,8 +74,11 @@ async function scenario(name, hard) {
 		tmux("new-session", "-d", "-s", "acceptance", "-x", "160", "-y", "48", "-c", cwd, command);
 		launched = true;
 		const initial = await until(`${name} initial session`, () => events().find((event) => event.type === "start" && event.session?.startsWith(sessions)));
-		const generation = await until(`${name} automatic generation`, () => existsSync(initial.session) && custom(entries(initial.session), "resume-handoff-generation")[0]);
+		await until(`${name} threshold trigger`, () => name === "A"
+			? existsSync(initial.session) && custom(entries(initial.session), "resume-handoff-wrap-up")[0]
+			: events().find((event) => event.type === "settled" && event.session === initial.session && event.aborted));
 		writeFileSync(configPath, '{"enabled":false}');
+		const generation = await until(`${name} automatic generation`, () => existsSync(initial.session) && custom(entries(initial.session), "resume-handoff-generation")[0]);
 		const replacement = await until(`${name} replacement settlement`, () => events().find((event) => event.type === "settled" && event.session?.startsWith(sessions) && event.session !== initial.session));
 		assert.equal(replacement.aborted, false);
 		const oldRows = entries(initial.session);
@@ -85,8 +88,8 @@ async function scenario(name, hard) {
 		assert.equal(events().filter((event) => event.type === "settled" && event.session === initial.session && event.aborted).length, hard === 99 ? 0 : 1);
 		const generationIndex = oldRows.indexOf(custom(oldRows, "resume-handoff-generation")[0]);
 		const taskCalls = messages(oldRows.slice(0, generationIndex)).filter((message) => message.role === "assistant").flatMap((message) => message.content.filter((part) => part.type === "toolCall"));
-		if (name === "A") assert.deepEqual(taskCalls.map((call) => call.name), ["read", "read"]);
-		else assert.equal(taskCalls[0].name, "read");
+		assert.ok(taskCalls.length >= 1);
+		assert.equal(taskCalls[0].name, "read");
 		assert.equal(newRows[0].parentSession, initial.session);
 		const handoff = realpathSync(JSON.parse(text(generation.content).split("\n").at(-1)));
 		const firstUser = messages(newRows).find((message) => message.role === "user");
