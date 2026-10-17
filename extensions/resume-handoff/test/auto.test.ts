@@ -12,12 +12,12 @@ function generatedPath(harness: Harness): string {
 	return JSON.parse(harness.state.generationMessages.at(-1).message.content.split("\n").at(-1));
 }
 
-function response(harness: Harness, stopReason = "stop") {
-	harness.fire("message_end", { message: { role: "assistant", stopReason } });
+async function response(harness: Harness, stopReason = "stop") {
+	await harness.fire("message_end", { message: { role: "assistant", stopReason } });
 }
 
-function finish(harness: Harness, aborted = false) {
-	harness.fire("agent_settled", { aborted });
+async function finish(harness: Harness, aborted = false) {
+	await harness.fire("agent_settled", { aborted });
 	harness.finishGeneration();
 }
 
@@ -99,8 +99,8 @@ test("abort after a normal response cannot be overwritten by another settlement"
 	try {
 		writeFileSync(path, "Handoff");
 		response(harness);
-		harness.fire("agent_settled", { aborted: true });
-		finish(harness);
+		await harness.fire("agent_settled", { aborted: true });
+		await finish(harness);
 		await running;
 		assert.deepEqual(harness.state.notifications, [failed]);
 		assert.equal(harness.state.newSessions.length, 0);

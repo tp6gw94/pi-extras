@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { convertToLlm, initTheme, serializeConversation } from "@earendil-works/pi-coding-agent";
+import { type ContextUsage, convertToLlm, initTheme, serializeConversation } from "@earendil-works/pi-coding-agent";
 import resumeHandoff from "../index.ts";
 
 initTheme();
@@ -11,6 +11,7 @@ type Notification = { message: string; level: string };
 type PromptCall = { text: string; options: { expandPromptTemplates?: boolean } | undefined };
 
 type HarnessOptions = {
+	agentDir?: string;
 	complete?: (context: any, call: number) => any;
 	select?: (options: string[]) => string | undefined;
 	mode?: string;
@@ -53,6 +54,13 @@ export function createHarness(options: HarnessOptions = {}) {
 		leafId: null as string | null,
 		branch: options.branch ?? [messageEntry("entry-1", "start")],
 		replaced: false,
+		usage: undefined as ContextUsage | undefined,
+		aborts: 0,
+		steers: [] as any[],
+		userMessages: [] as PromptCall[],
+		commandRuns: [] as Promise<void>[],
+		settledDispatchOrder: [] as string[],
+		lifecycle: [] as string[],
 		generationMessages: [] as any[],
 		completeCalls: [] as any[],
 		notifications: [] as Notification[],
@@ -117,6 +125,8 @@ export function createHarness(options: HarnessOptions = {}) {
 				return state.branch;
 			},
 		},
+		getContextUsage: () => state.usage,
+		abort: () => { state.aborts++; },
 		isIdle: () => {
 			guard();
 			return idlePromise === undefined && (options.idle ?? true);
@@ -139,9 +149,25 @@ export function createHarness(options: HarnessOptions = {}) {
 			state.sessionId = "session-2";
 			state.sessionFile = "/sessions/session-2.jsonl";
 			state.leafId = "leaf-2";
+			const replacementCtx = {
+				...ctx,
+				ui: { ...ui, notify(message: string, level = "info") { state.notifications.push({ message, level }); } },
+				sessionManager: {
+					getSessionId: () => state.sessionId,
+					getSessionFile: () => state.sessionFile,
+					getLeafId: () => state.leafId,
+					getBranch: () => state.branch,
+				},
+				isIdle: () => idlePromise === undefined,
+				hasPendingMessages: () => options.pendingMessages ?? false,
+				async waitForIdle() { await idlePromise; },
+			};
+			await startSession(replacementCtx, "new");
 			if (sessionOptions.withSession) {
 				await sessionOptions.withSession({
+					...replacementCtx,
 					async sendUserMessage(text: string, promptOptions: any) {
+						state.lifecycle.push("bootstrap");
 						state.prompts.push({ text, options: promptOptions });
 						if (options.promptResult) {
 							await options.promptResult();
@@ -155,9 +181,27 @@ export function createHarness(options: HarnessOptions = {}) {
 	const pi: any = {
 		sendMessage(message: any, sendOptions: any) {
 			guard();
+			if (sendOptions?.deliverAs === "steer") {
+				state.steers.push({ message, options: sendOptions });
+				return;
+			}
+			void fire("before_agent_start", { messageType: "custom", message });
 			state.generationMessages.push({ message, options: sendOptions });
 			idlePromise = new Promise<void>((resolve) => { finishRun = resolve; });
 			started();
+		},
+		sendUserMessage(text: string, promptOptions: any) {
+			state.userMessages.push({ text, options: promptOptions });
+			if (text === "/resume-handoff auto" && promptOptions?.expandPromptTemplates === true) {
+				const dispatch = () => {
+					state.settledDispatchOrder.push("dispatched");
+					state.commandRuns.push(state.command!.handler("auto", ctx));
+				};
+				if (settledQueue) {
+					state.settledDispatchOrder.push("queued");
+					settledQueue.push(dispatch);
+				} else dispatch();
+			}
 		},
 		registerCommand(_name: string, definition: any) {
 			state.command = definition;
@@ -175,7 +219,33 @@ export function createHarness(options: HarnessOptions = {}) {
 			};
 		},
 	};
+	let settledQueue: (() => void)[] | undefined;
+	async function fire(event: string, payload: any = {}, context = ctx) {
+		if (event === "agent_settled") settledQueue = [];
+		for (const handler of [...(state.handlers.get(event) ?? [])]) {
+			await handler(payload, context);
+		}
+		if (event === "agent_settled") {
+			const queue = settledQueue!;
+			settledQueue = undefined;
+			if (queue.length) state.settledDispatchOrder.push("handlers-done");
+			for (const dispatch of queue) dispatch();
+		}
+	}
+	async function startSession(context = ctx, reason = "startup") {
+		const previous = process.env.PI_CODING_AGENT_DIR;
+		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = options.agentDir;
+		try {
+			await fire("session_start", { reason }, context);
+			state.lifecycle.push("session_start");
+		} finally {
+			if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previous;
+		}
+	}
 	resumeHandoff(pi);
+	const totalHandlers = () => [...state.handlers.values()].reduce((total, list) => total + list.length, 0);
+	const baseline = totalHandlers();
 	const cleanup = () => {
 		for (const component of state.components) {
 			component.dispose?.();
@@ -196,12 +266,10 @@ export function createHarness(options: HarnessOptions = {}) {
 				cleanup();
 			}
 		},
-		fire: (event: string, payload: any = {}) => {
-			for (const handler of [...(state.handlers.get(event) ?? [])]) {
-				handler(payload, ctx);
-			}
-		},
-		handlerCount: () => [...state.handlers.values()].reduce((total, list) => total + list.length, 0),
+		fire,
+		startSession,
+		handlerCount: () => totalHandlers() - baseline,
+		permanentHandlerCount: () => baseline,
 	};
 }
 
