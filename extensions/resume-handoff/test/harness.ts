@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ContextUsage, convertToLlm, initTheme, serializeConversation } from "@earendil-works/pi-coding-agent";
@@ -234,13 +234,15 @@ export function createHarness(options: HarnessOptions = {}) {
 	}
 	async function startSession(context = ctx, reason = "startup") {
 		const previous = process.env.PI_CODING_AGENT_DIR;
-		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = options.agentDir;
+		const agentDir = options.agentDir ?? makeDir();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
 		try {
 			await fire("session_start", { reason }, context);
 			state.lifecycle.push("session_start");
 		} finally {
 			if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previous;
+			if (options.agentDir === undefined) rmSync(agentDir, { recursive: true, force: true });
 		}
 	}
 	resumeHandoff(pi);
