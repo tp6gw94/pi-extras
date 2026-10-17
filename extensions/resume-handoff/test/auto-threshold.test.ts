@@ -9,15 +9,27 @@ const dispatch = { text: "/resume-handoff auto", options: { expandPromptTemplate
 const invalid = { message: "自動交接設定無效，已停用；請檢查 resume-handoff/config.json", level: "warning" };
 type Harness = ReturnType<typeof createHarness>;
 
-async function fixture(t: test.TestContext, config: string | undefined = '{"enabled":true}', options: Parameters<typeof createHarness>[0] = {}) {
+function configDir(t: test.TestContext, config: string | null) {
 	const agentDir = makeDir();
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	mkdirSync(join(agentDir, "resume-handoff"));
 	const path = join(agentDir, "resume-handoff", "config.json");
-	if (config !== undefined) writeFileSync(path, config);
+	if (config !== null) writeFileSync(path, config);
+	return { agentDir, path };
+}
+
+async function fixture(t: test.TestContext, config: string | null = '{"enabled":true}', options: Parameters<typeof createHarness>[0] = {}) {
+	const { agentDir, path } = configDir(t, config);
 	const harness = createHarness({ agentDir, pendingMessages: true, ...options });
 	await harness.startSession();
 	return { harness, path };
+}
+
+async function restart(path: string, config: string, options: Parameters<typeof createHarness>[0] = {}) {
+	writeFileSync(path, config);
+	const harness = createHarness({ agentDir: join(path, "../.."), pendingMessages: true, ...options });
+	await harness.startSession();
+	return harness;
 }
 
 function usage(harness: Harness, percent: number | null | undefined) {
@@ -35,10 +47,9 @@ async function settled(harness: Harness, percent: number | null | undefined, abo
 	await Promise.all(harness.state.commandRuns);
 }
 
-for (const config of [undefined, "{}", '{"enabled":false}', '{"enabled":"true"}']) {
+for (const config of [null, "{}", '{"enabled":false}', '{"enabled":"true"}']) {
 	test(`inert configuration ${config}`, async (t) => {
-		const { harness, path } = await fixture(t, config === undefined ? "{}" : config);
-		if (config === undefined) { rmSync(path); await harness.startSession(); }
+		const { harness, path } = await fixture(t, config);
 		assert.equal(harness.permanentHandlerCount(), 4);
 		await turn(harness, 90);
 		await settled(harness, 90);
@@ -46,10 +57,9 @@ for (const config of [undefined, "{}", '{"enabled":false}', '{"enabled":"true"}'
 		assert.equal(harness.state.aborts, 0);
 		assert.deepEqual(harness.state.userMessages, []);
 		assert.deepEqual(harness.state.notifications, config === '{"enabled":"true"}' ? [invalid] : []);
-		writeFileSync(path, '{"enabled":true}');
-		await harness.startSession();
-		await turn(harness, 75);
-		assert.deepEqual(harness.state.steers, [steer]);
+		const enabled = await restart(path, '{"enabled":true}');
+		await turn(enabled, 75);
+		assert.deepEqual(enabled.state.steers, [steer]);
 	});
 }
 
@@ -63,33 +73,30 @@ for (const config of [
 	'{"enabled":true,"softThresholdPercent":1e999}',
 	'[]', 'null', '{',
 ]) {
-	test(`invalid configuration is latched ${config}`, async (t) => {
+	test(`invalid configuration warns once per session start ${config}`, async (t) => {
 		const { harness, path } = await fixture(t, config);
-		await harness.startSession();
 		await turn(harness, 90);
 		await settled(harness, 90);
 		assert.deepEqual(harness.state.notifications, [invalid]);
 		assert.equal(harness.state.aborts, 0);
 		assert.deepEqual(harness.state.steers, []);
 		assert.deepEqual(harness.state.userMessages, []);
-		writeFileSync(path, '{"enabled":true}');
-		await harness.startSession();
-		await turn(harness, 75);
-		assert.deepEqual(harness.state.notifications, [invalid]);
-		assert.deepEqual(harness.state.steers, [steer]);
-		writeFileSync(path, config);
-		await harness.startSession();
-		assert.deepEqual(harness.state.notifications, [invalid, invalid]);
+		const valid = await restart(path, '{"enabled":true}');
+		await turn(valid, 75);
+		assert.deepEqual(valid.state.notifications, []);
+		assert.deepEqual(valid.state.steers, [steer]);
+		const again = await restart(path, config);
+		assert.deepEqual(again.state.notifications, [invalid]);
 	});
 }
 
 test("unreadable config is invalid; rpc never reads it", async (t) => {
-	const { harness, path } = await fixture(t);
-	rmSync(path);
+	const { agentDir, path } = configDir(t, null);
 	mkdirSync(path);
+	const harness = createHarness({ agentDir });
 	await harness.startSession();
 	assert.deepEqual(harness.state.notifications, [invalid]);
-	const rpc = createHarness({ agentDir: join(path, "../.."), mode: "rpc" });
+	const rpc = createHarness({ agentDir, mode: "rpc" });
 	await rpc.startSession();
 	await turn(rpc, 90);
 	await settled(rpc, 90);

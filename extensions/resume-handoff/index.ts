@@ -406,7 +406,6 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 	let active: AbortController | undefined;
 	let config: AutoHandoffConfig = { enabled: false };
 	let cycle: "open" | "steered" | "aborted" = "open";
-	let invalidConfigNotified = false;
 	pi.registerCommand("resume-handoff", {
 		description: "以交接檔案建立新 session，auto 自動生成交接檔案",
 		handler: async (args, ctx) => {
@@ -597,17 +596,12 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
-		cycle = "open";
-		config = { enabled: false };
 		if (ctx.mode !== "tui") return;
 		const loaded = await loadAutoHandoffConfig(join(getAgentDir(), "resume-handoff", "config.json"));
 		if (loaded === "invalid") {
-			const notify = !invalidConfigNotified;
-			invalidConfigNotified = true;
-			if (notify) ctx.ui.notify("自動交接設定無效，已停用；請檢查 resume-handoff/config.json", "warning");
+			ctx.ui.notify("自動交接設定無效，已停用；請檢查 resume-handoff/config.json", "warning");
 			return;
 		}
-		invalidConfigNotified = false;
 		config = loaded;
 	});
 	pi.on("before_agent_start", () => {
