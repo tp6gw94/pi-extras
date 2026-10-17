@@ -231,15 +231,21 @@ test("settled without prior observation dispatches at soft equality", async (t) 
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
 });
 
-test("generation is skipped and other custom runs re-arm", async (t) => {
-	const { harness } = await fixture(t);
+test("generation turns are skipped while the command is active and any run start re-arms", async (t) => {
+	let release!: () => void;
+	const idle = new Promise<void>((resolve) => { release = resolve; });
+	const { harness } = await fixture(t, '{"enabled":true}', { waitForIdle: () => idle });
 	await turn(harness, 75);
+	assert.deepEqual(harness.state.steers, [steer]);
+	const run = harness.run("auto");
 	await harness.fire("before_agent_start", { messageType: "custom", message: { customType: "resume-handoff-generation" } });
 	await turn(harness, 99);
 	await settled(harness, 99);
 	assert.equal(harness.state.aborts, 0);
-	assert.deepEqual(harness.state.userMessages, []);
 	assert.deepEqual(harness.state.steers, [steer]);
+	assert.deepEqual(harness.state.userMessages, []);
+	release();
+	await run;
 	await harness.fire("before_agent_start", { messageType: "custom", message: { customType: "other" } });
 	await turn(harness, 75);
 	assert.deepEqual(harness.state.steers, [steer, steer]);
@@ -285,7 +291,6 @@ test("failed generation does not recurse and the next normal run retries", async
 	await Promise.all(harness.state.commandRuns);
 	assert.deepEqual(harness.state.notifications, [{ message: "交接檔案生成未成功完成，未切換 session", level: "error" }]);
 	assert.deepEqual(harness.state.newSessions, []);
-	await harness.fire("agent_settled", { aborted: false });
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
 	await harness.fire("before_agent_start", { messageType: "user" });
 	await harness.fire("agent_settled", { aborted: false });

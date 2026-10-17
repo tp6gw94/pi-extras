@@ -185,7 +185,6 @@ export function createHarness(options: HarnessOptions = {}) {
 				state.steers.push({ message, options: sendOptions });
 				return;
 			}
-			void fire("before_agent_start", { messageType: "custom", message });
 			state.generationMessages.push({ message, options: sendOptions });
 			idlePromise = new Promise<void>((resolve) => { finishRun = resolve; });
 			started();
