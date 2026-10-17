@@ -4,7 +4,7 @@
 
 pi-extras 是一個 [pi](https://github.com/earendil-works/pi) 套件，裡面有九個 extension。安裝一次，pi 就會載入其中每個 extension。你可以在 pi 的設定裡關掉個別的 extension。
 
-pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上測試過。
+pi-extras 需要 `@earendil-works/pi-coding-agent` 1.3.0 以上與 Node.js 22。
 
 ## Extension 列表
 
@@ -15,12 +15,20 @@ pi-extras 在 `@earendil-works/pi-coding-agent` 1.0.4 與 1.1.0、Node.js 22 上
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
 | `ralph` | 用 `/ralph` 對同一個任務跑有上限的多輪全新 pi session，用 `/ralph-stop` 停止。 | |
-| `resume-handoff` | 用 `/resume-handoff` 從檢查過的交接檔案開新 session。 | |
+| `resume-handoff` | 從既有交接檔案開新 session，或用 `/resume-handoff auto` 請目前 agent 撰寫交接檔案。 | |
 | `rpc-subagents` | 以 `pi --mode rpc` 子程序執行子代理任務與排程，用 `/rpc-subagents` 列出它們。child 會載入你設定中的 extension（排除 `rpc-subagents`、`annotation`、`ux`、`hooks`），所以你的 provider 在 child 裡也能用。資料與 `config.json` 放在 `~/.pi/agent/rpc-subagents/`。 | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | `~/.pi/agent/skills` 與 `~/.agents/skills` 裡的 skill 名稱不合規時，給它一個合規的名稱。 | |
 | `ux` | 把上一則 prompt 釘選在編輯器上方。 | [README](extensions/ux/README.zh-TW.md) |
 
 每個 extension 放在 `extensions/<名稱>/`，測試與它附帶的 skill 也在同一個目錄。
+
+## 從交接檔案接續工作
+
+`/resume-handoff auto` 請目前 agent 在獨立的系統暫存目錄撰寫交接檔案。生成成功且檔案通過驗證後，指令直接建立新 session，不要求審核或選檔。生成失敗或中止時不切換 session。新的使用者輸入或 session 導覽會取消自動切換。
+
+`/resume-handoff "./handoff reviewed.md"` 使用既有檔案。`/resume-handoff` 從目前對話尋找已建立的交接檔案，有多個符合條件的檔案時提供選擇。若檔名就是 `auto`，使用 `"auto"` 或 `./auto`。
+
+所有模式都會送出英文啟動指示，要求新 agent 的第一個動作讀取精確的交接檔案路徑，再接續工作。不論成功或失敗，生成的檔案都會留在暫存目錄。確認沒有 session 需要它後可自行刪除。
 
 ## 安裝
 
@@ -108,4 +116,4 @@ npm run typecheck
 - `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。
 - `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
 
-pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，所以 `package.json` 把它們列為 `"*"` 的 peer dependency。執行期 dependency 是 `croner`（給 `rpc-subagents` 的 cron 用）、`mermaid`（給 `annotation` 瀏覽器頁面的圖表用）與 `grok-mermaid`（給 `annotation` 終端機檢視的文字圖表用），三者都鎖定確切版本。
+pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，因此它們列為 peer dependency。coding-agent 的最低版本為 1.3.0，因為自動交接依賴該版本的 custom message 啟動生命週期。執行期 dependency 是 `croner`（給 `rpc-subagents` 的 cron 用）、`mermaid`（給 `annotation` 瀏覽器頁面的圖表用）與 `grok-mermaid`（給 `annotation` 終端機檢視的文字圖表用），三者都鎖定確切版本。
