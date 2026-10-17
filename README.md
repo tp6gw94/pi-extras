@@ -4,7 +4,7 @@
 
 pi-extras is one [pi](https://github.com/earendil-works/pi) package with nine extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
 
-pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on Node.js 22.
+pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 22.
 
 ## Extensions
 
@@ -15,12 +15,20 @@ pi-extras is tested with `@earendil-works/pi-coding-agent` 1.0.4 and 1.1.0 on No
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |
-| `resume-handoff` | Starts a new session from a checked handoff file with `/resume-handoff`. | |
+| `resume-handoff` | Starts a new session from an existing handoff, or asks the current agent to write one with `/resume-handoff auto`. | |
 | `rpc-subagents` | Runs subagent tasks and schedules as `pi --mode rpc` child processes, with `/rpc-subagents` to list them. Children load your own extensions from settings (minus `rpc-subagents`, `annotation`, `ux` and `hooks`), so your providers work there too. Keeps its data and `config.json` in `~/.pi/agent/rpc-subagents/`. | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | Gives skills in `~/.pi/agent/skills` and `~/.agents/skills` a valid name when their own name is not one. | |
 | `ux` | Pins your last prompt above the editor. | [README](extensions/ux/README.md) |
 
 Each extension lives in `extensions/<name>/`, with its tests and any skills it ships.
+
+## Resume from a handoff
+
+`/resume-handoff auto` asks the current agent to write a handoff in a private system temporary directory. After generation finishes successfully and the file passes validation, the command starts a new session without review or file selection. Failed or aborted generation does not switch sessions. New user input or session navigation cancels the automatic switch.
+
+`/resume-handoff "./handoff reviewed.md"` uses an existing file. `/resume-handoff` searches the current conversation for an existing handoff and offers a choice when several files qualify. Use `"auto"` or `./auto` for a file literally named `auto`.
+
+All modes send an English bootstrap that instructs the new agent to read the exact handoff path as its first action, then continue the work. Generated files remain in the temporary directory after success or failure. Remove them when no session needs them.
 
 ## Install
 
@@ -108,4 +116,4 @@ npm run typecheck
 - `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`.
 - `scripts/acceptance.sh` installs pi-extras from git into a throwaway home directory and checks what pi loads, with all extensions, with a settings filter, and after `pi config`.
 
-pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions, so `package.json` lists them as `"*"` peer dependencies. The runtime dependencies are `croner` (for cron in `rpc-subagents`), `mermaid` (for the browser page's diagrams in `annotation`) and `grok-mermaid` (for the terminal view's text diagrams in `annotation`), all pinned to exact versions.
+pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions. They are peer dependencies. The coding-agent minimum is 1.3.0 because automatic handoff uses its custom-message startup lifecycle. The runtime dependencies are `croner` (for cron in `rpc-subagents`), `mermaid` (for the browser page's diagrams in `annotation`) and `grok-mermaid` (for the terminal view's text diagrams in `annotation`), all pinned to exact versions.
