@@ -210,6 +210,21 @@ test("Escape suppresses only its run", async (t) => {
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
 });
 
+test("aborted and errored turns are ignored by the detector", async (t) => {
+	const { harness } = await fixture(t);
+	await turn(harness, 80);
+	usage(harness, 90);
+	await harness.fire("turn_end", { outcome: "aborted" });
+	await harness.fire("turn_end", { outcome: "error" });
+	assert.equal(harness.state.aborts, 0);
+	assert.deepEqual(harness.state.steers, [steer]);
+	await settled(harness, 90, true);
+	assert.deepEqual(harness.state.userMessages, []);
+	await harness.fire("before_agent_start", { messageType: "user" });
+	await turn(harness, 90);
+	assert.equal(harness.state.aborts, 1);
+});
+
 test("settled without prior observation dispatches at soft equality", async (t) => {
 	const { harness } = await fixture(t);
 	await settled(harness, 75);

@@ -617,7 +617,8 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 		detector = event.messageType === "custom" && event.message.customType === "resume-handoff-generation"
 			? { run: "generation" } : { run: "normal", cycle: "open" };
 	});
-	pi.on("turn_end", (_event, ctx) => {
+	pi.on("turn_end", (event, ctx) => {
+		if (event.outcome !== "completed") return;
 		if (!config.enabled || ctx.mode !== "tui" || active !== undefined || detector.run !== "normal") return;
 		const percent = ctx.getContextUsage()?.percent;
 		if (typeof percent !== "number") return;

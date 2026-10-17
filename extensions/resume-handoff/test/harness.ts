@@ -221,6 +221,7 @@ export function createHarness(options: HarnessOptions = {}) {
 	};
 	let settledQueue: (() => void)[] | undefined;
 	async function fire(event: string, payload: any = {}, context = ctx) {
+		if (event === "turn_end") payload = { outcome: "completed", ...payload };
 		if (event === "agent_settled") settledQueue = [];
 		for (const handler of [...(state.handlers.get(event) ?? [])]) {
 			await handler(payload, context);
