@@ -37,6 +37,7 @@ test("auto uses the current agent and only replaces after successful settlement"
 		assert.deepEqual(harness.state.generationMessages[0].options, { triggerTurn: true });
 		assert.equal(harness.state.generationMessages[0].message.customType, "resume-handoff-generation");
 		assert.match(harness.state.generationMessages[0].message.content, /Redact secrets and credentials/);
+		assert.match(harness.state.generationMessages[0].message.content, /If rpc-subagents tasks are still running, list each task ID, its purpose, and how to read its result with rpc_subagents_result; include rpc_subagents_pending and rpc_subagents_reply for any pending child asks\. These tasks keep running across the session switch; do not wait for or cancel them\./);
 		writeFileSync(path, "# Handoff\nContinue the paused task.\n");
 		harness.state.leafId = "generation-tool-result";
 		response(harness);
