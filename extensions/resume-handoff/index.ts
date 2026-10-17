@@ -379,6 +379,12 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 	let active: AbortController | undefined;
 	pi.registerCommand("resume-handoff", {
 		description: "以交接檔案建立新 session，auto 自動生成交接檔案",
+		getArgumentCompletions: (argumentPrefix: string) => {
+			if ("auto".startsWith(argumentPrefix.trim())) {
+				return [{ value: "auto", label: "auto", description: "自動生成交接檔案後切換 session" }];
+			}
+			return null;
+		},
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("請在互動模式使用 /resume-handoff", "error");

@@ -650,3 +650,15 @@ test("quoted and punctuation-bounded paths still switch", async () => {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("argument completion offers the auto keyword", () => {
+	const harness = createHarness();
+	const completeArgument = harness.state.command!.getArgumentCompletions!;
+	assert.deepEqual(completeArgument(""), [
+		{ value: "auto", label: "auto", description: "自動生成交接檔案後切換 session" },
+	]);
+	assert.deepEqual(completeArgument("a"), [
+		{ value: "auto", label: "auto", description: "自動生成交接檔案後切換 session" },
+	]);
+	assert.equal(completeArgument("x"), null);
+});
