@@ -349,6 +349,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     try {
       const current = await app();
       if (h.binding !== binding) return;
+      if (replacement) { current.reissuePendingAsks(); flushCompletions(h, false); }
       if (ctx.mode === "tui") {
         if (replacement) {
           const live = current.liveTasks();
@@ -356,7 +357,6 @@ export default function rpcSubagents(pi: ExtensionAPI) {
         }
         widgetController = installFleetWidget(ctx, current.model);
       }
-      if (replacement) { current.reissuePendingAsks(); flushCompletions(h, false); }
       await current.project(ctx.cwd);
     } catch (error) {
       if (h.binding !== binding) return;
