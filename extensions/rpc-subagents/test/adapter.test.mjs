@@ -27,10 +27,10 @@ function load(env, context = {}, api = {}) {
   const forbidden = () => { throw new Error("Factory attempted to initialize runtime resources"); };
   const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, CHILD_BINDING_ENV, safeText, terminalTaskStates,
     getPackageDir: forbidden, getAgentDir: forbidden, loadLocalConfig: forbidden, prepareStorage: forbidden, setTimeout: forbidden, setInterval: forbidden, ...context });
-  const instantiate = (api = {}) => {
+  const instantiate = (overrides = {}) => {
     const tools = []; const commands = []; const commandHandlers = new Map(); const events = []; const handlers = new Map();
     factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name, command) => { commands.push(name); commandHandlers.set(name, command.handler); },
-      on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...api });
+      on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...overrides });
     return { tools, commands, commandHandlers, events, handlers };
   };
   return { ...instantiate(api), factory, instantiate };
@@ -344,7 +344,11 @@ function loadSurvivalFixture(overrides = {}) {
     const current = registry.instantiate({ sendMessage: (message, options) => messages.push(structuredClone({ message, options })) });
     const ctx = { mode, cwd, hasUI: true, widgets, ui: { notify: (message, level) => notices.push([message, level]), setWidget: (key, value) => widgets.push(["remove", key, value]) } };
     const emit = (name, event = {}) => current.handlers.get(name)(event, ctx);
-    const call = async (name, params = {}) => structuredClone((await current.tools.find((tool) => tool.name === name).execute("call", params, undefined, undefined, ctx)).structuredContent);
+    const call = async (name, params = {}) => {
+      const tool = current.tools.find((candidate) => candidate.name === name);
+      const result = await tool.execute("call", params, undefined, undefined, ctx);
+      return structuredClone(result.structuredContent);
+    };
     return { messages, notices, widgets, ctx, emit, call, start: () => emit("session_start"), shutdown: (reason) => emit("session_shutdown", { reason }), run: () => call("rpc_subagents_run", { prompt: "work", cwd, async: true }) };
   };
   const tick = () => { for (const listener of listeners) listener(); };

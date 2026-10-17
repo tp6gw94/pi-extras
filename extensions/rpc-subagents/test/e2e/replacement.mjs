@@ -164,31 +164,19 @@ function callPrompt(tool, taskId, tag) {
 		`After the tool result, reply with exactly one line and nothing else: ${tag} <status>`,
 	].join("\n");
 }
-function extractTaskId(from, tag) {
+function firstMatch(from, source, pattern) {
 	for (const entry of eventTexts(from)) {
-		if (entry.source !== "assistant") continue;
-		const match = entry.text.match(new RegExp(`${tag}\\s+([0-9a-f-]{36})`, "i"));
-		if (match) return match[1];
-	}
-	for (const entry of eventTexts(from)) {
-		if (entry.source !== "codemode") continue;
-		const match = entry.text.match(/"taskId":\s*"([0-9a-f-]{36})"/);
+		if (entry.source !== source) continue;
+		const match = entry.text.match(pattern);
 		if (match) return match[1];
 	}
 	return undefined;
 }
+function extractTaskId(from, tag) {
+	return firstMatch(from, "assistant", new RegExp(`${tag}\\s+([0-9a-f-]{36})`, "i")) ?? firstMatch(from, "codemode", /"taskId":\s*"([0-9a-f-]{36})"/);
+}
 function extractStatus(from, tag) {
-	for (const entry of eventTexts(from)) {
-		if (entry.source !== "assistant") continue;
-		const match = entry.text.match(new RegExp(`${tag}\\s+([a-z_]+)`, "i"));
-		if (match) return match[1];
-	}
-	for (const entry of eventTexts(from)) {
-		if (entry.source !== "codemode") continue;
-		const match = entry.text.match(/"status":\s*"([a-z_]+)"/);
-		if (match) return match[1];
-	}
-	return undefined;
+	return firstMatch(from, "assistant", new RegExp(`${tag}\\s+([a-z_]+)`, "i")) ?? firstMatch(from, "codemode", /"status":\s*"([a-z_]+)"/);
 }
 async function spawnAsyncTask(name, seconds, tag) {
 	const mark = await prompt(spawnPrompt(name, seconds, tag), tag);

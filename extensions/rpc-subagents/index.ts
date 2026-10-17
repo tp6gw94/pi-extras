@@ -189,7 +189,7 @@ async function initialize(h: FleetHost, extensionDir: string) {
     for (const task of fleet.list()) {
       if (completions.has(task.taskId) && terminalTaskStates.has(task.status)) completions.set(task.taskId, task.status);
     }
-    if (h.binding && !h.binding.parentRunning) flushCompletions(h, true);
+    if (!h.binding?.parentRunning) flushCompletions(h, true);
   };
   const watchCompletion = (taskId: string) => { completions.set(taskId, undefined); captureCompletions(); };
   subscriptions.push(fleet.subscribe(notify), fleet.subscribe(() => notifyCoordination(true)), fleet.subscribe(captureCompletions));

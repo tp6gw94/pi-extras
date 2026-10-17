@@ -120,7 +120,7 @@ return { taskId, status: result.status, text: result.text };
 
 切換時移除舊 widget，新 session 重新安裝 widget。TUI 會通知接續的進行中任務數量、ID、名稱與狀態。原本已追蹤、在切換空窗完成的背景任務會把完成通知補到新 session；仍待回答的 child ask 也會重新通知一次。這些補發訊息不自行啟動 agent turn，之後的新事件仍依原本規則喚醒。已送到舊 session 或已由工具讀到 terminal 狀態的完成結果不重播。
 
-以真實 RPC 程序驗證切換行為時，執行 `node extensions/rpc-subagents/test/e2e/replacement.mjs --provider <provider> --model <model> --evidence /tmp/pi-extras-fleet-survival/e2e-dev`。
+以真實 RPC 程序驗證切換行為時，執行 `node extensions/rpc-subagents/test/e2e/replacement.mjs --provider <provider> --model <model> --evidence <證據目錄>`。
 腳本會把 RPC 事件寫到 `<evidence>/events.jsonl`、摘要寫到 `<evidence>/summary.json`，全部斷言通過時 exit 0。
 
 `/resume-handoff auto` 的生成提示會要求列出進行中任務的 ID、用途與 `rpc_subagents_result` 讀取方式；待回答的問題則列出 `rpc_subagents_pending` 與 `rpc_subagents_reply`，不為了交接等待或取消任務。
