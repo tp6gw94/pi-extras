@@ -301,6 +301,118 @@ test("async run tasks wake the parent once when they finish, while sync and sche
   assert.equal(listeners.size, 0);
 });
 
+function loadSurvivalFixture(overrides = {}) {
+  const tasks = [];
+  const listeners = new Set();
+  const fleets = [];
+  const managers = [];
+  const replies = [];
+  let preparerNotify;
+  let unsubscribed = 0;
+  class FakeFleet {
+    constructor() { fleets.push(this); this.shutdownCalls = 0; }
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); unsubscribed++; }; }
+    list() { return structuredClone(tasks); }
+    status(taskId) { return structuredClone(tasks.find((task) => task.taskId === taskId)); }
+    run(spec) {
+      const task = { taskId: `task-${tasks.length + 1}`, name: spec.name ?? "investigate parser", status: "running", state: { status: "running" } };
+      tasks.push(task);
+      return structuredClone(task);
+    }
+    reply(taskId, requestId, answer) { replies.push([taskId, requestId, { ...answer }]); return this.status(taskId); }
+    shutdown() { this.shutdownCalls++; this.children = Promise.resolve(); return this.children; }
+  }
+  const registry = load({}, {
+    loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: "/data", configFile: "/config.json", configDir: "/", migrated: {} }),
+    getPackageDir: () => "/pi", getAgentDir: () => "/agent", resolveCliEntrypoint: () => "/pi/cli",
+    createTaskPreparer: ({ notify }) => { preparerNotify = notify; return () => {}; },
+    FleetManager: FakeFleet,
+    ScheduleManager: class {
+      constructor() { managers.push(this); this.shutdowns = []; }
+      subscribe() { return () => {}; }
+      async start() {}
+      async shutdown(options) { this.shutdowns.push(options); }
+      list() { return []; }
+    },
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: async (cwd) => cwd, projectKey: (cwd) => cwd,
+    normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }),
+    installFleetWidget: (ctx) => { ctx.widgets.push(["install", "rpc-subagents"]); return { toggle() {} }; },
+    ...overrides,
+  });
+  const adapter = (mode = "tui", cwd = "/project") => {
+    const messages = []; const notices = []; const widgets = [];
+    const current = registry.instantiate({ sendMessage: (message, options) => messages.push(structuredClone({ message, options })) });
+    const ctx = { mode, cwd, hasUI: true, widgets, ui: { notify: (message, level) => notices.push([message, level]), setWidget: (key, value) => widgets.push(["remove", key, value]) } };
+    const emit = (name, event = {}) => current.handlers.get(name)(event, ctx);
+    const call = async (name, params = {}) => structuredClone((await current.tools.find((tool) => tool.name === name).execute("call", params, undefined, undefined, ctx)).structuredContent);
+    return { messages, notices, widgets, ctx, emit, call, start: () => emit("session_start"), shutdown: (reason) => emit("session_shutdown", { reason }), run: () => call("rpc_subagents_run", { prompt: "work", cwd, async: true }) };
+  };
+  const tick = () => { for (const listener of listeners) listener(); };
+  return { adapter, tasks, listeners, fleets, managers, replies, tick, notify: (message) => preparerNotify(message),
+    get unsubscribed() { return unsubscribed; },
+    finish: (status = "completed") => { tasks[0].status = status; tasks[0].state = { status }; tick(); } };
+}
+
+for (const reason of ["new", "resume", "fork"]) {
+  test(`${reason} preserves the running fleet for the next adapter`, async () => {
+    const f = loadSurvivalFixture();
+    const a = f.adapter();
+    await a.start();
+    await a.run();
+    await a.shutdown(reason);
+    const b = f.adapter();
+    await b.start();
+    assert.equal(f.fleets.length, 1);
+    assert.equal(f.fleets[0].shutdownCalls, 0);
+    assert.deepEqual(await b.call("rpc_subagents_status", { taskId: "task-1" }), { taskId: "task-1", name: "investigate parser", status: "running", state: { status: "running" } });
+    await b.shutdown("quit");
+  });
+}
+
+for (const reason of ["quit", "reload"]) {
+  test(`${reason} shuts down children and schedule owners before constructing a fresh fleet`, async () => {
+    const f = loadSurvivalFixture();
+    const a = f.adapter();
+    await a.start();
+    await a.run();
+    a.ctx.cwd = "/second";
+    await a.start();
+    await a.shutdown(reason);
+    assert.equal(f.fleets[0].shutdownCalls, 1);
+    assert.equal(f.managers.length, 2);
+    for (const manager of f.managers) {
+      assert.equal(manager.shutdowns.length, 1);
+      assert.equal(manager.shutdowns[0].beforeRelease, f.fleets[0].children);
+    }
+    assert.equal(f.unsubscribed, 3);
+    assert.equal(f.listeners.size, 0);
+    const b = f.adapter();
+    await b.start();
+    assert.equal(f.fleets.length, 2);
+    await b.shutdown("quit");
+  });
+}
+
+test("a detached adapter rejects tools and cannot settle the replacement parent", async () => {
+  const f = loadSurvivalFixture();
+  const a = f.adapter();
+  await a.start();
+  await a.run();
+  await a.shutdown("new");
+  const b = f.adapter();
+  await b.start();
+  await b.emit("agent_start");
+  f.finish();
+  await assert.rejects(a.call("rpc_subagents_status"), { message: "RPC subagents is shutting down" });
+  await a.emit("agent_settled", { aborted: false });
+  assert.equal(a.messages.length, 0);
+  assert.equal(b.messages.length, 0);
+  await b.emit("agent_settled", { aborted: false });
+  assert.equal(b.messages.length, 1);
+  assert.deepEqual(b.messages[0].message.details, { taskId: "task-1", status: "completed" });
+  await b.shutdown("quit");
+});
+
 async function loadWakeFixture(t) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "rpc-subagents-observed-")));
   t.after(() => rm(directory, { recursive: true, force: true }));
