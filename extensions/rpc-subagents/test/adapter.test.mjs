@@ -24,14 +24,27 @@ const source = stripTypeScriptTypes(await readFile(new URL(moduleUrl), "utf8"));
 const factorySource = source.replace(/^import .*?;\s*$/gm, "").replace("export default function rpcSubagents", "function rpcSubagents").replaceAll("import.meta.url", "moduleUrl") + "\nrpcSubagents";
 
 function load(env, context = {}, api = {}) {
-  const tools = []; const commands = []; const commandHandlers = new Map(); const events = []; const handlers = new Map();
   const forbidden = () => { throw new Error("Factory attempted to initialize runtime resources"); };
   const factory = runInNewContext(factorySource, { process: { env }, Type: schema, dirname, join, fileURLToPath, moduleUrl, COORDINATION_LIMITS, CHILD_BINDING_ENV, safeText, terminalTaskStates,
     getPackageDir: forbidden, getAgentDir: forbidden, loadLocalConfig: forbidden, prepareStorage: forbidden, setTimeout: forbidden, setInterval: forbidden, ...context });
-  factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name, command) => { commands.push(name); commandHandlers.set(name, command.handler); },
-    on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...api });
-  return { tools, commands, commandHandlers, events, handlers };
+  const instantiate = (api = {}) => {
+    const tools = []; const commands = []; const commandHandlers = new Map(); const events = []; const handlers = new Map();
+    factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name, command) => { commands.push(name); commandHandlers.set(name, command.handler); },
+      on: (name, handler) => { events.push(name); handlers.set(name, handler); }, ...api });
+    return { tools, commands, commandHandlers, events, handlers };
+  };
+  return { ...instantiate(api), factory, instantiate };
 }
+
+test("one VM factory registers independent adapters without starting resources", () => {
+  const first = load({});
+  const second = first.instantiate();
+  assert.equal(first.tools.length, 15);
+  assert.equal(second.tools.length, 15);
+  assert.deepEqual(second.events, ["resources_discover", "session_start", "agent_start", "agent_settled", "session_shutdown"]);
+  assert.notEqual(first.handlers.get("session_start"), second.handlers.get("session_start"));
+  assert.deepEqual(Array.from(second.handlers.get("resources_discover")().skillPaths), [join(dirname(fileURLToPath(moduleUrl)), "skills", "rpc-subagents", "SKILL.md")]);
+});
 
 test("adapter factory registers unique codemode tools with directly accessible structured result declarations but starts no resources", () => {
   const registry = load({});
