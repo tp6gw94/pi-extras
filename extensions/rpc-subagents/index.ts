@@ -345,10 +345,11 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     const h = host();
     const binding: SessionBinding = { adapterId, pi, ctx, parentRunning: false };
     const replacement = h.app !== undefined && h.binding === undefined;
-    h.binding = binding;
+    if (!h.app) h.binding = binding;
     try {
       const current = await app();
-      if (h.binding !== binding) return;
+      if (stopped) return;
+      h.binding = binding;
       if (replacement) { current.reissuePendingAsks(); flushCompletions(h, false); }
       if (ctx.mode === "tui") {
         if (replacement) {
@@ -359,7 +360,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
       }
       await current.project(ctx.cwd);
     } catch (error) {
-      if (h.binding !== binding) return;
+      if (stopped) return;
       if (ctx.mode === "tui") ctx.ui.notify(safeText(`RPC subagents schedules did not start. ${error instanceof Error ? error.message : String(error)}`), "warning");
     }
   });
