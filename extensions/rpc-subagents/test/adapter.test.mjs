@@ -541,7 +541,7 @@ test("an initialization failure warns only the current adapter and stays sticky"
   await b.shutdown("quit");
 });
 
-test("a failed widget bind detaches notifications without stopping the fleet", async () => {
+test("a failed widget bind warns and keeps notifications bound", async () => {
   const f = loadSurvivalFixture({ installFleetWidget: (ctx) => {
     if (ctx.cwd === "/broken") throw new Error("widget unavailable");
     ctx.widgets.push(["install", "rpc-subagents"]);
@@ -558,13 +558,11 @@ test("a failed widget bind detaches notifications without stopping the fleet", a
     ["RPC subagents schedules did not start. widget unavailable", "warning"],
   ]);
   f.finish();
-  assert.equal(b.messages.length, 0);
+  assert.equal(b.messages.length, 1);
+  assert.deepEqual(b.messages[0].message.details, { taskId: "task-1", status: "completed" });
+  assert.deepEqual(b.messages[0].options, { deliverAs: "followUp", triggerTurn: true });
   assert.equal(f.fleets[0].shutdownCalls, 0);
-  const c = f.adapter();
-  await c.start();
-  assert.deepEqual(c.messages[0].message.details, { taskId: "task-1", status: "completed" });
-  assert.deepEqual(c.messages[0].options, { deliverAs: "followUp", triggerTurn: false });
-  await c.shutdown("quit");
+  await b.shutdown("quit");
 });
 
 test("only a TUI takeover announces the live tasks", async () => {

@@ -15,7 +15,7 @@
 
 同一 Node 程序內的 `new`、`resume`、`fork` 現在保留背景與排程任務的原有 fleet、leases 與 owners，跨 cwd 的 resume 也使用同一份 process host。新 adapter 重綁通知與 widget；切換空窗的完成通知及仍待回答的 asks 補到新 session，但不自行啟動 turn。舊 session 已收到或由工具觀察到的 terminal 結果不重播。`/resume-handoff auto` 提示會要求記錄任務 ID、用途及結果／問題的讀取和回覆方式，不等待或取消這些任務。
 
-同 VM 重複呼叫 factory 的 adapter 測試涵蓋三種保留原因、quit／reload 清理、空窗完成、pending ask 重送與回覆、十次替換的 listener／widget 數量、初始化中的替換、TUI 接續通知、preparer 通知重綁及舊 adapter 拒絕工具。另測初始化失敗不重試、失敗綁定只警告並保持未綁定。這些是 stub 測試，尚未以真實 Pi TUI、跨 cwd loader 重載或真實 child 程序驗證此次 session replacement。
+同 VM 重複呼叫 factory 的 adapter 測試涵蓋三種保留原因、quit／reload 清理、空窗完成、pending ask 重送與回覆、十次替換的 listener／widget 數量、初始化中的替換、TUI 接續通知、preparer 通知重綁及舊 adapter 拒絕工具。另測初始化失敗不重試、綁定失敗只警告並保留綁定。這些是 stub 測試，尚未以真實 Pi TUI、跨 cwd loader 重載或真實 child 程序驗證此次 session replacement。
 
 已知限制：
 

@@ -357,7 +357,6 @@ export default function rpcSubagents(pi: ExtensionAPI) {
       await current.project(ctx.cwd);
     } catch (error) {
       if (h.binding !== binding) return;
-      h.binding = undefined;
       if (ctx.mode === "tui") ctx.ui.notify(safeText(`RPC subagents schedules did not start. ${error instanceof Error ? error.message : String(error)}`), "warning");
     }
   });
