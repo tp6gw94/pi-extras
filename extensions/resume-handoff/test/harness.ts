@@ -56,6 +56,7 @@ export function createHarness(options: HarnessOptions = {}) {
 		replaced: false,
 		usage: undefined as ContextUsage | undefined,
 		aborts: 0,
+		abortController: new AbortController(),
 		steers: [] as any[],
 		userMessages: [] as PromptCall[],
 		commandRuns: [] as Promise<void>[],
@@ -126,6 +127,7 @@ export function createHarness(options: HarnessOptions = {}) {
 			},
 		},
 		getContextUsage: () => state.usage,
+		get signal() { return state.abortController.signal; },
 		abort: () => { state.aborts++; },
 		isIdle: () => {
 			guard();

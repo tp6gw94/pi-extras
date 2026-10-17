@@ -608,7 +608,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 		cycle = "open";
 	});
 	pi.on("turn_end", (event, ctx) => {
-		if (event.outcome !== "completed") return;
+		if (event.outcome !== "completed" || ctx.signal?.aborted) return;
 		if (!config.enabled || active !== undefined) return;
 		const percent = ctx.getContextUsage()?.percent;
 		if (typeof percent !== "number") return;

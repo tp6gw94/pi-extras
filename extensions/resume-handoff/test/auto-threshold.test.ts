@@ -232,6 +232,21 @@ test("aborted and errored turns are ignored by the detector", async (t) => {
 	assert.equal(harness.state.aborts, 1);
 });
 
+test("turns of a run the user already aborted are ignored", async (t) => {
+	const { harness } = await fixture(t);
+	usage(harness, 90);
+	harness.state.abortController.abort();
+	await harness.fire("turn_end", { outcome: "completed" });
+	assert.equal(harness.state.aborts, 0);
+	assert.deepEqual(harness.state.steers, []);
+	await settled(harness, 90, true);
+	assert.deepEqual(harness.state.userMessages, []);
+	harness.state.abortController = new AbortController();
+	await harness.fire("before_agent_start");
+	await harness.fire("turn_end", { outcome: "completed" });
+	assert.equal(harness.state.aborts, 1);
+});
+
 test("settled without prior observation dispatches at soft equality", async (t) => {
 	const { harness } = await fixture(t);
 	await settled(harness, 75);
