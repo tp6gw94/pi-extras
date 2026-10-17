@@ -177,7 +177,6 @@ test("settlement re-reads usage and dispatches after all handlers without input"
 	await turn(harness, 80);
 	await settled(harness, 70);
 	assert.deepEqual(harness.state.userMessages, []);
-	await harness.fire("before_agent_start", { messageType: "user" });
 	await settled(harness, 80);
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
 	assert.deepEqual(harness.state.settledDispatchOrder, ["queued", "handlers-done", "dispatched"]);
@@ -188,7 +187,7 @@ test("soft cycles re-arm on each normal run", async (t) => {
 	const { harness } = await fixture(t);
 	await turn(harness, 80);
 	await settled(harness, 78);
-	await harness.fire("before_agent_start", { messageType: "user" });
+	await harness.fire("before_agent_start");
 	await turn(harness, 80);
 	assert.deepEqual(harness.state.steers, [steer, steer]);
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
@@ -199,7 +198,7 @@ test("hard cycles re-arm after unknown aborted settlement", async (t) => {
 	await turn(harness, 90);
 	await settled(harness, undefined, true);
 	assert.deepEqual(harness.state.userMessages, []);
-	await harness.fire("before_agent_start", { messageType: "user" });
+	await harness.fire("before_agent_start");
 	await turn(harness, 90);
 	await settled(harness, 90, true);
 	assert.equal(harness.state.aborts, 2);
@@ -212,7 +211,6 @@ test("Escape suppresses only its run", async (t) => {
 	await settled(harness, 80, true);
 	assert.equal(harness.state.aborts, 0);
 	assert.deepEqual(harness.state.userMessages, []);
-	await harness.fire("before_agent_start", { messageType: "user" });
 	await settled(harness, 80);
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
 });
@@ -227,7 +225,6 @@ test("aborted and errored turns are ignored by the detector", async (t) => {
 	assert.deepEqual(harness.state.steers, [steer]);
 	await settled(harness, 90, true);
 	assert.deepEqual(harness.state.userMessages, []);
-	await harness.fire("before_agent_start", { messageType: "user" });
 	await turn(harness, 90);
 	assert.equal(harness.state.aborts, 1);
 });
@@ -242,7 +239,6 @@ test("turns of a run the user already aborted are ignored", async (t) => {
 	await settled(harness, 90, true);
 	assert.deepEqual(harness.state.userMessages, []);
 	harness.state.abortController = new AbortController();
-	await harness.fire("before_agent_start");
 	await harness.fire("turn_end", { outcome: "completed" });
 	assert.equal(harness.state.aborts, 1);
 });
@@ -253,14 +249,13 @@ test("settled without prior observation dispatches at soft equality", async (t) 
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
 });
 
-test("generation turns are skipped while the command is active and any run start re-arms", async (t) => {
+test("turns are skipped while the command is active and the next run start re-arms", async (t) => {
 	let release!: () => void;
 	const idle = new Promise<void>((resolve) => { release = resolve; });
 	const { harness } = await fixture(t, '{"enabled":true}', { waitForIdle: () => idle });
 	await turn(harness, 75);
 	assert.deepEqual(harness.state.steers, [steer]);
 	const run = harness.run("auto");
-	await harness.fire("before_agent_start", { messageType: "custom", message: { customType: "resume-handoff-generation" } });
 	await turn(harness, 99);
 	await settled(harness, 99);
 	assert.equal(harness.state.aborts, 0);
@@ -268,7 +263,9 @@ test("generation turns are skipped while the command is active and any run start
 	assert.deepEqual(harness.state.userMessages, []);
 	release();
 	await run;
-	await harness.fire("before_agent_start", { messageType: "custom", message: { customType: "other" } });
+	await turn(harness, 75);
+	assert.deepEqual(harness.state.steers, [steer]);
+	await harness.fire("before_agent_start");
 	await turn(harness, 75);
 	assert.deepEqual(harness.state.steers, [steer, steer]);
 });
@@ -314,7 +311,6 @@ test("failed generation does not recurse and the next normal run retries", async
 	assert.deepEqual(harness.state.notifications, [{ message: "交接檔案生成未成功完成，未切換 session", level: "error" }]);
 	assert.deepEqual(harness.state.newSessions, []);
 	assert.deepEqual(harness.state.userMessages, [dispatch]);
-	await harness.fire("before_agent_start", { messageType: "user" });
 	await harness.fire("agent_settled", { aborted: false });
 	assert.deepEqual(harness.state.userMessages, [dispatch, dispatch]);
 	await withDeadline((async () => {
