@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdtemp, open, realpath } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	BorderedLoader,
 	convertToLlm,
+	getAgentDir,
 	serializeConversation,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -375,8 +376,39 @@ async function runDiscovery(
 	});
 }
 
+type AutoHandoffConfig =
+	| { enabled: false }
+	| { enabled: true; softThresholdPercent: number; hardThresholdPercent: number };
+type DetectorState =
+	| { run: "generation" }
+	| { run: "normal"; cycle: "open" | "steered" | "aborted" };
+
+function parseAutoHandoffConfig(value: unknown): AutoHandoffConfig | "invalid" {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return "invalid";
+	if ("enabled" in value && typeof value.enabled !== "boolean") return "invalid";
+	const soft = "softThresholdPercent" in value ? value.softThresholdPercent : 75;
+	const hard = "hardThresholdPercent" in value ? value.hardThresholdPercent : 88;
+	if (typeof soft !== "number" || typeof hard !== "number" || !Number.isFinite(soft) || !Number.isFinite(hard)
+		|| !(0 < soft && soft < hard && hard < 100)) return "invalid";
+	return "enabled" in value && value.enabled === true
+		? { enabled: true, softThresholdPercent: soft, hardThresholdPercent: hard }
+		: { enabled: false };
+}
+
+async function loadAutoHandoffConfig(path: string): Promise<AutoHandoffConfig | "invalid"> {
+	try {
+		return parseAutoHandoffConfig(JSON.parse(await readFile(path, "utf8")));
+	} catch (error) {
+		return error instanceof Error && "code" in error && error.code === "ENOENT"
+			? { enabled: false } : "invalid";
+	}
+}
+
 export default function resumeHandoff(pi: ExtensionAPI): void {
 	let active: AbortController | undefined;
+	let config: AutoHandoffConfig = { enabled: false };
+	let detector: DetectorState = { run: "normal", cycle: "open" };
+	let invalidConfigNotified = false;
 	pi.registerCommand("resume-handoff", {
 		description: "以交接檔案建立新 session，auto 自動生成交接檔案",
 		handler: async (args, ctx) => {
@@ -565,5 +597,46 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 				}
 			}
 		},
+	});
+	pi.on("session_start", async (_event, ctx) => {
+		detector = { run: "normal", cycle: "open" };
+		config = { enabled: false };
+		if (ctx.mode !== "tui") return;
+		const loaded = await loadAutoHandoffConfig(join(getAgentDir(), "resume-handoff", "config.json"));
+		if (loaded === "invalid") {
+			const notify = !invalidConfigNotified;
+			invalidConfigNotified = true;
+			if (notify) ctx.ui.notify("自動交接設定無效，已停用；請檢查 resume-handoff/config.json", "warning");
+			return;
+		}
+		invalidConfigNotified = false;
+		config = loaded;
+	});
+	pi.on("before_agent_start", (event) => {
+		detector = event.messageType === "custom" && event.message.customType === "resume-handoff-generation"
+			? { run: "generation" } : { run: "normal", cycle: "open" };
+	});
+	pi.on("turn_end", (_event, ctx) => {
+		if (!config.enabled || ctx.mode !== "tui" || active !== undefined || detector.run !== "normal") return;
+		const percent = ctx.getContextUsage()?.percent ?? undefined;
+		if (percent === undefined) return;
+		if (percent >= config.hardThresholdPercent) {
+			if (detector.cycle !== "aborted") {
+				detector = { run: "normal", cycle: "aborted" };
+				ctx.abort();
+			}
+			return;
+		}
+		if (percent >= config.softThresholdPercent && detector.cycle === "open") {
+			detector = { run: "normal", cycle: "steered" };
+			pi.sendMessage({ customType: "resume-handoff-wrap-up", content: "Context is nearly full and this session will be handed off. Finish the current step only. Start nothing new. Summarise the current state, then end your turn.", display: true }, { deliverAs: "steer" });
+		}
+	});
+	pi.on("agent_settled", (event, ctx) => {
+		if (!config.enabled || ctx.mode !== "tui" || active !== undefined || detector.run !== "normal") return;
+		if (event.aborted && detector.cycle !== "aborted") return;
+		const percent = ctx.getContextUsage()?.percent ?? undefined;
+		if (percent === undefined || percent < config.softThresholdPercent) return;
+		pi.sendUserMessage("/resume-handoff auto", { expandPromptTemplates: true });
 	});
 }
