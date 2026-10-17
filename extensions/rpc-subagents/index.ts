@@ -122,15 +122,18 @@ function flushCompletions(h: FleetHost, triggerTurn: boolean) {
 }
 
 async function stopHost(h: FleetHost): Promise<void> {
-  const current = await h.app?.catch(() => undefined);
-  if (current) {
-    const children = current.fleet.shutdown();
-    await Promise.all([...current.schedules.values()].map((manager) => manager.shutdown({ beforeRelease: children })));
-    await children;
-    current.dispose();
+  try {
+    const current = await h.app?.catch(() => undefined);
+    if (current) {
+      const children = current.fleet.shutdown();
+      await Promise.all([...current.schedules.values()].map((manager) => manager.shutdown({ beforeRelease: children })));
+      await children;
+      current.dispose();
+    }
+  } finally {
+    const g = globalThis as HostGlobal;
+    if (g[HOST_KEY] === h) delete g[HOST_KEY];
   }
-  const g = globalThis as HostGlobal;
-  if (g[HOST_KEY] === h) delete g[HOST_KEY];
 }
 
 async function initialize(h: FleetHost, extensionDir: string) {

@@ -397,6 +397,25 @@ for (const reason of ["quit", "reload"]) {
   });
 }
 
+test("a failed shutdown still releases the process host for the next adapter", async () => {
+  let failures = 0;
+  const f = loadSurvivalFixture({ ScheduleManager: class {
+    subscribe() { return () => {}; }
+    async start() {}
+    async shutdown() { if (failures++ === 0) throw new Error("ENOSPC"); }
+    list() { return []; }
+  } });
+  const a = f.adapter();
+  await a.start();
+  await a.run();
+  await assert.rejects(a.shutdown("quit"), { message: "ENOSPC" });
+  const b = f.adapter();
+  await b.start();
+  assert.equal(f.fleets.length, 2);
+  assert.deepEqual(await b.call("rpc_subagents_status", { taskId: "task-1" }), { taskId: "task-1", name: "investigate parser", status: "running", state: { status: "running" } });
+  await b.shutdown("quit");
+});
+
 test("a detached adapter rejects tools and cannot settle the replacement parent", async () => {
   const f = loadSurvivalFixture();
   const a = f.adapter();
