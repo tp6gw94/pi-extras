@@ -12,6 +12,7 @@ import {
 	type ExtensionCommandContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { newSessionWithAnnotation } from "../annotation/index.ts";
 
 declare const verifiedFile: unique symbol;
 type HandoffFile = Readonly<{ path: string; [verifiedFile]: true }>;
@@ -580,7 +581,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 					return;
 				}
 				stopListening();
-				const result = await ctx.newSession({
+				const result = await newSessionWithAnnotation(ctx, {
 					parentSession: origin.sessionFile,
 					withSession: async (replacementCtx) => {
 						void replacementCtx
