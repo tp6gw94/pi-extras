@@ -27,7 +27,7 @@ const generation = [
 	"## Subagent tasks",
 	"If the rpc_subagents_status tool is available, call it once without a taskId. For each rpc-subagents task that is unfinished or whose result is unused, record its task ID, purpose, and current status, and tell the next agent to read the result with rpc_subagents_result. For each pending request, record its owning task ID and request ID together, and tell the next agent to read it with rpc_subagents_pending and answer with rpc_subagents_reply. Leave every task running; tasks survive the session switch.",
 ].join("\n");
-const failed = { message: "交接檔案生成未成功完成，未切換 session", level: "error" };
+const failed = { message: "Handoff file generation did not complete. Session was not switched.", level: "error" };
 type Harness = ReturnType<typeof createHarness>;
 
 function generatedPath(harness: Harness): string {
@@ -197,7 +197,7 @@ for (const options of [{ idle: false }, { pendingMessages: true }]) {
 	test(`auto refuses unrelated work before generation ${JSON.stringify(options)}`, async () => {
 		const harness = createHarness(options);
 		await harness.run("auto");
-		assert.deepEqual(harness.state.notifications, [{ message: "目前有進行中的訊息，未切換 session", level: "info" }]);
+		assert.deepEqual(harness.state.notifications, [{ message: "A message is in progress. Session was not switched.", level: "info" }]);
 		assert.deepEqual(harness.state.generationMessages, []);
 		assert.equal(harness.handlerCount(), 0);
 	});
@@ -208,7 +208,7 @@ test("duplicate auto cannot start another run", async () => {
 	const { running, path } = await start(harness);
 	try {
 		await harness.run("auto");
-		assert.deepEqual(harness.state.notifications, [{ message: "resume-handoff 已在執行中，請稍候", level: "warning" }]);
+		assert.deepEqual(harness.state.notifications, [{ message: "resume-handoff is already running. Wait for it to finish.", level: "warning" }]);
 		assert.equal(harness.state.generationMessages.length, 1);
 		writeFileSync(path, "Handoff");
 		response(harness);
@@ -222,9 +222,9 @@ test("duplicate auto cannot start another run", async () => {
 });
 
 for (const [kind, message] of [
-	["missing", "找不到交接檔案"],
-	["empty", "交接檔案是空檔案"],
-	["directory", "交接檔案不是一般檔案"],
+	["missing", "Handoff file not found"],
+	["empty", "Handoff file is empty"],
+	["directory", "Handoff file is not a regular file"],
 ] as const) {
 	test(`normal generation still rejects a ${kind} handoff`, async () => {
 		const harness = createHarness();
@@ -235,7 +235,7 @@ for (const [kind, message] of [
 			response(harness);
 			finish(harness);
 			await running;
-			assert.deepEqual(harness.state.notifications, [{ message: `${message}：${path}`, level: "error" }]);
+			assert.deepEqual(harness.state.notifications, [{ message: `${message}: ${path}`, level: "error" }]);
 			assert.equal(harness.state.newSessions.length, 0);
 			assert.equal(harness.handlerCount(), 0);
 		} finally {
@@ -270,7 +270,7 @@ test("pending work after generation prevents replacement", async () => {
 		options.pendingMessages = true;
 		finish(harness);
 		await running;
-		assert.deepEqual(harness.state.notifications, [{ message: "目前有進行中的訊息，未切換 session", level: "info" }]);
+		assert.deepEqual(harness.state.notifications, [{ message: "A message is in progress. Session was not switched.", level: "info" }]);
 		assert.equal(harness.state.newSessions.length, 0);
 		assert.equal(harness.handlerCount(), 0);
 	} finally {
@@ -331,7 +331,7 @@ test("cancelled auto replacement releases listeners and allows manual recovery",
 		response(harness);
 		finish(harness);
 		await running;
-		assert.deepEqual(harness.state.notifications, [{ message: "已取消建立新 session", level: "info" }]);
+		assert.deepEqual(harness.state.notifications, [{ message: "New session creation canceled", level: "info" }]);
 		assert.equal(harness.state.sessionId, "session-1");
 		assert.equal(harness.handlerCount(), 0);
 		options.cancelNewSession = false;

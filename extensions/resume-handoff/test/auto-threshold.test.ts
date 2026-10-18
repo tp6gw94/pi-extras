@@ -5,7 +5,7 @@ import test from "node:test";
 import { createHarness, makeDir, settle, withDeadline } from "./harness.ts";
 
 const steer = { message: { customType: "resume-handoff-wrap-up", content: "Context is nearly full and this session will be handed off. Finish the current step only. Start nothing new. Summarise the current state, then end your turn.", display: true }, options: { deliverAs: "steer" } };
-const invalid = { message: "自動交接設定無效，已停用；請檢查 resume-handoff/config.json", level: "warning" };
+const invalid = { message: "Auto handoff config is invalid and disabled. Check resume-handoff/config.json", level: "warning" };
 type Harness = ReturnType<typeof createHarness>;
 
 function assertDispatched(harness: Harness, count: number) {
@@ -320,7 +320,7 @@ test("failed generation does not recurse and the next normal run retries", async
 	await harness.fire("agent_settled", { aborted: false });
 	harness.finishGeneration();
 	await Promise.all(harness.state.commandRuns);
-	assert.deepEqual(harness.state.notifications, [{ message: "交接檔案生成未成功完成，未切換 session", level: "error" }]);
+	assert.deepEqual(harness.state.notifications, [{ message: "Handoff file generation did not complete. Session was not switched.", level: "error" }]);
 	assert.deepEqual(harness.state.newSessions, []);
 	assertDispatched(harness, 1);
 	await harness.fire("agent_settled", { aborted: false });
@@ -349,7 +349,7 @@ test("active command awaiting idle suppresses detection without releasing its le
 	assert.deepEqual(harness.state.steers, []);
 	assert.deepEqual(harness.state.userMessages, []);
 	await harness.run("auto");
-	assert.deepEqual(harness.state.notifications, [{ message: "resume-handoff 已在執行中，請稍候", level: "warning" }]);
+	assert.deepEqual(harness.state.notifications, [{ message: "resume-handoff is already running. Wait for it to finish.", level: "warning" }]);
 	release();
 	await run;
 	assert.equal(harness.handlerCount(), 0);
