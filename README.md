@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-extras is one [pi](https://github.com/earendil-works/pi) package with nine extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
+pi-extras is one [pi](https://github.com/earendil-works/pi) package with ten extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
 
 pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 22.
 
@@ -14,6 +14,7 @@ pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 
 | `annotation` | Quotes parts of the conversation with notes and appends them to the editor, from a browser page or a terminal view. `/annotate` starts the server, and `/annotate` again stops it. | [README](extensions/annotation/README.md) |
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
+| `quota-resume` | Resumes the current session once at a confirmed subscription quota reset, with persistent waiting and explicit cancellation. | [README](extensions/quota-resume/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |
 | `resume-handoff` | Starts a new session from an existing handoff, or asks the current agent to write one with `/resume-handoff auto`. Optionally hands off automatically at a context usage threshold. | |
 | `rpc-subagents` | Runs subagent tasks and schedules as `pi --mode rpc` child processes, with `/rpc-subagents` to list them. Children load your own extensions from settings (minus `rpc-subagents`, `annotation`, `ux` and `hooks`), so your providers work there too. Keeps its data and `config.json` in `~/.pi/agent/rpc-subagents/`. | [README](extensions/rpc-subagents/README.md) |
@@ -52,11 +53,11 @@ To install it for the current project only, add `--local`. pi then writes the pa
 pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-When pi starts, it lists the nine extensions under `[Extensions]`:
+When pi starts, it lists the ten extensions under `[Extensions]`:
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:ego-browser, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
+  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:ego-browser, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:quota-resume, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
 tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
