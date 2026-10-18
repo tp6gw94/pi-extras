@@ -51,9 +51,26 @@ const markdownReply = [
 const liveReply = "Here is the call flow:\n\n```mermaid\nsequenceDiagram\n    Client->>Cache: get(key)\n    Cache-->>Client: value\n```";
 let requests = 0;
 let lastUser = "";
+let held;
+const events = [];
 
 http
 	.createServer((req, res) => {
+		if (req.url === "/events") {
+			res.end(JSON.stringify(events));
+			return;
+		}
+		if (req.url === "/held") {
+			res.end(JSON.stringify(Boolean(held)));
+			return;
+		}
+		if (req.url === "/release") {
+			const release = held;
+			held = undefined;
+			release?.();
+			res.end(JSON.stringify(Boolean(release)));
+			return;
+		}
 		if (req.url === "/count") {
 			res.end(String(requests));
 			return;
@@ -74,6 +91,9 @@ http
 				lastText = JSON.stringify(messages.at(-1)?.content ?? "");
 				if (lastRole === "user") lastUser = lastText;
 			} catch {}
+			const requestId = requests;
+			events.push({ kind: "request", requestId, lastRole, lastUser });
+			res.on("finish", () => events.push({ kind: "complete", requestId }));
 			res.writeHead(200, { "content-type": "text/event-stream" });
 			const chunk = (delta, finish = null) =>
 				res.write(`data: ${JSON.stringify({ id: "fake", object: "chat.completion.chunk", created: 0, model: "fake-model", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
@@ -82,6 +102,15 @@ http
 				for (const piece of text.match(/[\s\S]{1,40}/g)) chunk({ content: piece });
 				chunk({}, "stop");
 			};
+			if (lastRole === "user" && lastText.includes("ANNOTATION_HOLD")) {
+				chunk({ content: "Holding current work." });
+				held = () => {
+					chunk({ tool_calls: [toolCall] });
+					chunk({}, "tool_calls");
+					res.end("data: [DONE]\n\n");
+				};
+				return;
+			}
 			if (lastRole === "user" && lastText.includes("/annotation-end")) {
 				reply("That is not a command I know.");
 			} else if (lastRole === "user" && lastText.includes("live diagram")) {

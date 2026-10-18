@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
-import { annotationsText, type Annotation } from "./quote.ts";
+import { annotationsText } from "./quote.ts";
 import { registryDir, removeEntry, writeEntry } from "./registry.ts";
 import { type AnnotateServer, type CloseReason, preferredPort, SessionSwitchedError, startAnnotateServer } from "./server.ts";
 import { buildSnapshot } from "./snapshot.ts";
@@ -85,14 +85,24 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 					return false;
 				}
 			},
-			onSend: (items: Annotation[]) => {
+			onSend: (items, _seq, delivery): number => {
 				try {
-					const current = ctx.ui.getEditorText();
-					const text = annotationsText(items, current);
-					if (text === undefined) throw new Error("nothing to insert");
-					ctx.ui.setEditorText(current + text);
-					ctx.ui.notify(`annotate: appended ${items.length} annotation${items.length === 1 ? "" : "s"} to the editor`, "info");
-					return items.length;
+					switch (delivery) {
+						case "agent": {
+							const text = annotationsText(items);
+							if (text === undefined) throw new Error("nothing to submit");
+							pi.sendUserMessage(text, { deliverAs: "followUp" });
+							return items.length;
+						}
+						case "editor": {
+							const current = ctx.ui.getEditorText();
+							const text = annotationsText(items, current);
+							if (text === undefined) throw new Error("nothing to insert");
+							ctx.ui.setEditorText(current + text);
+							ctx.ui.notify(`annotate: appended ${items.length} annotation${items.length === 1 ? "" : "s"} to the editor`, "info");
+							return items.length;
+						}
+					}
 				} catch (error) {
 					if (isStaleContextError(error)) throw new SessionSwitchedError();
 					throw error;

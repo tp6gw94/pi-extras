@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-pi-annotation 是 [pi](https://github.com/earendil-works/pi) 的 extension，讓你引用目前對話的段落、加上筆記，再附加到 pi 編輯器。`/annotate` 會為這個 session 啟動伺服器，印出一則通知，裡面有瀏覽器網址與終端機連接指令。pi-annotation 不會把任何東西送給模型。文字由你在編輯器裡修改後自己送出。
+pi-annotation 是 [pi](https://github.com/earendil-works/pi) 的 extension，讓你引用目前對話的段落、加上筆記，再附加到 pi 編輯器。`/annotate` 會為這個 session 啟動伺服器，印出一則通知，裡面有瀏覽器網址與終端機連接指令。瀏覽器的 **Send to pi editor** 按鈕與終端機按鍵 `s` 會把已儲存的筆記附加到 pi 編輯器，供你檢查。終端機按鍵 `S` 會直接把已儲存的筆記送給 pi，不會更動編輯器草稿。
 
 pi-annotation 不會卡住 pi。頁面或終端機檢視開著的時候，你可以繼續工作。pi 每完成一則訊息，訊息就會出現在上面。
 
@@ -64,6 +64,8 @@ Run /annotate again to stop it.
 
 執行檔的參數可以是完整的 session id，或其中唯一的一段。不帶參數時，它會連上唯一活著的 session，或唯一一個工作目錄與目前目錄相同的活著的 session。`pi-annotation --list` 會列出活著的 session，`pi-annotation --help` 會顯示用法。
 
+執行 `pi-annotation --interactive`，可選擇工作目錄與目前目錄完全相同的活躍 session。方向鍵移動，Enter 連接。Esc 或 Ctrl-C 取消，不會連接。只有一個符合的 session 時直接連接。沒有符合的 session 時會提示先執行 `/annotate`。互動模式的輸入與輸出都必須是終端機，不能與 session id 或其他參數混用。說明與清單旗標維持原有的優先順序。
+
 瀏覽器頁面與終端機檢視可以同時使用同一個伺服器。
 
 ### 用類似 vim 的按鍵移動與引用
@@ -88,13 +90,14 @@ Run /annotate again to stop it.
 | `/` | 搜尋。`n` 與 `N` 往前、往後重複。 |
 | Tab | 打開筆記清單。在清單裡，`j` 與 `k` 移動，Enter 跳到來源，`e` 編輯，`d` 刪除，Tab、Esc 或 `q` 返回。 |
 | 筆記框（按 `a` 或 `A` 之後） | Enter 儲存。Ctrl-J 換行，終端機有回報 Shift+Enter 時也可以用它換行。Esc 取消。 |
-| `s` | 把所有筆記送到 pi 編輯器 |
+| `s` | 把所有已儲存的筆記附加到 pi 編輯器 |
+| `S` | 把所有已儲存的筆記作為新使用者訊息送給 pi |
 | `?` | 顯示按鍵 |
 | `q` | 離開。還有沒送出的筆記時要按兩次。 |
 
 按鍵可以加次數前綴，例如 `3j` 或 `2}`。
 
-一則筆記就是 `> 引用` 區塊加上筆記文字，與瀏覽器頁面相同。**Send** 會把每則筆記附加到 pi 編輯器，不會送給模型。檢視開著時新的訊息會出現，你的筆記、游標與選取都會保留。對話切到其他分支、而選取所在的訊息已經改變時，檢視會丟棄這個選取並顯示簡短提示。
+一則筆記就是 `> 引用` 區塊加上筆記文字，與瀏覽器頁面相同。`s` 把所有已儲存的筆記附加到 pi 編輯器，不會啟動模型回合。`S` 只送出筆記文字。pi 忙碌時會排入 `followUp`，不會轉向目前的工作。SDK 同步呼叫成功後會清除該批筆記，但這不保證後續排程或執行完成。傳輸錯誤或同步送出失敗會保留筆記。回應遺失時，筆記可能已送出卻仍留在清單，請先檢查 pi 再重送。檢視開著時新的訊息會出現，你的筆記、游標與選取都會保留。對話切到其他分支、而選取所在的訊息已經改變時，檢視會丟棄這個選取並顯示簡短提示。
 
 ### 閱讀保留語法的 markdown
 
@@ -160,7 +163,7 @@ iframe 碰不到頁面、token 或網路。它的 Content Security Policy 只允
 
 `/annotate` 停止又重新啟動伺服器，或 pi 重新啟動之後，伺服器就不再接受這個 token。這時頁面會把 token 從 `sessionStorage` 移除、停止，並提示你打開 `/annotate` 印出的新網址。
 
-請把網址當成密碼。任何拿到 token 又連得到這個 port 的人，都能把文字放進你的編輯器，但無法送給模型。
+請把網址當成密碼。任何拿到 token 又連得到這個 port 的人，都能把文字放進你的編輯器，或把任意提示直接送給 pi。這會啟動 agent 回合，pi 可能在未經你確認的情況下執行工具，包括 shell 指令。
 
 ## 透過 SSH 使用
 
@@ -191,6 +194,7 @@ npm test
 
 end-to-end 腳本會用假的模型跑真的 pi。每個腳本都需要把 `PI_BIN` 設成 pi 執行檔。
 
+- `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` 檢查 `s`、`S`、忙碌時的 follow-up 順序、互動選擇、取消與終端機模式還原。它會建立隔離的 home、專案、registry、本機 provider 與 tmux socket。證據保留在 `--evidence` 或 `EVIDENCE_DIR` 指定目錄下的新目錄。
 - `extensions/annotation/test/e2e/tmux-annotate.sh` 在 tmux 裡執行 `/annotate`。它檢查編輯器、即時更新、`/tree`、用 `/annotate` 停止與重新啟動、伺服器關閉後的頁面，以及切換 session。
 - `extensions/annotation/test/e2e/herdr-tui.sh` 在 herdr 的兩個 pane 裡跑 pi 與執行檔。它檢查筆記流程、即時回覆、離開與停止。它還需要 `HERDR_ENV=1`，所以請在 herdr 裡執行。
 - `extensions/annotation/test/e2e/tmux-markdown.sh` 讓 pi 回覆一段 markdown，並執行 `extensions/annotation/test/e2e/markdown.mjs`。這個腳本檢查顯示結果、圖表 iframe、引用、即時更新、逾時退回、CSP 違規與網路請求。它還需要 `PLAYWRIGHT_CORE` 與 `CHROME_BIN`。

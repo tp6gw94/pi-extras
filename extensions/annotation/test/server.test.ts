@@ -6,6 +6,7 @@ import { after, describe, it } from "node:test";
 import type { Annotation } from "../quote.ts";
 import {
 	type AnnotateServer,
+	type AnnotateServerOptions,
 	type CloseReason,
 	DEFAULT_PORT,
 	diffItems,
@@ -50,7 +51,7 @@ after(() => {
 	for (const holder of holders) holder.close();
 });
 
-async function start(overrides: { isCurrent?: () => boolean; onSend?: (items: Annotation[]) => number; longPollMs?: number; port?: number } = {}) {
+async function start(overrides: { isCurrent?: () => boolean; onSend?: AnnotateServerOptions["onSend"]; longPollMs?: number; port?: number } = {}) {
 	const sent: Annotation[][] = [];
 	const closes: CloseReason[] = [];
 	const server = await startAnnotateServer({
@@ -103,6 +104,47 @@ function hold(port: number): Promise<Server> {
 		});
 	});
 }
+
+describe("delivery boundary", () => {
+	it("defaults browser requests to editor and shares ordering with agent delivery", async () => {
+		const accepted: unknown[] = [];
+		const t = await start({ onSend: (items, seq, delivery) => { accepted.push({ items, seq, delivery }); return items.length; } });
+		const post = (seq: number, delivery?: unknown) => t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body: JSON.stringify({ seq, delivery, items: [{ quote: "hello", note: "why" }] }) });
+		assert.equal((await post(1)).status, 200);
+		assert.equal((await post(2, "agent")).status, 200);
+		assert.equal((await post(2, "editor")).status, 409);
+		assert.equal((await post(3, "editor")).status, 200);
+		assert.deepEqual(accepted, [
+			{ items: [{ quote: "hello", note: "why" }], seq: 1, delivery: "editor" },
+			{ items: [{ quote: "hello", note: "why" }], seq: 2, delivery: "agent" },
+			{ items: [{ quote: "hello", note: "why" }], seq: 3, delivery: "editor" },
+		]);
+	});
+
+	for (const delivery of [null, "steer", 1, true, {}]) {
+		it(`rejects invalid delivery ${JSON.stringify(delivery)} without consuming sequence`, async () => {
+			const t = await start();
+			const result = await t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body: JSON.stringify({ seq: 1, delivery, items: [{ quote: "q", note: "n" }] }) });
+			assert.equal(result.status, 400);
+			assert.deepEqual(JSON.parse(result.body), { error: 'delivery must be "editor" or "agent"' });
+			assert.equal((await t.send(1)).status, 200);
+			assert.deepEqual(t.sent, [[{ quote: "hello", note: "why" }]]);
+		});
+	}
+
+	for (const delivery of ["editor", "agent"]) {
+		it(`authenticates and checks current session for ${delivery}`, async () => {
+			let current = true;
+			const t = await start({ isCurrent: () => current });
+			const body = JSON.stringify({ seq: 1, delivery, items: [{ quote: "hello", note: "why" }] });
+			assert.equal((await t.api("send", { method: "POST", headers: { "content-type": "application/json", "x-annotate-token": "wrong" }, body })).status, 403);
+			assert.equal((await t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body })).status, 200);
+			current = false;
+			assert.equal((await t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body })).status, 410);
+			assert.deepEqual(t.sent, [[{ quote: "hello", note: "why" }]]);
+		});
+	}
+});
 
 describe("port selection", () => {
 	it("defaults to 4747 and honors PI_ANNOTATE_PORT", () => {

@@ -46,7 +46,7 @@ async function freePort(): Promise<number> {
 
 const msg = (id: string, role: string, content: unknown) => ({ type: "message", id, message: { role, content } });
 
-async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string } = {}) {
+async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string; submitError?: Error } = {}) {
 	const commands = new Map<string, Handler>();
 	const listeners = new Map<string, Listener[]>();
 	const notices: string[] = [];
@@ -62,7 +62,10 @@ async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor
 	const pi = {
 		registerCommand: (name: string, spec: { handler: Handler }) => commands.set(name, spec.handler),
 		on: (event: string, handler: Listener) => listeners.set(event, [...(listeners.get(event) ?? []), handler]),
-		sendUserMessage: (message: unknown) => userMessages.push(message),
+		sendUserMessage: (message: unknown, delivery: unknown) => {
+			if (options.submitError) throw options.submitError;
+			userMessages.push({ message, delivery });
+		},
 	};
 	const ctx = {
 		hasUI: options.hasUI ?? true,
@@ -198,6 +201,33 @@ describe("/annotate command", () => {
 });
 
 describe("sending", () => {
+	it("submits only annotation text as followUp without touching the editor", async () => {
+		const t = await setup({ editor: "DRAFT" });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const { url, token } = t.parts();
+		const result = await call(url, "POST", "send", token, { seq: 1, delivery: "agent", items: [{ quote: "quoted", note: "fix it" }] });
+		assert.equal(result.status, 200);
+		assert.deepEqual(JSON.parse(result.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
+		assert.equal(t.editor(), "DRAFT");
+		assert.deepEqual(t.userMessages, [{ message: "> quoted\n\nfix it\n\n", delivery: { deliverAs: "followUp" } }]);
+		const appended = await call(url, "POST", "send", token, { seq: 2, delivery: "editor", items: [{ quote: "quoted", note: "fix it" }] });
+		assert.equal(appended.status, 200);
+		assert.equal(t.editor(), "DRAFT\n> quoted\n\nfix it\n\n");
+	});
+
+	it("does not consume the sequence after synchronous submission failure", async () => {
+		const t = await setup({ editor: "DRAFT", submitError: new Error("submission failed") });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const { url, token } = t.parts();
+		const items = [{ quote: "quoted", note: "fix it" }];
+		assert.equal((await call(url, "POST", "send", token, { seq: 1, delivery: "agent", items })).status, 500);
+		assert.equal(t.editor(), "DRAFT");
+		assert.equal((await call(url, "POST", "send", token, { seq: 1, delivery: "editor", items })).status, 200);
+		assert.equal(t.editor(), "DRAFT\n> quoted\n\nfix it\n\n");
+	});
+
 	it("appends two send rounds to the editor in order and never messages the agent", async () => {
 		const t = await setup({ editor: "draft" });
 		cleanups.push(t.shutdown);

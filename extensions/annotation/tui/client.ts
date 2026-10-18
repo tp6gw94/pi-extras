@@ -1,4 +1,4 @@
-import type { Annotation } from "../quote.ts";
+import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
 import { TOKEN_HEADER } from "../server.ts";
 
@@ -42,7 +42,7 @@ export class ProtocolError extends Error {
 export interface AnnotateClient {
 	snapshot(): Promise<InitialSnapshot>;
 	watch(after: number, signal: AbortSignal): Promise<LiveUpdate>;
-	send(seq: number, items: readonly Annotation[]): Promise<SendOutcome>;
+	send(seq: number, items: readonly Annotation[], delivery: AnnotationDelivery): Promise<SendOutcome>;
 }
 
 function parseItems(value: unknown): SnapshotItem[] {
@@ -101,11 +101,11 @@ export function createClient(target: AttachTarget, fetchImpl: typeof fetch = fet
 			if (status !== 200) throw failure(status, body);
 			return { version: numberField(body, "version"), reset: body.reset === true, items: parseItems(body.items) };
 		},
-		async send(seq, items) {
+		async send(seq, items, delivery) {
 			const { status, body } = await call("send", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ seq, items: items.map(({ quote, note }) => ({ quote, note })) }),
+				body: JSON.stringify({ seq, delivery, items: items.map(({ quote, note }) => ({ quote, note })) }),
 			});
 			if (status === 409 && typeof body.expectedSeq === "number") return { ok: false, kind: "conflict", expectedSeq: body.expectedSeq };
 			if (status === 403 || status === 410) throw failure(status, body);
