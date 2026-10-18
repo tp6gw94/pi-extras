@@ -61,7 +61,12 @@ export function createHarness(options: HarnessOptions = {}) {
 		selectCalls: [] as { title: string; options: string[] }[],
 		handlers: new Map<string, ((event: any, ctx: any) => void)[]>(),
 		components: [] as any[],
-		command: undefined as { handler: (args: string, ctx: any) => Promise<void> } | undefined,
+		command: undefined as
+			| {
+					handler: (args: string, ctx: any) => Promise<void>;
+					getArgumentCompletions?: (argumentPrefix: string) => any;
+			  }
+			| undefined,
 	};
 	const guard = () => assert.equal(state.replaced, false, "stale context used");
 	const ui = {
