@@ -139,19 +139,19 @@ const NARRATIVE_SEPARATORS = new Set([
 	")",
 	",",
 	";",
-	"，",
-	"。",
-	"；",
-	"：",
-	"、",
-	"！",
-	"？",
-	"「",
-	"」",
-	"『",
-	"』",
-	"（",
-	"）",
+	"\uFF0C",
+	"\u3002",
+	"\uFF1B",
+	"\uFF1A",
+	"\u3001",
+	"\uFF01",
+	"\uFF1F",
+	"\u300C",
+	"\u300D",
+	"\u300E",
+	"\u300F",
+	"\uFF08",
+	"\uFF09",
 ]);
 
 function mentionsWholePath(source: string, evidence: string, path: string): boolean {
@@ -240,43 +240,43 @@ function expandHome(value: string): string {
 		return join(homedir(), value.slice(2));
 	}
 	if (value.startsWith("~")) {
-		throw new Error(`不支援的路徑格式：${value}`);
+		throw new Error(`Unsupported path format: ${value}`);
 	}
 	return value;
 }
 
 async function validateFile(input: string, cwd: string): Promise<HandoffFile> {
 	if (CONTROL_CHARACTERS.test(input)) {
-		throw new Error(`交接檔案路徑無效：${input}`);
+		throw new Error(`Invalid handoff file path: ${input}`);
 	}
 	const resolved = resolve(cwd, expandHome(input));
 	let canonical: string;
 	try {
 		canonical = await realpath(resolved);
 	} catch {
-		throw new Error(`找不到交接檔案：${input}`);
+		throw new Error(`Handoff file not found: ${input}`);
 	}
 	if (CONTROL_CHARACTERS.test(canonical)) {
-		throw new Error(`交接檔案路徑無效：${input}`);
+		throw new Error(`Invalid handoff file path: ${input}`);
 	}
 	let handle;
 	try {
 		handle = await open(canonical, constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch {
-		throw new Error(`無法讀取交接檔案：${input}`);
+		throw new Error(`Cannot read handoff file: ${input}`);
 	}
 	try {
 		const stats = await handle.stat();
 		if (!stats.isFile()) {
-			throw new Error(`交接檔案不是一般檔案：${input}`);
+			throw new Error(`Handoff file is not a regular file: ${input}`);
 		}
 		if (stats.size === 0) {
-			throw new Error(`交接檔案是空檔案：${input}`);
+			throw new Error(`Handoff file is empty: ${input}`);
 		}
 		const buffer = Buffer.alloc(1);
 		const { bytesRead } = await handle.read(buffer, 0, 1, 0);
 		if (bytesRead === 0) {
-			throw new Error(`無法讀取交接檔案：${input}`);
+			throw new Error(`Cannot read handoff file: ${input}`);
 		}
 		return { path: canonical } as HandoffFile;
 	} finally {
@@ -342,14 +342,14 @@ async function generateHandoff(
 			return { kind: "cancelled" };
 		}
 		if (observation.settlement !== "completed" || observation.stopReason !== "stop") {
-			return { kind: "failed", message: "交接檔案生成未成功完成，未切換 session" };
+			return { kind: "failed", message: "Handoff file generation did not complete. Session was not switched." };
 		}
 		return { kind: "ready", path };
 	} catch (error) {
 		if (!live()) {
 			return { kind: "cancelled" };
 		}
-		return { kind: "failed", message: error instanceof Error ? error.message : "交接檔案生成失敗" };
+		return { kind: "failed", message: error instanceof Error ? error.message : "Handoff file generation failed" };
 	} finally {
 		unsubscribeMessage();
 		unsubscribeSettled();
@@ -363,7 +363,7 @@ async function runDiscovery(
 	invocation: AbortController,
 ): Promise<Discovery | null> {
 	return ctx.ui.custom<Discovery | null>((tui, theme, _keybindings, done) => {
-		const loader = new BorderedLoader(tui, theme, "正在尋找交接檔案...");
+		const loader = new BorderedLoader(tui, theme, "Finding handoff file...");
 		let settled = false;
 		const settle = (value: Discovery | null) => {
 			if (settled) {
@@ -447,11 +447,11 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", clearPending);
 	const execute = async (args: string, ctx: ExtensionCommandContext, trigger: Trigger): Promise<void> => {
 		if (ctx.mode !== "tui") {
-			ctx.ui.notify("請在互動模式使用 /resume-handoff", "error");
+			ctx.ui.notify("Use /resume-handoff in interactive mode", "error");
 			return;
 		}
 		if (active) {
-			ctx.ui.notify("resume-handoff 已在執行中，請稍候", "warning");
+			ctx.ui.notify("resume-handoff is already running. Wait for it to finish.", "warning");
 			return;
 		}
 		const invocation = new AbortController();
@@ -483,7 +483,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 		try {
 			const request = parseRequest(args);
 			if (!request) {
-				ctx.ui.notify("交接檔案路徑無效，請使用單一有效路徑", "error");
+				ctx.ui.notify("Handoff file path is invalid. Provide a single valid path.", "error");
 				return;
 			}
 			if (request.kind === "auto") {
@@ -497,7 +497,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 			if (request.kind === "auto") {
 				const directory = await mkdtemp(join(tmpdir(), "pi-resume-handoff-")).catch((error) => {
 					if (live()) {
-						ctx.ui.notify(error instanceof Error ? error.message : "無法建立交接暫存目錄", "error");
+						ctx.ui.notify(error instanceof Error ? error.message : "Could not create the handoff temporary directory", "error");
 					}
 					return undefined;
 				});
@@ -509,7 +509,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 				}
 				const path = join(directory, "handoff.md");
 				if (!ctx.isIdle() || ctx.hasPendingMessages()) {
-					ctx.ui.notify("目前有進行中的訊息，未切換 session", "info");
+					ctx.ui.notify("A message is in progress. Session was not switched.", "info");
 					return;
 				}
 				generationOwnsProgress = true;
@@ -529,7 +529,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 					if (!live()) {
 						return;
 					}
-					ctx.ui.notify(error instanceof Error ? error.message : "交接檔案無效", "error");
+					ctx.ui.notify(error instanceof Error ? error.message : "Invalid handoff file", "error");
 					return;
 				}
 				if (!live()) {
@@ -538,7 +538,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 			} else {
 				const model = ctx.model;
 				if (!model) {
-					ctx.ui.notify("目前沒有選定模型，請提供交接檔案路徑", "error");
+					ctx.ui.notify("No model is selected. Provide a handoff file path.", "error");
 					return;
 				}
 				const conversation = branchConversation(ctx.sessionManager.getBranch());
@@ -547,11 +547,11 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 					return;
 				}
 				if (discovery === null) {
-					ctx.ui.notify("已取消選擇交接檔案", "info");
+					ctx.ui.notify("Handoff file selection canceled", "info");
 					return;
 				}
 				if (discovery.kind !== "found") {
-					ctx.ui.notify("找不到可讀的交接檔案，請提供路徑", "error");
+					ctx.ui.notify("No readable handoff file found. Provide a path.", "error");
 					return;
 				}
 				const files = new Map<string, HandoffFile>();
@@ -569,21 +569,21 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 				}
 				const valid = [...files.values()];
 				if (valid.length === 0) {
-					ctx.ui.notify("找不到可讀的交接檔案，請提供路徑", "error");
+					ctx.ui.notify("No readable handoff file found. Provide a path.", "error");
 					return;
 				}
 				if (valid.length === 1) {
 					selected = valid[0].path;
 				} else {
 					const choice = await ctx.ui.select(
-						"選擇交接檔案",
+						"Select handoff file",
 						valid.map((file) => file.path),
 					);
 					if (!live()) {
 						return;
 					}
 					if (choice === undefined) {
-						ctx.ui.notify("已取消選擇交接檔案", "info");
+						ctx.ui.notify("Handoff file selection canceled", "info");
 						return;
 					}
 					const chosen = valid.find((file) => file.path === choice);
@@ -600,14 +600,14 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 				if (!live()) {
 					return;
 				}
-				ctx.ui.notify(error instanceof Error ? error.message : "交接檔案無效", "error");
+				ctx.ui.notify(error instanceof Error ? error.message : "Invalid handoff file", "error");
 				return;
 			}
 			if (!live()) {
 				return;
 			}
 			if (!ctx.isIdle() || ctx.hasPendingMessages()) {
-				ctx.ui.notify("目前有進行中的訊息，未切換 session", "info");
+				ctx.ui.notify("A message is in progress. Session was not switched.", "info");
 				return;
 			}
 			stopListening();
@@ -622,7 +622,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 				},
 			});
 			if (result.cancelled) {
-				ctx.ui.notify("已取消建立新 session", "info");
+				ctx.ui.notify("New session creation canceled", "info");
 			}
 		} finally {
 			stopListening();
@@ -632,10 +632,10 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 		}
 	};
 	pi.registerCommand("resume-handoff", {
-		description: "以交接檔案建立新 session，auto 自動生成交接檔案",
+		description: "Create a new session from a handoff file. Use auto to generate the file.",
 		getArgumentCompletions: (argumentPrefix: string) => {
 			if ("auto".startsWith(argumentPrefix.trim())) {
-				return [{ value: "auto", label: "auto", description: "自動生成交接檔案後切換 session" }];
+				return [{ value: "auto", label: "auto", description: "Generate a handoff file, then switch session" }];
 			}
 			return null;
 		},
@@ -666,7 +666,7 @@ export default function resumeHandoff(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		const loaded = await loadAutoHandoffConfig(join(getAgentDir(), "resume-handoff", "config.json"));
 		if (loaded === "invalid") {
-			ctx.ui.notify("自動交接設定無效，已停用；請檢查 resume-handoff/config.json", "warning");
+			ctx.ui.notify("Auto handoff config is invalid and disabled. Check resume-handoff/config.json", "warning");
 			return;
 		}
 		config = loaded;
