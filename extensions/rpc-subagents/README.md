@@ -114,6 +114,24 @@ return { taskId, status: result.status, text: result.text };
 
 `rpc_subagents_wait` 的期限只限制這次等待，不取消背景任務。codemode 結束或中止等待也不停止刻意分離的背景任務。同步 `run` 的 AbortSignal 則會取消 child，完成有限期限的程序清理後才結束呼叫。
 
+## 切換 session 時保留任務
+
+在同一個 Pi 程序內，`new`、`resume`、`fork`（包含 `/resume-handoff auto` 建立的新 session）會保留背景與排程任務。新 session 沿用原本的 fleet、task ID、child 程序、session leases 與排程 owners，不重新啟動任務。跨 cwd 的 `/resume` 也沿用同一份 fleet；新 session 必須仍載入此擴充功能。
+
+切換時移除舊 widget，新 session 重新安裝 widget。TUI 會通知接續的進行中任務數量、ID、名稱與狀態。原本已追蹤、在切換空窗完成的背景任務會把完成通知補到新 session；仍待回答的 child ask 也會重新通知一次。這些補發訊息不自行啟動 agent turn，之後的新事件仍依原本規則喚醒。已送到舊 session 或已由工具讀到 terminal 狀態的完成結果不重播。
+
+以真實 RPC 程序驗證切換行為時，執行 `node extensions/rpc-subagents/test/e2e/replacement.mjs --provider <provider> --model <model> --evidence <證據目錄>`。
+腳本會把 RPC 事件寫到 `<evidence>/events.jsonl`、摘要寫到 `<evidence>/summary.json`，全部斷言通過時 exit 0。
+
+`/resume-handoff auto` 的生成提示會要求列出進行中任務的 ID、用途與 `rpc_subagents_result` 讀取方式；待回答的問題則列出 `rpc_subagents_pending` 與 `rpc_subagents_reply`，不為了交接等待或取消任務。
+
+已知限制：
+
+- `/reload` 與退出 Pi 仍會中止任務並清理資源，不保留到下一個程序。
+- 同步 `rpc_subagents_run` 會在 `session_shutdown` 之前被 Pi 的 `session.abort()` 取消；保留範圍只有背景與排程任務。
+- 若新 runtime 沒有載入此擴充功能，例如新 cwd 停用了它，fleet 會保持未綁定。children 繼續執行，但不喚醒任何 session，退出時也沒有 handler 能正常清理它們；程序結束才關閉管線。
+- 此行為依賴 Pi loader 在同 cwd 重用快取 factory、並於同一 Node 程序更換 session 的現行實作，不是 Pi 公開保證的契約。Pi 文件建議跨 replacement 只保存 plain data。
+
 ## 指定子任務工具
 
 `tools` 控制 child 的能力。純名稱會完整取代預設執行工具清單 `read`、`write`、`edit`、`bash`、`codemode`；`+名稱`／`-名稱` 則按順序調整同一份預設清單，兩者不能混用，也不能使用 `*` 等萬用字元。`[]` 表示不提供執行工具。可選的內建執行工具還包括 `grep`、`find`、`ls`。`rpc_subagents_parent` 由 child 端另外以 model-only 加入，不受 `tools` 影響。
@@ -161,7 +179,7 @@ return [fetched.webTools, renamed.webTools];
 
 child 可用 model-only 的 `rpc_subagents_parent` 向主 session 提問（`kind: "ask"`）或單向回報（`kind: "report"`）。只有 `async: true` 的任務能提問；同步任務會立即得到 `requires_async`，不會阻塞等待。
 
-新的提問會讓主 Pi 收到一次 follow-up 喚醒（同一 taskId 與 requestId 只喚醒一次），訊息只帶 ID，要求主代理自行查看並明確回覆。主代理用 `rpc_subagents_pending` 讀取待處理請求與回報，再用 `rpc_subagents_reply` 回答。回報不會喚醒模型，只在 `pending` 中出現。
+新的提問會讓主 Pi 收到一次 follow-up 喚醒（同一 session 內，同一 taskId 與 requestId 只喚醒一次；切換後仍待回答的請求會補發），訊息只帶 ID，要求主代理自行查看並明確回覆。主代理用 `rpc_subagents_pending` 讀取待處理請求與回報，再用 `rpc_subagents_reply` 回答。回報不會喚醒模型，只在 `pending` 中出現。
 
 ```js
 const pending = await tools.rpc_subagents_pending({ taskId: load("reviewTask") });
