@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-`ego_browser` 操作一個 Ego Lite TaskSpace。手動任務不需要分類器。自動任務由呼叫者提供有限的候選動作，Jev 只選一個候選 ID，不產生程式、selector 或輸入文字。這個 extension 也附帶 model-invoked 的 [ego-browser-tools skill](skills/ego-browser-tools/SKILL.md)。
+`ego_browser` 操作一個 Ego Lite TaskSpace。工具以 `deferred` exposure 註冊，模型用 `tool_search` 載入前不佔用 context。請以 `"defaultTools": ["+tool_search"]` 啟用該工具，或在 `defaultTools` 或 `--tools` 直接列出 `ego_browser` 讓它一開始就宣告。手動任務不需要分類器。自動任務由呼叫者提供有限的候選動作，Jev 只選一個候選 ID，不產生程式、selector 或輸入文字。這個 extension 也附帶 model-invoked 的 [ego-browser-tools skill](skills/ego-browser-tools/SKILL.md)。
 
 ## 工具契約
 
@@ -170,7 +170,7 @@ node --test extensions/ego-browser/test/*.test.ts extensions/ego-browser/test/*.
 npm run typecheck
 ```
 
-Registration 測試實際建立 Pi session，驗證 direct tool 可達及 unknown_task 錯誤結果。Skill 測試透過 Pi SDK 載入 extension，並用 `ToolParametersSchema` 驗證所有文件中的 request payload。runtime 測試執行 stdin EOF fake CLI，涵蓋 manual ref、原始 snapshot、false DONE、stale、cancel、ownership、lease 與 finish。
+Registration 測試實際建立 Pi session 並在 `tools` 列出該工具，驗證 deferred tool 已啟用、可達及 unknown_task 錯誤結果。Skill 測試透過 Pi SDK 載入 extension，並用 `ToolParametersSchema` 驗證所有文件中的 request payload。runtime 測試執行 stdin EOF fake CLI，涵蓋 manual ref、原始 snapshot、false DONE、stale、cancel、ownership、lease 與 finish。
 
 ## 可重用 live harness
 

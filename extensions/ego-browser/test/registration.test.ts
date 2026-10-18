@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import extension from "../index.ts";
 
-test("Pi SDK discovers the direct tool without browser or model work", async () => {
+test("Pi SDK activates the deferred tool by name without browser or model work", async () => {
   const settingsManager=SettingsManager.inMemory({defaultTools:[]});
   const loader=new DefaultResourceLoader({cwd:process.cwd(),agentDir:getAgentDir(),settingsManager,noExtensions:true,noSkills:true,noThemes:true,noPromptTemplates:true,extensionFactories:[extension]});
   await loader.reload();
@@ -11,7 +11,7 @@ test("Pi SDK discovers the direct tool without browser or model work", async () 
   try {
     await session.bindExtensions({});
     assert.ok(session.getActiveToolNames().includes("ego_browser"));
-    assert.equal(session.getToolDefinition("ego_browser")?.exposure,"direct");
+    assert.equal(session.getToolDefinition("ego_browser")?.exposure,"deferred");
     const definition=session.getToolDefinition("ego_browser");
     assert.equal((definition?.parameters as {type:string}).type,"object");
     assert.deepEqual(Object.keys((definition?.parameters as {properties:object}).properties),["request"]);

@@ -39,10 +39,10 @@ export default function (pi: ExtensionAPI) {
     description: "Operate one Ego-owned TaskSpace with bounded manual actions or classifier-selected native DOM actions. Begin a contract, observe evidence, act or run, then explicitly finish after reviewing passing checks or release the local lease without closing the browser. Frozen observe retains ownership and scope guards. Release stopped tasks so their leases do not block the next task. Release does not clear uncertain effects. No arbitrary JavaScript.",
     parameters: ToolParametersSchema,
     outputSchema: ReportSchema,
-    exposure: "direct",
+    exposure: "deferred",
     executionMode: "sequential",
     annotations: { destructiveHint: true, openWorldHint: true },
-    promptGuidelines: ["Use ego_browser directly, not shell browser scripts. Reuse the assigned space and page. Read evidence before finish. Never claim or take over ownership. Origin restrictions are not a network sandbox."],
+    promptGuidelines: ["Load ego_browser with tool_search before browser work and call it directly, not through shell browser scripts. Reuse the assigned space and page. Read evidence before finish. Never claim or take over ownership. Origin restrictions are not a network sandbox."],
     async execute(_id, { request }, signal, _update, ctx) {
       const classify: Classify = async (context, classifySignal, timeoutMs) => {
         const provider = process.env.PI_EGO_CLASSIFIER_PROVIDER ?? "typesafe";

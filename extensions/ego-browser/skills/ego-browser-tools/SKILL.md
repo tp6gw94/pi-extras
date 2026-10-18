@@ -5,7 +5,7 @@ description: Operate one Ego-owned TaskSpace with the ego_browser tool for live 
 
 # Ego browser tools
 
-`ego_browser` runs one bounded contract in one Ego TaskSpace. Manual tasks need no classifier. Automated tasks take a candidate list, and Jev picks one candidate ID per step. Jev never writes a program, selector, or input text.
+`ego_browser` runs one bounded contract in one Ego TaskSpace. It is registered deferred, so it is not declared until loaded: call `tool_search` for `ego_browser` once, then call the tool directly. Manual tasks need no classifier. Automated tasks take a candidate list, and Jev picks one candidate ID per step. Jev never writes a program, selector, or input text.
 
 [`../../schema.ts`](../../schema.ts) is the source of truth for the request schema. Read the live tool description before composing a request. Do not copy the schema into a task prompt.
 
@@ -47,6 +47,6 @@ The angle-bracketed task token is a template. A real task token comes from begin
 
 ## Delegate through RPC
 
-When a coordinator dispatches this work through rpc-subagents, one task runs one contract in one space. Set the task tools to `["read", "ego_browser"]` and `webAccess` to false. A child that loads this extension is advertised this skill through `resources_discover`, even with `--no-skills`. The coordinator may pass this file's absolute path when the task explicitly instructs reading it, but that is not a required workaround. The coordinator can follow the sibling [rpc-subagents skill](../../../rpc-subagents/skills/rpc-subagents/SKILL.md) for the fleet contract. Acceptance reads the actual `ego_browser` invocation and result in the child event log, not the task's tool list. The parent reads stored evidence and never connects to the same browser.
+When a coordinator dispatches this work through rpc-subagents, one task runs one contract in one space. Set the task tools to `["read", "ego_browser"]` and `webAccess` to false. Naming the tool activates it in the child, so the child needs no `tool_search`. A child that loads this extension is advertised this skill through `resources_discover`, even with `--no-skills`. The coordinator may pass this file's absolute path when the task explicitly instructs reading it, but that is not a required workaround. The coordinator can follow the sibling [rpc-subagents skill](../../../rpc-subagents/skills/rpc-subagents/SKILL.md) for the fleet contract. Acceptance reads the actual `ego_browser` invocation and result in the child event log, not the task's tool list. The parent reads stored evidence and never connects to the same browser.
 
 Setup, limits, and the live harness are in the [extension README](../../README.md).
