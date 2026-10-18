@@ -3,8 +3,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [mode, url, outDir, ...files] = process.argv.slice(2);
-if (!["live", "switched", "closed", "reload"].includes(mode) || !url || !outDir) {
+if (!["live", "switched", "closed", "reload", "followed"].includes(mode) || !url || !outDir) {
 	console.error("usage: node browser.mjs live <url> <screenshot dir> <round 2 ready file> <round 3 ready file> <tree go file>");
+	console.error("       node browser.mjs followed <url> <screenshot dir> <ready file> <go file>");
 	console.error("       node browser.mjs switched <url> <screenshot dir> <ready file> <go file>");
 	console.error("       node browser.mjs closed <url> <screenshot dir> <ready file>");
 	console.error("       node browser.mjs reload <url> <screenshot dir> <ready file> <restarted file>");
@@ -19,7 +20,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 860 }, dev
 const errors = [];
 page.on("pageerror", (error) => errors.push(String(error)));
 page.on("console", (message) => {
-	if (message.type() === "error") errors.push(message.text());
+	if (message.type() === "error" && !(mode === "followed" && message.text().includes("410 (Gone)"))) errors.push(message.text());
 });
 const result = { mode, errors, checks: {} };
 const shot = async (name) => {
@@ -111,6 +112,14 @@ const sendRound = async (round) => {
 await page.goto(url);
 await page.locator("#conversation .message").first().waitFor();
 await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Live"));
+if (mode === "followed") {
+	await page.evaluate(() => {
+		window.__followedStatus = false;
+		new MutationObserver(() => {
+			if (document.getElementById("status").textContent.includes("pi moved to a new session; your list is kept")) window.__followedStatus = true;
+		}).observe(document.getElementById("status"), { childList: true, characterData: true, subtree: true });
+	});
+}
 result.checks.xssInert = await page.evaluate(() => ({
 	images: document.querySelectorAll("#conversation img").length,
 	pwned: typeof window.__pwned,
@@ -181,6 +190,44 @@ if (mode === "live") {
 		status: (await page.locator("#status").textContent()).includes("conversation changed"),
 	};
 	await shot("09-tree-reset");
+} else if (mode === "followed") {
+	const [readyFile, goFile] = files;
+	const oldPath = await page.evaluate(() => location.pathname);
+	await dragSelect("#conversation .assistant .text", "The cache is LRU.");
+	await page.keyboard.type("browser handoff note");
+	await page.keyboard.press("Enter");
+	await page.locator("#list > li").first().waitFor();
+	await shot("h1-before-handoff");
+	writeFileSync(readyFile, "ready");
+	await waitForFile(goFile, 60_000);
+	await page.waitForFunction((path) => location.pathname !== path, oldPath, { timeout: 60_000 });
+	await page.waitForFunction(() => window.__followedStatus === true, null, { timeout: 15_000 });
+	result.checks.followed = await page.evaluate((oldPath) => ({
+		oldPath,
+		path: location.pathname,
+		count: document.querySelectorAll("#list > li").length,
+		quotes: [...document.querySelectorAll("#list > li blockquote")].map((item) => item.textContent),
+		notes: [...document.querySelectorAll("#list > li textarea")].map((item) => item.value),
+		sendDisabled: document.getElementById("send").disabled,
+		status: document.getElementById("status").textContent,
+	}), oldPath);
+	result.checks.followed.tabs = browser.contexts().reduce((count, context) => count + context.pages().length, 0);
+	result.checks.followed.pathChanged = result.checks.followed.path !== oldPath;
+	result.checks.followed.listKept = result.checks.followed.count === 1 && result.checks.followed.quotes[0] === "The cache is LRU." && result.checks.followed.notes[0] === "browser handoff note";
+	result.checks.followed.sendEnabled = !result.checks.followed.sendDisabled;
+	if (!result.checks.followed.pathChanged || !result.checks.followed.listKept || !result.checks.followed.sendEnabled || result.checks.followed.tabs !== 1) {
+		throw new Error("the open tab did not follow with its annotation ready to send");
+	}
+	await shot("h2-after-handoff");
+	await page.locator("#send").click();
+	await page.waitForFunction(() => document.getElementById("status").textContent.includes("(round 1)"), null, { timeout: 15_000 });
+	result.checks.followedSend = {
+		count: await page.locator("#list > li").count(),
+		status: await page.locator("#status").textContent(),
+		sendDisabled: await page.locator("#send").isDisabled(),
+	};
+	result.checks.followedSend.accepted = result.checks.followedSend.count === 0 && result.checks.followedSend.status.includes("(round 1)");
+	await shot("h3-followed-send");
 } else if (mode === "reload") {
 	const [readyFile, restartedFile] = files;
 	const sid = new URL(url).pathname.slice(1);

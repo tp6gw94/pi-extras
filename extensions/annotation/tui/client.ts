@@ -1,4 +1,4 @@
-import type { Annotation } from "../quote.ts";
+import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
 import { TOKEN_HEADER } from "../server.ts";
 
@@ -14,16 +14,15 @@ export interface InitialSnapshot {
 	items: SnapshotItem[];
 }
 
-export interface LiveUpdate {
-	version: number;
-	reset: boolean;
-	items: SnapshotItem[];
-}
+export type LiveEvent =
+	| { type: "update"; version: number; reset: boolean; items: SnapshotItem[] }
+	| { type: "moved"; snapshot: InitialSnapshot };
 
 export type SendOutcome =
 	| { ok: true; inserted: number; nextSeq: number }
 	| { ok: false; kind: "conflict"; expectedSeq: number }
-	| { ok: false; kind: "rejected"; reason: string };
+	| { ok: false; kind: "rejected"; reason: string }
+	| { ok: false; kind: "moved"; snapshot?: InitialSnapshot };
 
 export type ProtocolCode = "unreachable" | "unauthorized" | "switched" | "busy" | "http";
 
@@ -40,9 +39,10 @@ export class ProtocolError extends Error {
 }
 
 export interface AnnotateClient {
+	readonly sessionId: string;
 	snapshot(): Promise<InitialSnapshot>;
-	watch(after: number, signal: AbortSignal): Promise<LiveUpdate>;
-	send(seq: number, items: readonly Annotation[]): Promise<SendOutcome>;
+	watch(after: number, signal: AbortSignal): Promise<LiveEvent>;
+	send(seq: number, items: readonly Annotation[], delivery: AnnotationDelivery): Promise<SendOutcome>;
 }
 
 function parseItems(value: unknown): SnapshotItem[] {
@@ -62,21 +62,35 @@ function numberField(body: Record<string, unknown>, key: string): number {
 	return value;
 }
 
-export function createClient(target: AttachTarget, fetchImpl: typeof fetch = fetch): AnnotateClient {
-	const base = `http://127.0.0.1:${target.port}/${encodeURIComponent(target.sessionId)}/api`;
+function successorOf(body: Record<string, unknown>): { sessionId: string; token: string } | undefined {
+	const next = body.successor;
+	if (next === null || typeof next !== "object") return undefined;
+	const successor = next as Record<string, unknown>;
+	if (typeof successor.sessionId !== "string" || typeof successor.token !== "string") return undefined;
+	return { sessionId: successor.sessionId, token: successor.token };
+}
 
-	async function call(endpoint: string, init: RequestInit = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+export function createClient(target: AttachTarget, fetchImpl: typeof fetch = fetch): AnnotateClient {
+	let current: AttachTarget = target;
+	let reported: AttachTarget = target;
+	const snapshots = new Map<AttachTarget, Promise<InitialSnapshot | undefined>>();
+
+	async function call(requested: AttachTarget, endpoint: string, init: RequestInit = {}): Promise<{ status: number; body: Record<string, unknown>; moved: boolean }> {
 		let response: Response;
 		try {
-			response = await fetchImpl(`${base}/${endpoint}`, {
+			response = await fetchImpl(`http://127.0.0.1:${requested.port}/${encodeURIComponent(requested.sessionId)}/api/${endpoint}`, {
 				...init,
-				headers: { ...(init.headers as Record<string, string>), [TOKEN_HEADER]: target.token },
+				headers: { ...(init.headers as Record<string, string>), [TOKEN_HEADER]: requested.token },
 			});
 		} catch (error) {
 			throw new ProtocolError("unreachable", error instanceof Error ? error.message : String(error));
 		}
 		const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-		return { status: response.status, body };
+		const successor = response.status === 410 ? successorOf(body) : undefined;
+		if (successor && (successor.sessionId !== current.sessionId || successor.token !== current.token)) {
+			current = { port: current.port, ...successor };
+		}
+		return { status: response.status, body, moved: successor !== undefined };
 	}
 
 	function errorText(status: number, body: Record<string, unknown>): string {
@@ -90,27 +104,66 @@ export function createClient(target: AttachTarget, fetchImpl: typeof fetch = fet
 		return new ProtocolError("http", errorText(status, body), status);
 	}
 
+	function snapshotOf(target: AttachTarget): Promise<InitialSnapshot | undefined> {
+		let snapshot = snapshots.get(target);
+		if (!snapshot) {
+			snapshot = call(target, "snapshot").then((result) => {
+				if (result.moved) return undefined;
+				if (result.status !== 200) throw failure(result.status, result.body);
+				return { version: numberField(result.body, "version"), nextSeq: numberField(result.body, "nextSeq"), items: parseItems(result.body.items) };
+			});
+			snapshots.set(target, snapshot);
+		}
+		return snapshot;
+	}
+
+	async function headSnapshot(): Promise<InitialSnapshot> {
+		while (true) {
+			const target = current;
+			const snapshot = await snapshotOf(target);
+			if (snapshot && current === target) return snapshot;
+		}
+	}
+
 	return {
+		get sessionId() {
+			return current.sessionId;
+		},
 		async snapshot() {
-			const { status, body } = await call("snapshot");
-			if (status !== 200) throw failure(status, body);
-			return { version: numberField(body, "version"), nextSeq: numberField(body, "nextSeq"), items: parseItems(body.items) };
+			const result = await headSnapshot();
+			reported = current;
+			return result;
 		},
 		async watch(after, signal) {
-			const { status, body } = await call(`events?after=${after}`, { signal });
-			if (status !== 200) throw failure(status, body);
-			return { version: numberField(body, "version"), reset: body.reset === true, items: parseItems(body.items) };
+			while (true) {
+				if (current !== reported) {
+					const snapshot = await headSnapshot();
+					after = snapshot.version;
+					if (current === reported) continue;
+					reported = current;
+					return { type: "moved", snapshot };
+				}
+				const result = await call(current, `events?after=${after}`, { signal });
+				if (result.moved) continue;
+				if (result.status !== 200) throw failure(result.status, result.body);
+				return { type: "update", version: numberField(result.body, "version"), reset: result.body.reset === true, items: parseItems(result.body.items) };
+			}
 		},
-		async send(seq, items) {
-			const { status, body } = await call("send", {
+		async send(seq, items, delivery) {
+			const result = await call(current, "send", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ seq, items: items.map(({ quote, note }) => ({ quote, note })) }),
+				body: JSON.stringify({ seq, delivery, items: items.map(({ quote, note }) => ({ quote, note })) }),
 			});
-			if (status === 409 && typeof body.expectedSeq === "number") return { ok: false, kind: "conflict", expectedSeq: body.expectedSeq };
-			if (status === 403 || status === 410) throw failure(status, body);
-			if (status !== 200) return { ok: false, kind: "rejected", reason: errorText(status, body) };
-			return { ok: true, inserted: numberField(body, "inserted"), nextSeq: numberField(body, "nextSeq") };
+			if (result.moved) {
+				const snapshot = current !== reported ? await headSnapshot() : undefined;
+				reported = current;
+				return { ok: false, kind: "moved", snapshot };
+			}
+			if (result.status === 409 && typeof result.body.expectedSeq === "number") return { ok: false, kind: "conflict", expectedSeq: result.body.expectedSeq };
+			if (result.status === 403 || result.status === 410) throw failure(result.status, result.body);
+			if (result.status !== 200) return { ok: false, kind: "rejected", reason: errorText(result.status, result.body) };
+			return { ok: true, inserted: numberField(result.body, "inserted"), nextSeq: numberField(result.body, "nextSeq") };
 		},
 	};
 }

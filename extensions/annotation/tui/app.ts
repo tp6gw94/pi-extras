@@ -1,7 +1,7 @@
 import type * as PiTui from "@earendil-works/pi-tui";
 import type { Component, Editor, Focusable, Input, TUI } from "@earendil-works/pi-tui";
-import type { Annotation } from "../quote.ts";
-import { type AnnotateClient, disconnectReason, type InitialSnapshot, ProtocolError } from "./client.ts";
+import type { Annotation, AnnotationDelivery } from "../quote.ts";
+import { type AnnotateClient, disconnectReason, type InitialSnapshot, type LiveEvent, ProtocolError } from "./client.ts";
 import { type DiagramCls, type Doc, INDENT, itemOf, type Layout, layoutCache, locate, selectionRange, type Span, spansOf } from "./document.ts";
 import type { MdStyle } from "./highlight.ts";
 import { type Action, type Effect, type Env, type HelpEntry, helpRows, hintFor, initialModel, keyAction, type Model, modeTag, pendingText, quitWarning, reduce } from "./model.ts";
@@ -13,7 +13,7 @@ export interface AppOptions {
 	tui: TUI;
 	client: AnnotateClient;
 	snapshot: InitialSnapshot;
-	title: string;
+	title(sessionId: string): string;
 	onExit(): void;
 }
 
@@ -80,7 +80,7 @@ export class AnnotateApp implements Component, Focusable {
 	private readonly client: AnnotateClient;
 	private readonly editor: Editor;
 	private readonly input: Input;
-	private readonly title: string;
+	private readonly title: (sessionId: string) => string;
 	private readonly onExit: () => void;
 	private readonly abort = new AbortController();
 	private readonly layouts: (doc: Doc, width: number) => Layout;
@@ -188,7 +188,7 @@ export class AnnotateApp implements Component, Focusable {
 				this.input.setValue("");
 				break;
 			case "send":
-				void this.send(effect.notes);
+				void this.send(effect.notes, effect.delivery);
 				break;
 			case "exit":
 				this.stop();
@@ -197,14 +197,17 @@ export class AnnotateApp implements Component, Focusable {
 		}
 	}
 
-	private async send(notes: readonly Annotation[]): Promise<void> {
+	private async send(notes: readonly Annotation[], delivery: AnnotationDelivery): Promise<void> {
 		const ids = this.model.sending ?? [];
 		try {
-			const outcome = await this.client.send(this.model.seq, notes);
+			const outcome = await this.client.send(this.model.seq, notes, delivery);
 			if (this.stopped) return;
-			if (outcome.ok) this.dispatch({ type: "sent", ids, inserted: outcome.inserted, nextSeq: outcome.nextSeq });
+			if (outcome.ok) this.dispatch({ type: "sent", ids, delivery, inserted: outcome.inserted, nextSeq: outcome.nextSeq });
 			else if (outcome.kind === "conflict") this.dispatch({ type: "conflict", expectedSeq: outcome.expectedSeq });
-			else this.dispatch({ type: "rejected", reason: outcome.reason });
+			else if (outcome.kind === "moved") {
+				if (outcome.snapshot) this.dispatch({ type: "moved", snapshot: outcome.snapshot });
+				this.dispatch({ type: "resend" });
+			} else this.dispatch({ type: "rejected", reason: outcome.reason });
 		} catch (error) {
 			if (this.stopped) return;
 			this.dispatch({ type: "failed", reason: disconnectReason(error) });
@@ -213,9 +216,9 @@ export class AnnotateApp implements Component, Focusable {
 
 	private async poll(): Promise<void> {
 		while (!this.stopped && this.model.connection.status === "live") {
-			let update;
+			let event: LiveEvent;
 			try {
-				update = await this.client.watch(this.model.version, this.abort.signal);
+				event = await this.client.watch(this.model.version, this.abort.signal);
 			} catch (error) {
 				if (this.stopped || this.abort.signal.aborted) return;
 				if (error instanceof ProtocolError && error.code === "busy") {
@@ -225,7 +228,7 @@ export class AnnotateApp implements Component, Focusable {
 				this.dispatch({ type: "disconnected", reason: disconnectReason(error) });
 				return;
 			}
-			this.dispatch({ type: "update", version: update.version, reset: update.reset, items: update.items });
+			this.dispatch(event);
 		}
 	}
 
@@ -242,7 +245,7 @@ export class AnnotateApp implements Component, Focusable {
 		const count = this.model.notes.length;
 		const state = this.model.connection.status === "live" ? green("● live") : red("○ closed");
 		const right = `${count} note${count === 1 ? "" : "s"}  ${state}`;
-		const left = this.lib.truncateToWidth(bold(this.title), Math.max(0, width - this.lib.visibleWidth(right) - 1));
+		const left = this.lib.truncateToWidth(bold(this.title(this.client.sessionId)), Math.max(0, width - this.lib.visibleWidth(right) - 1));
 		const gap = Math.max(1, width - this.lib.visibleWidth(left) - this.lib.visibleWidth(right));
 		return `${left}${" ".repeat(gap)}${right}`;
 	}

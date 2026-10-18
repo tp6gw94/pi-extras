@@ -490,6 +490,31 @@ describe("live updates", () => {
 		assert.deepEqual(kept.model.mode.anchor, { itemId: "a", offset: 0 });
 		assert.deepEqual(kept.model.caret, { itemId: "a", offset: 3 });
 	});
+
+	it("moves to the snapshot while keeping notes, next note id, and note mode", () => {
+		let model = start([assistant("a", "hello world")], 1, 4);
+		model = act(press(model, "A").model, { type: "saveNote", text: "saved note" }).model;
+		model = act(model, { type: "send", delivery: "editor" }).model;
+		assert.deepEqual(model.sending, ["note-1"]);
+		model = press(model, "A").model;
+		const mode = model.mode;
+		const moved = act(model, { type: "moved", snapshot: { version: 9, nextSeq: 16, items: [assistant("a", "hello world"), user("u", "replacement")] } });
+		assert.deepEqual(moved.model.items.map((item) => item.id), ["a", "u"]);
+		assert.equal(moved.model.version, 9);
+		assert.equal(moved.model.seq, 16);
+		assert.deepEqual(moved.model.sending, ["note-1"]);
+		assert.deepEqual(noteTexts(moved.model), ["saved note"]);
+		assert.equal(moved.model.nextNote, 2);
+		assert.deepEqual(moved.model.mode, mode);
+		assert.deepEqual(moved.model.connection, { status: "live" });
+		assert.deepEqual(moved.model.message, { text: "pi moved to a new session; notes kept", error: false });
+		const resend = act(moved.model, { type: "resend" });
+		assert.deepEqual(resend.model.mode, mode);
+		assert.deepEqual(noteTexts(resend.model), ["saved note"]);
+		assert.equal(resend.model.seq, 16);
+		assert.equal(resend.model.sending, undefined);
+		assert.deepEqual(resend.model.message, { text: "pi moved to a new session; notes kept; choose s or S again", error: false });
+	});
 });
 
 describe("send", () => {
@@ -500,15 +525,34 @@ describe("send", () => {
 
 	it("emits the literal annotations and keeps the notes on a conflict", () => {
 		const model = oneNote();
-		const sent = act(model, { type: "send" });
-		assert.deepEqual(sent.effects, [{ type: "send", notes: [{ quote: "hello world", note: "first line" }] }]);
+		const sent = act(model, { type: "send", delivery: "editor" });
+		assert.deepEqual(sent.effects, [{ type: "send", delivery: "editor", notes: [{ quote: "hello world", note: "first line" }] }]);
 		assert.equal(sent.model.sending?.length, 1);
 		const conflict = act(sent.model, { type: "conflict", expectedSeq: 9 });
 		assert.equal(conflict.model.seq, 9);
 		assert.deepEqual(noteTexts(conflict.model), ["first line"]);
 		assert.equal(conflict.model.sending, undefined);
-		assert.equal(conflict.model.message?.text, "another client sent first; your notes are kept, press s again");
+		assert.equal(conflict.model.message?.text, "another client sent first; your notes are kept; choose s or S again");
 		assert.deepEqual(conflict.effects, []);
+	});
+
+	it("blocks another send after a poll move until the pending send reports its move", () => {
+		const sending = act(oneNote(), { type: "send", delivery: "editor" }).model;
+		const snapshot = { version: 7, nextSeq: 16, items: [assistant("a", "hello world")] };
+		const moved = act(sending, { type: "moved", snapshot }).model;
+		const blocked = act(moved, { type: "send", delivery: "editor" });
+		assert.deepEqual(blocked.effects, []);
+		assert.deepEqual(blocked.model.sending, ["note-1"]);
+		assert.deepEqual(noteTexts(blocked.model), ["first line"]);
+		const updated = act(blocked.model, { type: "update", version: 8, reset: false, items: [assistant("b", "Version eight reply")] }).model;
+		const resolved = act(updated, { type: "resend" }).model;
+		assert.equal(resolved.version, 8);
+		assert.deepEqual(resolved.items.map(({ id, text }) => ({ id, text })), [{ id: "a", text: "hello world" }, { id: "b", text: "Version eight reply" }]);
+		assert.equal(resolved.sending, undefined);
+		assert.deepEqual(resolved.message, { text: "pi moved to a new session; notes kept; choose s or S again", error: false });
+		const resent = act(resolved, { type: "send", delivery: "editor" });
+		assert.equal(resent.model.seq, 16);
+		assert.deepEqual(resent.effects, [{ type: "send", delivery: "editor", notes: [{ quote: "hello world", note: "first line" }] }]);
 	});
 
 	it("clears only the sent notes and reports the count", () => {
@@ -516,9 +560,9 @@ describe("send", () => {
 		model = keys(model, ["{", "A"]).model;
 		model = act(model, { type: "saveNote", text: "second line" }).model;
 		assert.equal(model.notes.length, 2);
-		const sent = act(model, { type: "send" });
+		const sent = act(model, { type: "send", delivery: "editor" });
 		const first = model.notes[0]!.id;
-		const partial = act(sent.model, { type: "sent", ids: [first], inserted: 1, nextSeq: 10 });
+		const partial = act(sent.model, { type: "sent", delivery: "editor", ids: [first], inserted: 1, nextSeq: 10 });
 		assert.deepEqual(noteTexts(partial.model), ["second line"]);
 		assert.equal(partial.model.seq, 10);
 		assert.equal(partial.model.message?.text, "sent 1 to the pi editor");
@@ -528,7 +572,7 @@ describe("send", () => {
 		const model = oneNote();
 		const closed = act(model, { type: "failed", reason: "annotate server closed; run /annotate in pi and attach again" });
 		assert.deepEqual(closed.model.connection, { status: "closed", reason: "annotate server closed; run /annotate in pi and attach again" });
-		const refused = act(closed.model, { type: "send" });
+		const refused = act(closed.model, { type: "send", delivery: "editor" });
 		assert.deepEqual(refused.effects, []);
 		assert.equal(refused.model.message?.text, "annotate server closed; run /annotate in pi and attach again");
 		assert.deepEqual(noteTexts(refused.model), ["first line"]);
@@ -670,16 +714,16 @@ describe("keys", () => {
 	});
 
 	it("derives each hint from the per-mode table", () => {
-		assert.equal(hintFor("normal"), "v select · a note · Tab list · s send · q quit · ? help");
+		assert.equal(hintFor("normal"), "v select · a note · Tab list · s editor · S submit · q quit · ? help");
 		assert.equal(hintFor("visual"), "a note · o swap · Esc leave · Tab list · ? help");
-		assert.equal(hintFor("list"), "Enter jump · e edit · d delete · Tab back · s send · ? help");
+		assert.equal(hintFor("list"), "Enter jump · e edit · d delete · Tab back · s editor · S submit · ? help");
 		assert.equal(hintFor("note"), "Enter save · Ctrl-J new line · Esc cancel · Ctrl-C quit");
 		assert.equal(hintFor("search"), "");
 	});
 
 	it("only hints keys that are bound in that mode", () => {
 		for (const [kind, hints] of Object.entries(HINTS)) {
-			assert.ok(hints.length <= 6, kind);
+			assert.ok(hints.length <= 7, kind);
 			for (const [key] of hints) assert.ok(bindings.some((binding) => binding.keys.includes(key) && binding.modes.includes(kind as ModeKind)), `${key} is not bound in ${kind}`);
 		}
 	});
@@ -899,13 +943,13 @@ describe("send failures", () => {
 	};
 
 	it("keeps the notes and the live connection when the server rejects the request", () => {
-		const sending = act(withNote(), { type: "send" }).model;
+		const sending = act(withNote(), { type: "send", delivery: "editor" }).model;
 		const rejected = act(sending, { type: "rejected", reason: "body too large" });
 		assert.equal(rejected.model.sending, undefined);
 		assert.deepEqual(rejected.model.connection, { status: "live" });
 		assert.deepEqual(noteTexts(rejected.model), ["first line"]);
 		assert.deepEqual(rejected.model.message, { text: "body too large", error: true });
-		assert.equal(act(rejected.model, { type: "send" }).effects.length, 1);
+		assert.equal(act(rejected.model, { type: "send", delivery: "editor" }).effects.length, 1);
 	});
 });
 
