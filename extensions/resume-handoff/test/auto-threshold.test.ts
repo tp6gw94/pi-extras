@@ -382,6 +382,8 @@ test("threshold generation instructs the next session to continue authorized wor
 	assert.match(instruction, /continue only the work that was already authorized, without asking for renewed approval solely because of the transfer/i);
 	assert.match(instruction, /remain pending/);
 	assert.doesNotMatch(instruction, /\bconfirm/i);
+	assert.match(instruction, /Always include a ## Resume policy section/);
+	assert.equal(instruction.match(/continue only the work/gi)?.length, 1);
 });
 
 test("a manual command entered before the queued threshold dispatch keeps manual policy", async (t) => {
