@@ -103,7 +103,7 @@ async function attach(entry: SessionEntry): Promise<void> {
 		tui,
 		client,
 		snapshot,
-		title: `pi-annotation · ${basename(entry.cwd) || entry.cwd} · ${entry.sessionId.slice(-8)}`,
+		title: (sessionId) => `pi-annotation · ${basename(entry.cwd) || entry.cwd} · ${sessionId.slice(-8)}`,
 		onExit: () => shutdown(0),
 	});
 	tui.setLayoutRoot(app);

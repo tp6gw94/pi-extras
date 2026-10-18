@@ -1,5 +1,6 @@
 import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
+import type { InitialSnapshot } from "./client.ts";
 import {
 	type Doc,
 	type Layout,
@@ -146,6 +147,8 @@ export type Action =
 	| { type: "rejected"; reason: string }
 	| { type: "failed"; reason: string }
 	| { type: "update"; version: number; reset: boolean; items: readonly SnapshotItem[] }
+	| { type: "moved"; snapshot: InitialSnapshot }
+	| { type: "resend" }
 	| { type: "disconnected"; reason: string }
 	| { type: "quit" };
 
@@ -230,7 +233,7 @@ export const HINTS: Record<ModeKind, readonly (readonly [key: string, label: str
 	help: [["j", "scroll"], ["escape", "close"]],
 };
 
-const PASS_THROUGH: ReadonlySet<Action["type"]> = new Set(["otherKey", "update", "sent", "conflict", "rejected", "failed", "disconnected"]);
+const PASS_THROUGH: ReadonlySet<Action["type"]> = new Set(["otherKey", "update", "moved", "resend", "sent", "conflict", "rejected", "failed", "disconnected"]);
 
 export function countOf(mode: Mode): number {
 	if (mode.kind !== "normal" && mode.kind !== "visual") return 1;
@@ -798,6 +801,17 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 		}
 		case "update": {
 			applyUpdate(next, action);
+			break;
+		}
+		case "moved": {
+			applyUpdate(next, { type: "update", version: action.snapshot.version, reset: true, items: action.snapshot.items });
+			next.seq = action.snapshot.nextSeq;
+			next.message = { text: "pi moved to a new session; notes kept", error: false };
+			break;
+		}
+		case "resend": {
+			next.sending = undefined;
+			next.message = { text: "pi moved to a new session; notes kept; choose s or S again", error: false };
 			break;
 		}
 		case "disconnected": {
