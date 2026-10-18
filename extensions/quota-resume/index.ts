@@ -6,6 +6,7 @@ import { RecoveryActor } from "./recovery.ts";
 const supportedProviderIds = new Set(["anthropic", "openai-codex", "opencode-go"]);
 
 export default function quotaResume(pi: ExtensionAPI): void {
+	if (process.env.RPC_SUBAGENTS_CHILD) return;
 	const capture = new QuotaCapture();
 	const recovery = new RecoveryActor(pi, capture);
 	for (const provider of builtinProviders()) {

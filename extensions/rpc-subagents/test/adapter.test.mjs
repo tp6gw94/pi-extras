@@ -86,6 +86,14 @@ test("adapter factory registers unique codemode tools with directly accessible s
   assert.deepEqual(registry.events, ["resources_discover", "session_start", "agent_start", "agent_settled", "session_shutdown"]);
 });
 
+test("parent instructions delegate exhausted subscription work with a different model instead of waiting", () => {
+  const run = load({}).tools.find(tool => tool.name === "rpc_subagents_run");
+  assert.match(run.namespace.instructions, /subscription quota is exhausted/);
+  assert.match(run.namespace.instructions, /new task with an explicitly selected different model/);
+  assert.match(run.namespace.instructions, /Do not wait for quota reset or retry the exhausted model/);
+  assert.match(run.namespace.instructions, /A session continuation cannot change models/);
+});
+
 test("output command toggles installed TUI preview, resets on session start, and rejects unavailable modes", async () => {
   let expanded = false;
   const registry = load({}, {

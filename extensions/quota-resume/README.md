@@ -20,6 +20,12 @@ A generic HTTP 429, API token limit, or request rate limit is not enough to iden
 
 The extension preserves each provider's authentication, model overrides, and request options, including OpenCode's `x-opencode-session` header. Only the main agent's final failed turn creates a waiting record. Nested calls do not create records.
 
+## RPC subagents
+
+`quota-resume` is inactive when `RPC_SUBAGENTS_CHILD` is set. RPC subagent quota errors return to the parent without creating waiting records.
+
+RPC subagents instruct the parent to inspect the failure and retained work. The parent then selects a different permitted model and delegates the unfinished work as a new task. `quota-resume` does not select a replacement model. The `session` option cannot change models.
+
 ## Waiting and resuming
 
 If the response has no valid future reset time, the extension shows a notification without resuming. When a session reopens after a saved reset time, the extension can still resume once from a previously valid waiting record.

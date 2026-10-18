@@ -141,6 +141,24 @@ function rpc(f) {
   }, errors: () => errors };
 }
 
+test("RPC subagent quota errors stay visible without recovery records or automatic continuation", async t => {
+  const f = await fixture({ delay: 1 });
+  f.env.RPC_SUBAGENTS_CHILD = "1";
+  t.after(f.close);
+  const child = rpc(f);
+  t.after(child.stop);
+  child.send({ id: "run", type: "prompt", message: "Finish the fixture task." });
+  await until(() => child.events.some(event => event.type === "agent_settled"), "RPC subagent quota failure");
+  const failure = child.events.findLast(event => event.type === "message_end" && event.message.role === "assistant").message;
+  assert.equal(failure.stopReason, "error");
+  assert.match(failure.errorMessage, /GoUsageLimitError/);
+  const records = (await readFile(join(f.root, "session.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(records.some(entry => entry.customType === "quota-resume"), false);
+  await sleep(1300);
+  assert.equal(f.requests.some(request => JSON.stringify(request.body).includes("Continue the unfinished task.")), false);
+  assert.equal(child.events.filter(event => event.type === "agent_settled").length, 1);
+});
+
 test("true spawned RPC local fixture dispatches once with original context and native Go header", async t => {
   const f = await fixture({ delay: 1 });
   t.after(f.close);
