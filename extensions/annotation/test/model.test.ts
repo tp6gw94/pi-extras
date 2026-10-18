@@ -500,14 +500,14 @@ describe("send", () => {
 
 	it("emits the literal annotations and keeps the notes on a conflict", () => {
 		const model = oneNote();
-		const sent = act(model, { type: "send" });
-		assert.deepEqual(sent.effects, [{ type: "send", notes: [{ quote: "hello world", note: "first line" }] }]);
+		const sent = act(model, { type: "send", delivery: "editor" });
+		assert.deepEqual(sent.effects, [{ type: "send", delivery: "editor", notes: [{ quote: "hello world", note: "first line" }] }]);
 		assert.equal(sent.model.sending?.length, 1);
 		const conflict = act(sent.model, { type: "conflict", expectedSeq: 9 });
 		assert.equal(conflict.model.seq, 9);
 		assert.deepEqual(noteTexts(conflict.model), ["first line"]);
 		assert.equal(conflict.model.sending, undefined);
-		assert.equal(conflict.model.message?.text, "another client sent first; your notes are kept, press s again");
+		assert.equal(conflict.model.message?.text, "another client sent first; your notes are kept; choose s or S again");
 		assert.deepEqual(conflict.effects, []);
 	});
 
@@ -516,9 +516,9 @@ describe("send", () => {
 		model = keys(model, ["{", "A"]).model;
 		model = act(model, { type: "saveNote", text: "second line" }).model;
 		assert.equal(model.notes.length, 2);
-		const sent = act(model, { type: "send" });
+		const sent = act(model, { type: "send", delivery: "editor" });
 		const first = model.notes[0]!.id;
-		const partial = act(sent.model, { type: "sent", ids: [first], inserted: 1, nextSeq: 10 });
+		const partial = act(sent.model, { type: "sent", delivery: "editor", ids: [first], inserted: 1, nextSeq: 10 });
 		assert.deepEqual(noteTexts(partial.model), ["second line"]);
 		assert.equal(partial.model.seq, 10);
 		assert.equal(partial.model.message?.text, "sent 1 to the pi editor");
@@ -528,7 +528,7 @@ describe("send", () => {
 		const model = oneNote();
 		const closed = act(model, { type: "failed", reason: "annotate server closed; run /annotate in pi and attach again" });
 		assert.deepEqual(closed.model.connection, { status: "closed", reason: "annotate server closed; run /annotate in pi and attach again" });
-		const refused = act(closed.model, { type: "send" });
+		const refused = act(closed.model, { type: "send", delivery: "editor" });
 		assert.deepEqual(refused.effects, []);
 		assert.equal(refused.model.message?.text, "annotate server closed; run /annotate in pi and attach again");
 		assert.deepEqual(noteTexts(refused.model), ["first line"]);
@@ -670,16 +670,16 @@ describe("keys", () => {
 	});
 
 	it("derives each hint from the per-mode table", () => {
-		assert.equal(hintFor("normal"), "v select · a note · Tab list · s send · q quit · ? help");
+		assert.equal(hintFor("normal"), "v select · a note · Tab list · s editor · S submit · q quit · ? help");
 		assert.equal(hintFor("visual"), "a note · o swap · Esc leave · Tab list · ? help");
-		assert.equal(hintFor("list"), "Enter jump · e edit · d delete · Tab back · s send · ? help");
+		assert.equal(hintFor("list"), "Enter jump · e edit · d delete · Tab back · s editor · S submit · ? help");
 		assert.equal(hintFor("note"), "Enter save · Ctrl-J new line · Esc cancel · Ctrl-C quit");
 		assert.equal(hintFor("search"), "");
 	});
 
 	it("only hints keys that are bound in that mode", () => {
 		for (const [kind, hints] of Object.entries(HINTS)) {
-			assert.ok(hints.length <= 6, kind);
+			assert.ok(hints.length <= 7, kind);
 			for (const [key] of hints) assert.ok(bindings.some((binding) => binding.keys.includes(key) && binding.modes.includes(kind as ModeKind)), `${key} is not bound in ${kind}`);
 		}
 	});
@@ -899,13 +899,13 @@ describe("send failures", () => {
 	};
 
 	it("keeps the notes and the live connection when the server rejects the request", () => {
-		const sending = act(withNote(), { type: "send" }).model;
+		const sending = act(withNote(), { type: "send", delivery: "editor" }).model;
 		const rejected = act(sending, { type: "rejected", reason: "body too large" });
 		assert.equal(rejected.model.sending, undefined);
 		assert.deepEqual(rejected.model.connection, { status: "live" });
 		assert.deepEqual(noteTexts(rejected.model), ["first line"]);
 		assert.deepEqual(rejected.model.message, { text: "body too large", error: true });
-		assert.equal(act(rejected.model, { type: "send" }).effects.length, 1);
+		assert.equal(act(rejected.model, { type: "send", delivery: "editor" }).effects.length, 1);
 	});
 });
 

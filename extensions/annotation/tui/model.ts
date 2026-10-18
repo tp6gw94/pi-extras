@@ -1,4 +1,4 @@
-import type { Annotation } from "../quote.ts";
+import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
 import {
 	type Doc,
@@ -101,7 +101,7 @@ export interface Model {
 }
 
 export type Effect =
-	| { type: "send"; notes: readonly Annotation[] }
+	| { type: "send"; notes: readonly Annotation[]; delivery: AnnotationDelivery }
 	| { type: "editNote"; initialText: string }
 	| { type: "openSearch" }
 	| { type: "exit" };
@@ -139,9 +139,9 @@ export type Action =
 	| { type: "listDelete" }
 	| { type: "saveNote"; text: string }
 	| { type: "cancelNote" }
-	| { type: "send" }
+	| { type: "send"; delivery: AnnotationDelivery }
 	| { type: "otherKey" }
-	| { type: "sent"; ids: readonly string[]; inserted: number; nextSeq: number }
+	| { type: "sent"; ids: readonly string[]; inserted: number; nextSeq: number; delivery: AnnotationDelivery }
 	| { type: "conflict"; expectedSeq: number }
 	| { type: "rejected"; reason: string }
 	| { type: "failed"; reason: string }
@@ -211,7 +211,8 @@ export const bindings: readonly Binding[] = [
 	{ keys: ["enter"], modes: NOTE, group: "Note editor", label: "save note" },
 	{ keys: ["ctrl+j", "shift+enter"], modes: NOTE, group: "Note editor", label: "new line" },
 	{ keys: ["escape"], modes: NOTE, action: { type: "cancelNote" }, group: "Note editor", label: "cancel note" },
-	{ keys: ["s"], modes: [...NORMAL, ...LIST], action: { type: "send" }, group: "Send", label: "send notes" },
+	{ keys: ["s"], modes: [...NORMAL, ...LIST], action: { type: "send", delivery: "editor" }, group: "Send", label: "append notes to editor" },
+	{ keys: ["S"], modes: [...NORMAL, ...LIST], action: { type: "send", delivery: "agent" }, group: "Send", label: "submit notes to pi" },
 	{ keys: ["?"], modes: ["normal", "visual", "list"], action: { type: "openHelp" }, group: "Help", label: "help" },
 	{ keys: ["j", "down"], modes: HELP, action: { type: "helpScroll", delta: 1 }, group: "Help", label: "scroll down" },
 	{ keys: ["k", "up"], modes: HELP, action: { type: "helpScroll", delta: -1 }, group: "Help", label: "scroll up" },
@@ -221,9 +222,9 @@ export const bindings: readonly Binding[] = [
 ];
 
 export const HINTS: Record<ModeKind, readonly (readonly [key: string, label: string])[]> = {
-	normal: [["v", "select"], ["a", "note"], ["tab", "list"], ["s", "send"], ["q", "quit"], ["?", "help"]],
+	normal: [["v", "select"], ["a", "note"], ["tab", "list"], ["s", "editor"], ["S", "submit"], ["q", "quit"], ["?", "help"]],
 	visual: [["a", "note"], ["o", "swap"], ["escape", "leave"], ["tab", "list"], ["?", "help"]],
-	list: [["enter", "jump"], ["e", "edit"], ["d", "delete"], ["tab", "back"], ["s", "send"], ["?", "help"]],
+	list: [["enter", "jump"], ["e", "edit"], ["d", "delete"], ["tab", "back"], ["s", "editor"], ["S", "submit"], ["?", "help"]],
 	note: [["enter", "save"], ["ctrl+j", "new line"], ["escape", "cancel"], ["ctrl+c", "quit"]],
 	search: [],
 	help: [["j", "scroll"], ["escape", "close"]],
@@ -747,7 +748,7 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 				next.notes = [...next.notes, { id: `note-${next.nextNote}`, quote: draft.quote, spans: draft.spans, source: draft.source, text }];
 				next.nextNote += 1;
 				next.mode = { kind: "normal", count: "", prefix: "" };
-				next.message = { text: `added note ${next.notes.length}; press s to send, Tab to review`, error: false };
+				next.message = { text: `added note ${next.notes.length}; s to append, S to submit, Tab to review`, error: false };
 			}
 			break;
 		}
@@ -767,7 +768,7 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			}
 			next.sending = next.notes.map((note) => note.id);
 			next.message = { text: "sending…", error: false };
-			effects.push({ type: "send", notes: next.notes.map(({ quote, text }) => ({ quote, note: text })) });
+			effects.push({ type: "send", delivery: action.delivery, notes: next.notes.map(({ quote, text }) => ({ quote, note: text })) });
 			break;
 		}
 		case "sent": {
@@ -775,13 +776,13 @@ export function reduce(model: Model, action: Action, env: Env): Transition {
 			next.notes = next.notes.filter((note) => !ids.has(note.id));
 			next.sending = undefined;
 			next.seq = action.nextSeq;
-			next.message = { text: `sent ${action.inserted} to the pi editor`, error: false };
+			next.message = { text: action.delivery === "agent" ? `submitted ${action.inserted} to pi` : `sent ${action.inserted} to the pi editor`, error: false };
 			break;
 		}
 		case "conflict": {
 			next.sending = undefined;
 			next.seq = action.expectedSeq;
-			next.message = { text: "another client sent first; your notes are kept, press s again", error: true };
+			next.message = { text: "another client sent first; your notes are kept; choose s or S again", error: true };
 			break;
 		}
 		case "rejected": {

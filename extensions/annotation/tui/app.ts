@@ -1,6 +1,6 @@
 import type * as PiTui from "@earendil-works/pi-tui";
 import type { Component, Editor, Focusable, Input, TUI } from "@earendil-works/pi-tui";
-import type { Annotation } from "../quote.ts";
+import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import { type AnnotateClient, disconnectReason, type InitialSnapshot, ProtocolError } from "./client.ts";
 import { type DiagramCls, type Doc, INDENT, itemOf, type Layout, layoutCache, locate, selectionRange, type Span, spansOf } from "./document.ts";
 import type { MdStyle } from "./highlight.ts";
@@ -188,7 +188,7 @@ export class AnnotateApp implements Component, Focusable {
 				this.input.setValue("");
 				break;
 			case "send":
-				void this.send(effect.notes);
+				void this.send(effect.notes, effect.delivery);
 				break;
 			case "exit":
 				this.stop();
@@ -197,12 +197,12 @@ export class AnnotateApp implements Component, Focusable {
 		}
 	}
 
-	private async send(notes: readonly Annotation[]): Promise<void> {
+	private async send(notes: readonly Annotation[], delivery: AnnotationDelivery): Promise<void> {
 		const ids = this.model.sending ?? [];
 		try {
-			const outcome = await this.client.send(this.model.seq, notes);
+			const outcome = await this.client.send(this.model.seq, notes, delivery);
 			if (this.stopped) return;
-			if (outcome.ok) this.dispatch({ type: "sent", ids, inserted: outcome.inserted, nextSeq: outcome.nextSeq });
+			if (outcome.ok) this.dispatch({ type: "sent", ids, delivery, inserted: outcome.inserted, nextSeq: outcome.nextSeq });
 			else if (outcome.kind === "conflict") this.dispatch({ type: "conflict", expectedSeq: outcome.expectedSeq });
 			else this.dispatch({ type: "rejected", reason: outcome.reason });
 		} catch (error) {

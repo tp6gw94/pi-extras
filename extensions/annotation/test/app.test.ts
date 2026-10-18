@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import * as lib from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import { render } from "grok-mermaid";
-import type { Annotation } from "../quote.ts";
+import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
 import { AnnotateApp } from "../tui/app.ts";
 import { type AnnotateClient, createClient, type LiveUpdate, ProtocolError, type SendOutcome } from "../tui/client.ts";
@@ -28,6 +28,7 @@ const diagramItem = (text: string): SnapshotItem => ({ id: "a1", kind: "assistan
 
 function setup(source: SnapshotItem[], options: { send?: (seq: number, items: readonly Annotation[]) => SendOutcome | Promise<SendOutcome>; rows?: number; columns?: number } = {}) {
 	const sent: { seq: number; items: Annotation[] }[] = [];
+	const deliveries: AnnotationDelivery[] = [];
 	let watcher: { resolve: (update: LiveUpdate) => void; reject: (error: unknown) => void } | undefined;
 	let exited = false;
 	const client: AnnotateClient = {
@@ -37,7 +38,8 @@ function setup(source: SnapshotItem[], options: { send?: (seq: number, items: re
 				watcher = { resolve, reject };
 				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
 			}),
-		send: async (seq, batch) => {
+		send: async (seq, batch, delivery) => {
+			deliveries.push(delivery);
 			sent.push({ seq, items: batch.map(({ quote, note }) => ({ quote, note })) });
 			return options.send?.(seq, batch) ?? { ok: true, inserted: batch.length, nextSeq: seq + 1 };
 		},
@@ -59,6 +61,7 @@ function setup(source: SnapshotItem[], options: { send?: (seq: number, items: re
 		push: (update: LiveUpdate) => watcher?.resolve(update),
 		fail: (error: unknown) => watcher?.reject(error),
 		sent,
+		deliveries,
 		exited: () => exited,
 	};
 }
@@ -82,7 +85,7 @@ describe("annotation TUI shell", () => {
 		assert.ok(t.screen().some((line) => line.includes("> holds")));
 		t.keys("why", ENTER);
 		assert.match(t.screen()[0]!, /1 note {2}● live$/);
-		assert.match(t.screen().at(-1)!, /added note 1; press s to send, Tab to review/);
+		assert.match(t.screen().at(-1)!, /added note 1; s to append, S to submit/);
 		t.keys("s");
 		await settle();
 		assert.deepEqual(t.sent, [{ seq: 1, items: [{ quote: "holds", note: "why" }] }]);
@@ -399,7 +402,7 @@ describe("annotation TUI shell", () => {
 		assert.ok(t.screen().some((line) => /^ {2}Esc q +leave visual +visual$/.test(line)), t.screen().join("\n"));
 		t.keys("j".repeat(45));
 		const scrolled = t.screen();
-		assert.ok(scrolled.some((line) => /^ {2}s +send notes +normal\/list$/.test(line)), scrolled.join("\n"));
+		assert.ok(scrolled.some((line) => /^ {2}s +append notes to editor +normal\/list$/.test(line)), scrolled.join("\n"));
 		t.keys("x");
 		assert.match(t.screen().at(-1)!, /^ NORMAL/);
 	});
@@ -508,10 +511,52 @@ describe("annotation TUI shell", () => {
 	});
 });
 
+describe("direct submission", () => {
+	for (const list of [false, true]) {
+		it(`submits every saved note from ${list ? "list" : "normal"} mode, retaining later notes`, async () => {
+			let release!: (outcome: SendOutcome) => void;
+			const t = setup(items, { send: () => new Promise<SendOutcome>((resolve) => { release = resolve; }) });
+			t.keys("a", "first", ENTER, "j", "a", "second", ENTER);
+			if (list) t.keys(TAB);
+			t.keys("S", "s", "S");
+			assert.deepEqual(t.sent, [{ seq: 1, items: [
+				{ quote: "The cache is LRU.", note: "first" },
+				{ quote: "It holds 100 entries.", note: "second" },
+			] }]);
+			assert.deepEqual(t.deliveries, ["agent"]);
+			if (list) t.keys(TAB);
+			t.keys("a", "later", ENTER);
+			release({ ok: true, inserted: 2, nextSeq: 2 });
+			await settle();
+			assert.match(t.screen().at(-1)!, /submitted 2 to pi/);
+			t.keys(TAB);
+			assert.match(t.screen()[0]!, /1 note/);
+			assert.ok(t.screen().some((line) => line.trim() === "later"));
+		});
+	}
+	for (const outcome of [
+		{ ok: false, kind: "conflict", expectedSeq: 9 },
+		{ ok: false, kind: "rejected", reason: "submission failed" },
+	] as const) {
+		it(`keeps exact notes after direct ${outcome.kind}`, async () => {
+			const t = setup(items, { send: () => outcome });
+			t.keys("a", "keep me", ENTER, "S");
+			await settle();
+			t.keys(TAB);
+			assert.match(t.screen()[0]!, /1 note/);
+			assert.ok(t.screen().some((line) => line.trim() === "keep me"));
+			t.keys("s");
+			await settle();
+			assert.deepEqual(t.deliveries, ["agent", "editor"]);
+			assert.deepEqual(t.sent[1], { seq: outcome.kind === "conflict" ? 9 : 1, items: [{ quote: "The cache is LRU.", note: "keep me" }] });
+		});
+	}
+});
+
 describe("client send outcomes", () => {
 	const reply = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
 	const clientFor = (fetchImpl: typeof fetch) => createClient({ sessionId: "s", port: 1, token: "t" }, fetchImpl);
-	const send = (fetchImpl: typeof fetch) => clientFor(fetchImpl).send(1, [{ quote: "q", note: "n" }]);
+	const send = (fetchImpl: typeof fetch) => clientFor(fetchImpl).send(1, [{ quote: "q", note: "n" }], "editor");
 
 	it("returns the inserted count on 200 and the expected seq on 409", async () => {
 		assert.deepEqual(await send(reply(200, { inserted: 1, nextSeq: 2 })), { ok: true, inserted: 1, nextSeq: 2 });

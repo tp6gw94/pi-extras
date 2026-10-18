@@ -2,9 +2,14 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-annotation is a [pi](https://github.com/earendil-works/pi) extension that lets you quote parts of the current conversation with notes and append them to the pi editor. `/annotate` starts a server for the session and prints one notice with the browser URL and the terminal attach command. pi-annotation sends nothing to the model. You edit the text in the editor and send it yourself.
+pi-annotation is a [pi](https://github.com/earendil-works/pi) extension for quoting parts of the current conversation with notes. Run `/annotate` to start a server for the session. pi prints one notice with the browser URL and the terminal attach command.
 
-pi-annotation does not block pi. You can keep working while the page or the terminal view is open, and each new message appears there when pi finishes it.
+You can send saved annotations in two ways:
+
+- The browser's **Send to pi editor** button and the terminal key `s` append them to the pi editor. You review the text and send it yourself.
+- The terminal key `S` submits them to pi directly. Your editor draft stays as it is.
+
+pi-annotation does not block pi. You can keep working while the page or the terminal view is open. Each new message appears there when pi finishes it.
 
 ## Install it as a pi package
 
@@ -60,9 +65,31 @@ Terminal: '/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' 019ee068-
 Run /annotate again to stop it.
 ```
 
-Copy the quoted command into the other terminal. The bin is at `extensions/annotation/bin/pi-annotation.ts`, and pi does not put it on your `PATH`, so use the absolute path from the notice. The bin runs TypeScript directly, so it needs Node 22.6 or later.
+Copy the full command after `Terminal:` into another terminal and run it. The bin is at `extensions/annotation/bin/pi-annotation.ts`. pi does not put the bin on your `PATH`, so always run it by the quoted absolute path from the notice. The bin runs TypeScript directly, so it needs Node 22.6 or later.
 
-The bin takes the whole session id or a unique part of it. With no argument, it attaches to the only live session, or to the only live session whose working directory is the current directory. `pi-annotation --list` lists the live sessions, and `pi-annotation --help` shows the usage.
+In this table, `pi-annotation` stands for the quoted absolute path from the notice:
+
+| Command | Result |
+| --- | --- |
+| `pi-annotation` | Attaches to the only live session, or to the only live session whose working directory is the current directory. |
+| `pi-annotation <session id part>` | Attaches to the session whose id contains that unique part. The notice prints this form with the whole id. |
+| `pi-annotation --interactive` | Selects a live session in this exact working directory. |
+| `pi-annotation --list` | Lists the live sessions. |
+| `pi-annotation --help` | Shows the usage. |
+
+To select a session in this directory, add `--interactive` to the path from the notice. Replace the example path below with that path:
+
+```sh
+'/your/pi-extras/extensions/annotation/bin/pi-annotation.ts' --interactive
+```
+
+Use the arrow keys to move, and press Enter to attach. To cancel without attaching, press Esc or Ctrl-C.
+
+`--interactive` offers only live sessions whose working directory is exactly the current directory. If one session matches, the bin attaches to it without a menu. If no session matches, the bin tells you to run `/annotate` in pi first.
+
+`--interactive` needs a TTY on both stdin and stdout.
+
+`--help` takes precedence over `--list`, and `--list` takes precedence over `--interactive`. The bin rejects any other argument combined with `--interactive`, including a session id.
 
 A browser page and a terminal view can use the same server at the same time.
 
@@ -88,13 +115,27 @@ The terminal view shows the same conversation as the browser page. Tool output i
 | `/` | Search. `n` and `N` repeat forwards and backwards. |
 | Tab | Open the notes list. In the list, `j` and `k` move, Enter jumps to the source, `e` edits, `d` deletes, and Tab, Esc, or `q` goes back. |
 | Note box (after `a` or `A`) | Enter saves. Ctrl-J, or Shift+Enter where the terminal reports it, adds a line. Esc cancels. |
-| `s` | Send every note to the pi editor |
+| `s` | Append every saved note to the pi editor |
+| `S` | Submit every saved note to pi as a new user message |
 | `?` | Show the keys |
 | `q` | Quit. If you have unsent notes, press it twice. |
 
 The keys take an optional count prefix, for example `3j` or `2}`.
 
-A note is a plain `> quote` block and the note text, the same as on the browser page. **Send** appends every note to the pi editor and does not submit it to the model. New messages arrive while the view is open, and your notes, caret, and selection stay. If the conversation moves to another branch and the message under a selection changed, the view drops the selection and shows a short notice.
+New messages arrive while the view is open. Your notes, caret, and selection stay. If the conversation moves to another branch and the message under a selection changed, the view drops the selection and shows a short notice.
+
+### Send notes with `s` or `S`
+
+A note is a plain `> quote` block and the note text, the same as on the browser page. Both keys send every note saved when you press the key.
+
+- To review the notes before pi sees them, press `s`. The view appends the notes to the pi editor and does not start a model turn.
+- To submit the notes directly to pi, press `S`. pi receives only the annotation text as a new user message, and your editor draft stays as it is. If pi is busy, the message waits as a `followUp` and does not steer the current work.
+
+While a send is in progress, the view ignores another `s` or `S`. If another client sends first, the view keeps your notes and asks you to press `s` or `S` again.
+
+After `S`, the view clears the sent notes when the synchronous SDK call succeeds. That success does not confirm that pi later schedules or completes the turn.
+
+A transport error or a synchronous submission failure keeps the notes. If the response is lost, the notes can stay in the view after pi received them. Check pi before you send them again.
 
 ### Read markdown with its syntax
 
@@ -160,7 +201,7 @@ The page also keeps the token in the tab's `sessionStorage`, keyed by session id
 
 The server stops accepting the token after `/annotate` stops and restarts it, or after pi restarts. When that happens, the page removes the token from `sessionStorage`, stops, and tells you to open the new URL that `/annotate` printed.
 
-Treat the URL like a password. Anyone who can reach the port with the token can put text into your editor. They cannot send it to the model.
+Treat the URL like a password. Anyone who can reach the port with the token can put text into your editor or submit arbitrary prompts to pi. These prompts start an agent turn that may run tools, including shell commands, without your confirmation.
 
 ## Use it over SSH
 
@@ -189,8 +230,9 @@ npm test
 - Markdown: each construct, inert XSS payloads, and code-block quoting.
 - The terminal view: the document model and the reducer, the app shell against the real pi-tui library with a fake terminal, the session registry, and the `/annotate` command.
 
-The end-to-end scripts run a real pi with a fake model. Each one needs `PI_BIN` set to the pi binary.
+The end-to-end scripts run a real pi with a fake model. `PI_BIN` is the directory that contains the `pi` executable, not the executable itself. The shell scripts require `PI_BIN`. `direct-send.py` uses the directory of `pi` on your `PATH` when `PI_BIN` is not set.
 
+- `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` checks `s`, `S`, busy follow-up ordering, interactive selection, cancellation, and terminal restoration. It creates an isolated home, project, registry, local provider, and tmux socket. It keeps the evidence in a new directory under the `--evidence` directory, or under `EVIDENCE_DIR`.
 - `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` under tmux. It checks the editor, live updates, `/tree`, stopping and restarting with `/annotate`, the page after the server closes, and session switches.
 - `extensions/annotation/test/e2e/herdr-tui.sh` runs pi and the bin in two herdr panes. It checks the note flow, live replies, quitting, and stopping. It also needs `HERDR_ENV=1`, so run it from inside herdr.
 - `extensions/annotation/test/e2e/tmux-markdown.sh` runs pi with a markdown reply and drives `extensions/annotation/test/e2e/markdown.mjs`. The script checks rendering, the diagram iframes, quoting, live updates, the timeout fallback, CSP violations, and network requests. It also needs `PLAYWRIGHT_CORE` and `CHROME_BIN`.

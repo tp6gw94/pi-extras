@@ -3,7 +3,7 @@ import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import type { Annotation } from "./quote.ts";
+import type { Annotation, AnnotationDelivery } from "./quote.ts";
 import type { SnapshotItem } from "./snapshot.ts";
 
 export const TOKEN_HEADER = "x-annotate-token";
@@ -34,7 +34,7 @@ export interface AnnotateServerOptions {
 	sessionId: string;
 	items: SnapshotItem[];
 	isCurrent(): boolean;
-	onSend(items: Annotation[], seq: number): number;
+	onSend(items: Annotation[], seq: number, delivery: AnnotationDelivery): number;
 	onClose?(reason: CloseReason): void;
 	port?: number;
 	longPollMs?: number;
@@ -149,7 +149,7 @@ export function splitTarget(target: string): { path: string; parts: string[]; qu
 	return { path, parts: path.split("/").filter((part) => part !== ""), query: new URLSearchParams(at < 0 ? "" : target.slice(at + 1)) };
 }
 
-export function parseSend(body: unknown): { seq: number; items: Annotation[] } | string {
+export function parseSend(body: unknown): { seq: number; items: Annotation[]; delivery: AnnotationDelivery } | string {
 	const seq = (body as { seq?: unknown } | null)?.seq;
 	if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 1) return "seq must be a positive integer";
 	const items = (body as { items?: unknown } | null)?.items;
@@ -163,7 +163,9 @@ export function parseSend(body: unknown): { seq: number; items: Annotation[] } |
 		if (typeof note !== "string") return "note must be a string";
 		out.push({ quote, note });
 	}
-	return { seq, items: out };
+	const delivery = (body as { delivery?: unknown }).delivery;
+	if (delivery !== undefined && delivery !== "editor" && delivery !== "agent") return 'delivery must be "editor" or "agent"';
+	return { seq, items: out, delivery: delivery ?? "editor" };
 }
 
 function isJson(req: IncomingMessage): boolean {
@@ -331,7 +333,7 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			if (parsed.seq !== lastSeq + 1) return sendJson(res, 409, { error: `expected seq ${lastSeq + 1}`, expectedSeq: lastSeq + 1 });
 			let inserted: number;
 			try {
-				inserted = options.onSend(parsed.items, parsed.seq);
+				inserted = options.onSend(parsed.items, parsed.seq, parsed.delivery);
 			} catch (error) {
 				if (error instanceof SessionSwitchedError) return sendJson(res, 410, { error: SESSION_SWITCHED });
 				return sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });

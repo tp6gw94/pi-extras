@@ -1,5 +1,7 @@
 import { stripControls } from "../ux/core/strip-controls.ts";
 
+export type AnnotationDelivery = "editor" | "agent";
+
 export interface Annotation {
 	quote: string;
 	note: string;
