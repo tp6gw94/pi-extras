@@ -30,12 +30,25 @@ export interface Update {
 	items: SnapshotItem[];
 }
 
-export interface AnnotateServerOptions {
+export interface SessionBinding {
 	sessionId: string;
 	items: SnapshotItem[];
 	isCurrent(): boolean;
 	onSend(items: Annotation[], seq: number, delivery: AnnotationDelivery): number;
 	onClose?(reason: CloseReason): void;
+}
+
+type Phase = "bound" | "parked" | "closed";
+
+interface Current {
+	binding: SessionBinding;
+	token: string;
+	items: SnapshotItem[];
+	updates: Update[];
+	lastSeq: number;
+}
+
+export interface AnnotateServerOptions extends SessionBinding {
 	port?: number;
 	longPollMs?: number;
 	maxLongPolls?: number;
@@ -51,6 +64,9 @@ export interface AnnotateServer {
 	readonly version: number;
 	update(items: SnapshotItem[]): Update | undefined;
 	close(reason: CloseReason): void;
+	park(): void;
+	unpark(): void;
+	rebind(binding: SessionBinding): void;
 }
 
 const PAGE = new URL("./page.html", import.meta.url);
@@ -95,6 +111,22 @@ function sameToken(given: string | undefined, token: string): boolean {
 	const a = Buffer.from(given);
 	const b = Buffer.from(token);
 	return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export function classify(
+	phase: Exclude<Phase, "closed">,
+	current: { sessionId: string; token: string; isCurrent(): boolean },
+	retired: ReadonlyMap<string, string>,
+	pathSession: string,
+	token: string | undefined,
+): "current" | "hold" | "successor" | "switched" | "forbidden" {
+	if (pathSession === current.sessionId) {
+		if (!sameToken(token, current.token)) return "forbidden";
+		if (phase === "parked") return "hold";
+		return current.isCurrent() ? "current" : "switched";
+	}
+	if (token !== undefined && retired.get(token) === pathSession) return phase === "parked" ? "hold" : "successor";
+	return "switched";
 }
 
 function baseHeaders(): Record<string, string> {
@@ -194,43 +226,90 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 	const template = pageTemplate();
 	const framePage = readFileSync(FRAME_PAGE, "utf8");
 	const frameScript = readFileSync(FRAME_SCRIPT, "utf8");
-	const token = randomBytes(24).toString("base64url");
-	const sessionId = options.sessionId;
 	const longPollMs = options.longPollMs ?? LONG_POLL_MS;
 	const maxLongPolls = options.maxLongPolls ?? MAX_LONG_POLLS;
 	const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY_BYTES;
-	let items = [...options.items];
+	const fresh = (binding: SessionBinding): Current => ({
+		binding,
+		token: randomBytes(24).toString("base64url"),
+		items: [...binding.items],
+		updates: [],
+		lastSeq: 0,
+	});
+	let current = fresh(options);
 	let version = 1;
-	let updates: Update[] = [];
-	let lastSeq = 0;
-	let closed = false;
+	let phase: Phase = "bound";
 	let port = 0;
+	const retired = new Map<string, string>();
 	const sockets = new Set<Socket>();
 	const waiters = new Set<() => void>();
+	const held = new Set<() => void>();
 
 	const close = (reason: CloseReason) => {
-		if (closed) return;
-		closed = true;
-		for (const wake of [...waiters]) wake();
+		if (phase === "closed") return;
+		phase = "closed";
+		for (const wake of [...waiters, ...held]) wake();
 		server.close();
 		for (const socket of sockets) socket.destroy();
-		options.onClose?.(reason);
+		current.binding.onClose?.(reason);
+	};
+
+	const park = () => {
+		if (phase === "bound") phase = "parked";
+	};
+
+	const unpark = () => {
+		if (phase !== "parked") return;
+		phase = "bound";
+		for (const wake of [...held]) wake();
+	};
+
+	const rebind = (binding: SessionBinding) => {
+		if (phase !== "parked") return;
+		retired.set(current.token, current.binding.sessionId);
+		current = fresh(binding);
+		version += 1;
+		phase = "bound";
+		for (const wake of [...waiters, ...held]) wake();
+	};
+
+	const hold = (res: ServerResponse, resume: () => void) => {
+		const cancel = () => held.delete(wake);
+		const wake = guarded(res, () => {
+			held.delete(wake);
+			res.off("close", cancel);
+			resume();
+		});
+		held.add(wake);
+		res.once("close", cancel);
+	};
+
+	const withCurrent = (req: IncomingMessage, res: ServerResponse, pathSession: string, token: string | undefined, proceed: () => void): void => {
+		if (phase === "closed") return;
+		const decision = classify(phase, { sessionId: current.binding.sessionId, token: current.token, isCurrent: () => current.binding.isCurrent() }, retired, pathSession, token);
+		if (decision === "current") return proceed();
+		if (decision === "hold") return hold(res, () => withCurrent(req, res, pathSession, token, proceed));
+		req.resume();
+		if (decision === "forbidden") return sendJson(res, 403, { error: "missing or wrong X-Annotate-Token" });
+		if (decision === "successor") return sendJson(res, 410, { error: SESSION_SWITCHED, successor: { sessionId: current.binding.sessionId, token: current.token } });
+		sendJson(res, 410, { error: SESSION_SWITCHED });
 	};
 
 	const update = (next: SnapshotItem[]): Update | undefined => {
-		if (closed) return undefined;
-		const diff = diffItems(items, next);
+		if (phase === "closed") return undefined;
+		const diff = diffItems(current.items, next);
 		if (!diff) return undefined;
-		items = [...next];
+		current.items = [...next];
 		version += 1;
 		const entry: Update = { version, reset: diff.reset, items: diff.items };
-		updates.push(entry);
-		if (updates.length > MAX_UPDATES) updates = updates.slice(-MAX_UPDATES);
+		current.updates.push(entry);
+		if (current.updates.length > MAX_UPDATES) current.updates = current.updates.slice(-MAX_UPDATES);
 		for (const wake of [...waiters]) wake();
 		return entry;
 	};
 
 	const changesAfter = (after: number): Update => {
+		const { items, updates } = current;
 		const pending = updates.filter((entry) => entry.version > after);
 		const known = after >= 1 && after <= version && (after === version || (updates.length > 0 && updates[0]!.version <= after + 1));
 		if (!known || pending.some((entry) => entry.reset)) return { version, reset: true, items };
@@ -313,14 +392,13 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		}));
 	};
 
-	const handleSend = (req: IncomingMessage, res: ServerResponse) => {
+	const handleSend = (req: IncomingMessage, res: ServerResponse, pathSession: string, token: string | undefined) => {
 		if (!isJson(req)) {
 			sendJson(res, 415, { error: "Content-Type must be application/json" });
 			req.resume();
 			return;
 		}
-		readBody(req, res, (text) => {
-			if (closed) return sendJson(res, 410, { error: SESSION_SWITCHED });
+		readBody(req, res, (text) => withCurrent(req, res, pathSession, token, () => {
 			let body: unknown;
 			try {
 				body = JSON.parse(text);
@@ -329,21 +407,20 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			}
 			const parsed = parseSend(body);
 			if (typeof parsed === "string") return sendJson(res, 400, { error: parsed });
-			if (!options.isCurrent()) return sendJson(res, 410, { error: SESSION_SWITCHED });
-			if (parsed.seq !== lastSeq + 1) return sendJson(res, 409, { error: `expected seq ${lastSeq + 1}`, expectedSeq: lastSeq + 1 });
+			if (parsed.seq !== current.lastSeq + 1) return sendJson(res, 409, { error: `expected seq ${current.lastSeq + 1}`, expectedSeq: current.lastSeq + 1 });
 			let inserted: number;
 			try {
-				inserted = options.onSend(parsed.items, parsed.seq, parsed.delivery);
+				inserted = current.binding.onSend(parsed.items, parsed.seq, parsed.delivery);
 			} catch (error) {
 				if (error instanceof SessionSwitchedError) return sendJson(res, 410, { error: SESSION_SWITCHED });
 				return sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
 			}
-			lastSeq = parsed.seq;
-			sendJson(res, 200, { ok: true, inserted, seq: parsed.seq, nextSeq: lastSeq + 1 });
-		});
+			current.lastSeq = parsed.seq;
+			sendJson(res, 200, { ok: true, inserted, seq: parsed.seq, nextSeq: current.lastSeq + 1 });
+		}));
 	};
 
-	const handleEvents = (query: URLSearchParams, res: ServerResponse) => {
+	const handleEvents = (query: URLSearchParams, req: IncomingMessage, res: ServerResponse, pathSession: string, token: string | undefined) => {
 		const after = Number(query.get("after") ?? Number.NaN);
 		if (!Number.isInteger(after) || after < 0) return sendJson(res, 400, { error: "after must be a version number" });
 		if (after !== version) return sendJson(res, 200, changesAfter(after));
@@ -352,9 +429,7 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		const finish = guarded(res, () => {
 			waiters.delete(finish);
 			if (timer) clearTimeout(timer);
-			if (closed) return;
-			if (!options.isCurrent()) return sendJson(res, 410, { error: SESSION_SWITCHED });
-			sendJson(res, 200, changesAfter(after));
+			withCurrent(req, res, pathSession, token, () => sendJson(res, 200, changesAfter(after)));
 		});
 		waiters.add(finish);
 		timer = setTimeout(finish, longPollMs);
@@ -364,7 +439,7 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 	};
 
 	const route = (req: IncomingMessage, res: ServerResponse) => {
-		if (closed) {
+		if (phase === "closed") {
 			res.writeHead(503, { ...baseHeaders(), Connection: "close" });
 			res.end();
 			return;
@@ -395,7 +470,9 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 		}
 		if (parts.length === 1) {
 			if (req.method !== "GET") return sendJson(res, 405, { error: "method not allowed" });
-			if (pathSession !== sessionId || !options.isCurrent()) return switchedPage(res);
+			if (pathSession !== current.binding.sessionId) return switchedPage(res);
+			if (phase === "parked") return hold(res, () => route(req, res));
+			if (!current.binding.isCurrent()) return switchedPage(res);
 			return servePage(res);
 		}
 		const endpoint = parts[2];
@@ -404,32 +481,25 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			req.resume();
 			return;
 		}
-		if (pathSession !== sessionId || !options.isCurrent()) {
-			sendJson(res, 410, { error: SESSION_SWITCHED });
-			req.resume();
-			return;
-		}
 		const given = req.headers[TOKEN_HEADER];
-		if (!sameToken(Array.isArray(given) ? given[0] : given, token)) {
-			sendJson(res, 403, { error: "missing or wrong X-Annotate-Token" });
-			req.resume();
-			return;
-		}
-		if (endpoint === "send") {
-			if (req.method !== "POST") {
+		const token = Array.isArray(given) ? given[0] : given;
+		withCurrent(req, res, pathSession, token, () => {
+			if (endpoint === "send") {
+				if (req.method !== "POST") {
+					sendJson(res, 405, { error: "method not allowed" });
+					req.resume();
+					return;
+				}
+				return handleSend(req, res, pathSession, token);
+			}
+			if (req.method !== "GET") {
 				sendJson(res, 405, { error: "method not allowed" });
 				req.resume();
 				return;
 			}
-			return handleSend(req, res);
-		}
-		if (req.method !== "GET") {
-			sendJson(res, 405, { error: "method not allowed" });
-			req.resume();
-			return;
-		}
-		if (endpoint === "snapshot") return sendJson(res, 200, { sessionId, version, nextSeq: lastSeq + 1, items });
-		return handleEvents(query, res);
+			if (endpoint === "snapshot") return sendJson(res, 200, { sessionId: current.binding.sessionId, version, nextSeq: current.lastSeq + 1, items: current.items });
+			return handleEvents(query, req, res, pathSession, token);
+		});
 	};
 
 	const server = createServer((req, res) => {
@@ -455,17 +525,26 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 	port = (server.address() as AddressInfo).port;
 
 	return {
-		url: `http://127.0.0.1:${port}/${encodeURIComponent(sessionId)}#t=${token}`,
+		get url() {
+			return `http://127.0.0.1:${port}/${encodeURIComponent(current.binding.sessionId)}#t=${current.token}`;
+		},
 		port,
-		token,
-		sessionId,
+		get token() {
+			return current.token;
+		},
+		get sessionId() {
+			return current.binding.sessionId;
+		},
 		get closed() {
-			return closed;
+			return phase === "closed";
 		},
 		get version() {
 			return version;
 		},
 		update,
 		close,
+		park,
+		unpark,
+		rebind,
 	};
 }
