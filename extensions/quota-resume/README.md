@@ -1,34 +1,47 @@
 # quota-resume
 
-當訂閱配額耗盡，而且伺服器明確提供未來重設時間時，在目前工作階段等待後自動送出一次：
+[繁體中文](README.zh-TW.md)
+
+When a subscription quota runs out and the server gives a future reset time, `quota-resume` waits in the current session. After the reset, the extension sends this fixed message once:
 
 ```text
 Continue the unfinished task.
 ```
 
-原提示與已完成的工具結果留在原對話。不重送原提示，不切換模型或付費備援，不查詢額外用量端點。
+The original prompt and completed tool results stay in the conversation. The extension does not resend the prompt, change models, use a paid fallback, or query usage endpoints.
 
-## 支援範圍
+## Supported providers
 
-- Claude 直連訂閱。辨識 `rate_limit_error` 與拒絕使用的 unified subscription 標頭。一般 API token/request 限流不算訂閱配額。
-- OpenCode Go。辨識 `GoUsageLimitError` 與 `Retry-After`。
-- OpenAI Codex。辨識 HTTP 與原始串流事件中的 `usage_limit_reached`，讀取明確的重設時間或剩餘秒數。
+- Direct Claude subscriptions use `anthropic`. The extension recognizes `rate_limit_error` only when the unified subscription quota headers report `rejected` or `rate_limited`. Claude CLI bridges are not supported.
+- OpenCode Go uses `opencode-go`. The extension recognizes `GoUsageLimitError` and reads `Retry-After`.
+- OpenAI Codex uses `openai-codex`. The extension recognizes `usage_limit_reached` in HTTP errors and raw stream events. It reads an explicit reset time or the remaining seconds.
 
-保留原生 provider 驗證、模型覆寫、請求選項及 OpenCode session header。只有主代理最後失敗的回合可建立待恢復紀錄；巢狀呼叫不會自行觸發。
+A generic HTTP 429, API token limit, or request rate limit is not enough to identify an exhausted subscription quota.
 
-缺少有效重設時間，或新收到的重設時間已過期時，顯示通知但不自動續跑。原本有效的待恢復紀錄若於重開工作階段時已到期，仍可送出一次。
+The extension preserves each provider's authentication, model overrides, and request options, including OpenCode's `x-opencode-session` header. Only the main agent's final failed turn creates a waiting record. Nested calls do not create records.
 
-## 取消與持久化
+## Waiting and resuming
 
-使用 `/quota-resume cancel` 取消。TUI 按 Escape 也可取消，按鍵仍傳給 Pi。新輸入、使用者 bash、自訂訊息啟動的新工作、執行中止、模型變更與工作階段導覽都會取消。
+If the response has no valid future reset time, the extension shows a notification without resuming. When a session reopens after a saved reset time, the extension can still resume once from a previously valid waiting record.
 
-退出或重新載入會保留待恢復紀錄。再次開啟同一工作階段與分支時恢復等待。沒有離線 daemon。
+## Cancellation and saved state
 
-RPC 閒置時的通用 `abort` 沒有公開 extension 事件，無法用它取消等待。RPC 請送出 `/quota-resume cancel` 或新輸入。此限制沒有用私有攔截繞過。
+`/quota-resume cancel` cancels the wait. In the TUI, Escape also cancels the wait and still passes through to Pi. These actions also cancel the wait:
 
-每筆恢復紀錄最多派送一次。先持久化 consumed，再送出訊息；若程序恰好在兩者之間崩潰，該次續跑可能遺失，不保證跨程序崩潰的 exactly-once delivery。
+- New input.
+- A user bash command.
+- A new task started by a custom message.
+- An aborted run.
+- A model change.
+- A session switch, fork, or session tree navigation.
 
-## 本機驗證
+Restoring the original model when reopening a session does not cancel the wait. Quitting or reloading Pi preserves the waiting record. Reopening the same session and branch restores the wait. The extension cannot resume while Pi is closed.
+
+An idle RPC `abort` does not trigger a public extension event, so it cannot cancel the wait. RPC clients can cancel with `/quota-resume cancel` or new input. The extension does not use private APIs or change Pi core to bypass this limit.
+
+The extension sends at most one resume message per waiting record. It marks the record as `consumed` and saves it in the session before sending the message. If the process crashes after saving the record but before sending the message, that resume is lost.
+
+## Local verification
 
 ```sh
 npm run typecheck
@@ -36,6 +49,8 @@ node --test --test-timeout=60000 extensions/quota-resume/test/*.test.mjs
 node extensions/quota-resume/test/runtime-fixture.mjs 20
 ```
 
-最後一個命令啟動只監聽 loopback 的 fixture，輸出暫存目錄、`launch.sh` 與紀錄路徑。於另一個終端機執行輸出的 launch 命令，送出 `Finish the fixture task.`。等待通知後按 Escape，或不取消以觀察續跑。重開相同 launch 命令可檢查持久化。所有設定、假驗證資料與 session 均放在 OS 暫存目錄，不使用個人 auth。
+The third command starts a local test server that listens only on `127.0.0.1`. It prints a temporary directory, a `launch.sh` command, and log paths. `launch.sh` starts Pi with temporary settings. The test prompt is `Finish the fixture task.`. The same launch command reopens the same session to check whether the waiting record persists. Settings, fake credentials, and sessions stay in the system temporary directory. The fixture does not use personal credentials.
 
-SDK 與 spawned RPC 測試使用真實 Pi 1.3.0 搭配本機 HTTP fixture，另有原生 Codex 連接本機 WebSocket server 的測試。終端按鍵合約測試不等於實際 TUI 驗證。Claude unified 標頭不是穩定公開 API；fixture 通過不代表真實帳戶已驗證。OpenCode 線上帳戶驗證仍受過期金鑰阻擋，未修改憑證。
+The SDK and RPC subprocess tests use Pi 1.3.0 with a local HTTP test server. The native Codex tests connect to a local WebSocket server. Terminal input contract tests do not replace tests in a real TUI.
+
+Claude's unified headers are not a stable public API. Passing local tests does not verify behavior when a real subscription quota runs out.

@@ -14,7 +14,7 @@ pi-extras 需要 `@earendil-works/pi-coding-agent` 1.3.0 以上與 Node.js 22。
 | `annotation` | 引用對話段落並加上筆記，再附加到編輯器。`/annotate` 啟動伺服器，可從瀏覽器頁面或終端機檢視引用。再執行一次 `/annotate` 就會停止。 | [README](extensions/annotation/README.zh-TW.md) |
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
-| `quota-resume` | 訂閱配額有明確重設時間時，在原 session 自動續跑一次；支援持久化等待與取消。 | [README](extensions/quota-resume/README.md) |
+| `quota-resume` | 訂閱配額有明確重設時間時，在原 session 自動續跑一次；支援持久化等待與取消。 | [README](extensions/quota-resume/README.zh-TW.md) |
 | `ralph` | 用 `/ralph` 對同一個任務跑有上限的多輪全新 pi session，用 `/ralph-stop` 停止。 | |
 | `resume-handoff` | 從既有交接檔案開新 session，或用 `/resume-handoff auto` 請目前 agent 撰寫交接檔案。可選擇在 context 用量達到門檻時自動交接。 | |
 | `rpc-subagents` | 以 `pi --mode rpc` 子程序執行子代理任務與排程，用 `/rpc-subagents` 列出它們。child 會載入你設定中的 extension（排除 `rpc-subagents`、`annotation`、`ux`、`hooks`），所以你的 provider 在 child 裡也能用。資料與 `config.json` 放在 `~/.pi/agent/rpc-subagents/`。 | [README](extensions/rpc-subagents/README.md) |
