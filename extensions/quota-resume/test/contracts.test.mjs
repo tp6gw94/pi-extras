@@ -66,7 +66,7 @@ for (const reset of [null, "0", "invalid"]) test(`unusable reset ${reset} visibl
   t.mock.timers.tick(100000);
   assert.deepEqual(h.sent, []);
   assert.equal(h.entries.some(entry => entry.data?.state === "pending"), false);
-  assert.match(h.notices.at(-1), /不會自動續跑/);
+  assert.match(h.notices.at(-1), /will not resume automatically/);
 });
 
 test("new stale Codex server reset is visible and never dispatches", async t => {
@@ -74,13 +74,13 @@ test("new stale Codex server reset is visible and never dispatches", async t => 
   await h.fail({ provider: "openai-codex", type: "usage_limit_reached", reset: String((Date.now() - 1000) / 1000) });
   t.mock.timers.tick(100000);
   assert.deepEqual(h.sent, []);
-  assert.match(h.notices.at(-1), /不會自動續跑/);
+  assert.match(h.notices.at(-1), /will not resume automatically/);
 });
 
 test("Claude missing reset is visible while ordinary API rate limits remain excluded", async t => {
   const h = harness(t);
   await h.fail({ provider: "anthropic", type: "rate_limit_error", headers: { "anthropic-ratelimit-unified-status": "rate_limited" } });
-  assert.match(h.notices.at(-1), /不會自動續跑/);
+  assert.match(h.notices.at(-1), /will not resume automatically/);
   await h.fail({ provider: "anthropic", type: "rate_limit_error", headers: { "anthropic-ratelimit-tokens-reset": "2099-01-01T00:00:00Z" } });
   t.mock.timers.tick(100000);
   assert.deepEqual(h.sent, []);

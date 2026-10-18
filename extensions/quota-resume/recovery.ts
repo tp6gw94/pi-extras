@@ -85,7 +85,7 @@ export class RecoveryActor {
 			const resetAt = quota.resetAt;
 			if (resetAt === undefined || resetAt <= quota.receivedAt) {
 				ctx.ui.notify(
-					"配額已用盡，但伺服器未提供可用的未來重設時間；不會自動續跑。",
+					"Quota exhausted, but the server provided no valid future reset time. The task will not resume automatically.",
 					"warning",
 				);
 			} else {
@@ -97,7 +97,7 @@ export class RecoveryActor {
 					this.pending = { state: "pending", id, sessionId, origin: candidate.origin, provider, model, resetAt };
 					this.persist(this.pending);
 					ctx.ui.notify(
-						`配額重設後將自動續跑：${new Date(resetAt).toLocaleString()}。可用 /quota-resume cancel 取消。`,
+						`The task will resume after the quota resets at ${new Date(resetAt).toLocaleString()}. Use /quota-resume cancel to cancel.`,
 						"info",
 					);
 				}
@@ -155,7 +155,7 @@ export class RecoveryActor {
 		if (!pending || !ctx) return;
 		if (!this.hasCurrentContext(ctx, pending)) return this.cancel();
 
-		ctx.ui.setStatus(entryType, `配額等待至 ${new Date(pending.resetAt).toLocaleString()}`);
+		ctx.ui.setStatus(entryType, `Waiting for quota reset at ${new Date(pending.resetAt).toLocaleString()}`);
 		if (!ctx.isIdle()) return;
 		if (ctx.hasPendingMessages()) return;
 

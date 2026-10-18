@@ -39,11 +39,11 @@ export default function quotaResume(pi: ExtensionAPI): void {
 		recovery.release();
 	});
 	pi.registerCommand("quota-resume", {
-		description: "取消配額等待後的自動續跑",
+		description: "Cancel automatic resume after a quota reset",
 		handler: async (args, ctx) => {
-			if (args.trim() !== "cancel") return ctx.ui.notify("使用 /quota-resume cancel 取消自動續跑。", "info");
+			if (args.trim() !== "cancel") return ctx.ui.notify("Use /quota-resume cancel to cancel automatic resume.", "info");
 			recovery.cancel();
-			ctx.ui.notify("已取消配額自動續跑。", "info");
+			ctx.ui.notify("Automatic resume cancelled.", "info");
 		},
 	});
 }
