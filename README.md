@@ -15,7 +15,7 @@ pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `ralph` | Runs a bounded loop of fresh pi sessions on one task with `/ralph`, and stops with `/ralph-stop`. | |
-| `resume-handoff` | Starts a new session from an existing handoff, or asks the current agent to write one with `/resume-handoff auto`. | |
+| `resume-handoff` | Starts a new session from an existing handoff, or asks the current agent to write one with `/resume-handoff auto`. Optionally hands off automatically at a context usage threshold. | |
 | `rpc-subagents` | Runs subagent tasks and schedules as `pi --mode rpc` child processes, with `/rpc-subagents` to list them. Children load your own extensions from settings (minus `rpc-subagents`, `annotation`, `ux` and `hooks`), so your providers work there too. Keeps its data and `config.json` in `~/.pi/agent/rpc-subagents/`. | [README](extensions/rpc-subagents/README.md) |
 | `skill-name-normalizer` | Gives skills in `~/.pi/agent/skills` and `~/.agents/skills` a valid name when their own name is not one. | |
 | `ux` | Pins your last prompt above the editor. | [README](extensions/ux/README.md) |
@@ -29,6 +29,14 @@ Each extension lives in `extensions/<name>/`, with its tests and any skills it s
 `/resume-handoff "./handoff reviewed.md"` uses an existing file. `/resume-handoff` searches the current conversation for an existing handoff and offers a choice when several files qualify. Use `"auto"` or `./auto` for a file literally named `auto`.
 
 All modes send an English bootstrap that instructs the new agent to read the exact handoff path as its first action, then continue the work. Generated files remain in the temporary directory after success or failure. Remove them when no session needs them.
+
+### Automatic handoff by context usage
+
+Automatic handoff is off by default. To enable it, create `<agentDir>/resume-handoff/config.json` with `{"enabled": true, "softThresholdPercent": 75, "hardThresholdPercent": 88}`. `agentDir` is pi's agent directory, `~/.pi/agent` unless `PI_CODING_AGENT_DIR` is set. The percentages default to 75 and 88 when omitted. An invalid config disables the feature and shows a warning at session start. The extension reads the config at session start, so changes apply to the next session or to `/reload`. Automatic handoff works in the TUI only.
+
+When a turn completes, the extension reads context usage. At or above the hard threshold, it aborts the run once. Otherwise, at or above the soft threshold, it sends one steer message per run that asks the model to finish the current step and end its turn. When the run settles with usage still at or above the soft threshold, the extension runs `/resume-handoff auto`, which generates the handoff and starts the new session. A run you aborted with Escape never triggers a handoff. The handoff generation run itself is never interrupted.
+
+The thresholds are a budget for the final turn plus handoff generation, not a guarantee. Lower them on small context windows. The extension does not change pi's own compaction. To hand off instead of compacting, set `compaction.enabled` to `false` in pi settings. An overflow then ends the run with an error. Aborting restores queued messages to the editor.
 
 ## Install
 
