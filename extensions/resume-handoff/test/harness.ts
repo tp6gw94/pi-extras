@@ -70,12 +70,13 @@ export function createHarness(options: HarnessOptions = {}) {
 		selectCalls: [] as { title: string; options: string[] }[],
 		handlers: new Map<string, ((event: any, ctx: any) => void)[]>(),
 		components: [] as any[],
-		command: undefined as
-			| {
-					handler: (args: string, ctx: any) => Promise<void>;
-					getArgumentCompletions?: (argumentPrefix: string) => any;
-			  }
-			| undefined,
+		commands: new Map<
+			string,
+			{
+				handler: (args: string, ctx: any) => Promise<void>;
+				getArgumentCompletions?: (argumentPrefix: string) => any;
+			}
+		>(),
 	};
 	const guard = () => assert.equal(state.replaced, false, "stale context used");
 	const ui = {
@@ -198,10 +199,12 @@ export function createHarness(options: HarnessOptions = {}) {
 		},
 		sendUserMessage(text: string, promptOptions: any) {
 			state.userMessages.push({ text, options: promptOptions });
-			if (text === "/resume-handoff auto" && promptOptions?.expandPromptTemplates === true) {
+			const [name, ...rest] = text.slice(1).split(" ");
+			const command = state.commands.get(name);
+			if (text.startsWith("/") && command && promptOptions?.expandPromptTemplates === true) {
 				const dispatch = () => {
 					state.settledDispatchOrder.push("dispatched");
-					state.commandRuns.push(state.command!.handler("auto", ctx));
+					state.commandRuns.push(command.handler(rest.join(" "), ctx));
 				};
 				if (settledQueue) {
 					state.settledDispatchOrder.push("queued");
@@ -209,8 +212,8 @@ export function createHarness(options: HarnessOptions = {}) {
 				} else dispatch();
 			}
 		},
-		registerCommand(_name: string, definition: any) {
-			state.command = definition;
+		registerCommand(name: string, definition: any) {
+			state.commands.set(name, definition);
 		},
 		on(event: string, handler: any) {
 			const list = state.handlers.get(event) ?? [];
@@ -226,6 +229,8 @@ export function createHarness(options: HarnessOptions = {}) {
 		},
 	};
 	let settledQueue: (() => void)[] | undefined;
+	let holdSettledDispatch = false;
+	const heldDispatches: (() => void)[] = [];
 	async function fire(event: string, payload: any = {}, context = ctx) {
 		if (event === "turn_end") payload = { outcome: "completed", ...payload };
 		if (event === "agent_settled") settledQueue = [];
@@ -236,7 +241,8 @@ export function createHarness(options: HarnessOptions = {}) {
 			const queue = settledQueue!;
 			settledQueue = undefined;
 			if (queue.length) state.settledDispatchOrder.push("handlers-done");
-			for (const dispatch of queue) dispatch();
+			if (holdSettledDispatch) heldDispatches.push(...queue);
+			else for (const dispatch of queue) dispatch();
 		}
 	}
 	async function startSession(context = ctx, reason = "startup") {
@@ -270,12 +276,22 @@ export function createHarness(options: HarnessOptions = {}) {
 		},
 		run: async (args: string) => {
 			try {
-				return await state.command!.handler(args, ctx);
+				return await state.commands.get("resume-handoff")!.handler(args, ctx);
 			} finally {
 				cleanup();
 			}
 		},
 		fire,
+		holdSettledDispatch: () => {
+			holdSettledDispatch = true;
+		},
+		releaseSettledDispatch: () => {
+			holdSettledDispatch = false;
+
+			for (const dispatch of heldDispatches.splice(0)) {
+				dispatch();
+			}
+		},
 		startSession,
 		handlerCount: () => totalHandlers() - baseline,
 		permanentHandlerCount: () => baseline,
