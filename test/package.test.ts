@@ -24,12 +24,13 @@ function headingLevels(text: string): number[] {
 }
 
 describe("package layout", () => {
-	it("has the nine extensions, each with an index.ts", () => {
+	it("has the ten extensions, each with an index.ts", () => {
 		assert.deepEqual(extensions, [
 			"annotation",
 			"ego-browser",
 			"hooks",
 			"inline-skills",
+			"quota-resume",
 			"ralph",
 			"resume-handoff",
 			"rpc-subagents",

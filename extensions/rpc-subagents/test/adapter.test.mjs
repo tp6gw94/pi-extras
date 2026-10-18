@@ -86,6 +86,26 @@ test("adapter factory registers unique codemode tools with directly accessible s
   assert.deepEqual(registry.events, ["resources_discover", "session_start", "agent_start", "agent_settled", "session_shutdown"]);
 });
 
+test("parent instructions point to the discovered skill and readable branch operations", async () => {
+  const registry = load({});
+  const instructions = registry.tools.find(tool => tool.name === "rpc_subagents_run").namespace.instructions;
+  const [skill] = registry.handlers.get("resources_discover")().skillPaths;
+  const operations = join(dirname(skill), "references", "operations.md");
+  for (const path of [skill, operations]) {
+    assert.ok(instructions.includes(`\`${path}\``), path);
+    await readFile(path, "utf8");
+  }
+});
+
+test("parent instructions delegate exhausted subscription work with a different model instead of waiting", () => {
+  const run = load({}).tools.find(tool => tool.name === "rpc_subagents_run");
+  assert.match(run.namespace.instructions, /subscription quota is exhausted/);
+  assert.match(run.namespace.instructions, /select a different model/);
+  assert.match(run.namespace.instructions, /unfinished work as a new task/);
+  assert.match(run.namespace.instructions, /rather than waiting for reset or retrying the exhausted model/);
+  assert.match(run.namespace.instructions, /session continuation requires the original model/);
+});
+
 test("output command toggles installed TUI preview, resets on session start, and rejects unavailable modes", async () => {
   let expanded = false;
   const registry = load({}, {
