@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-`ego_browser` operates one Ego Lite TaskSpace. A manual task needs no classifier. An automated task takes a bounded candidate list, and Jev selects one candidate ID, never a program, selector, or input text. The extension also ships the model-invoked [ego-browser-tools skill](skills/ego-browser-tools/SKILL.md).
+`ego_browser` operates one Ego Lite TaskSpace. The tool is registered with `deferred` exposure, so its schema costs no context until the model loads it with `tool_search`. Enable that tool with `"defaultTools": ["+tool_search"]`, or name `ego_browser` in `defaultTools` or `--tools` to declare it from the start. A manual task needs no classifier. An automated task takes a bounded candidate list, and Jev selects one candidate ID, never a program, selector, or input text. The extension also ships the model-invoked [ego-browser-tools skill](skills/ego-browser-tools/SKILL.md).
 
 ## Tool contract
 
@@ -170,7 +170,7 @@ node --test extensions/ego-browser/test/*.test.ts extensions/ego-browser/test/*.
 npm run typecheck
 ```
 
-The registration test creates a real Pi session and verifies the direct tool is reachable and returns an unknown_task error result. The skill test loads the extension through the Pi SDK and validates every documented request payload against `ToolParametersSchema`. The runtime tests run the stdin EOF fake CLI and cover manual ref, raw snapshot, false DONE, stale, cancel, ownership, lease, and finish.
+The registration test creates a real Pi session with the tool named in `tools` and verifies the deferred tool is active, reachable, and returns an unknown_task error result. The skill test loads the extension through the Pi SDK and validates every documented request payload against `ToolParametersSchema`. The runtime tests run the stdin EOF fake CLI and cover manual ref, raw snapshot, false DONE, stale, cancel, ownership, lease, and finish.
 
 ## Live harness
 
