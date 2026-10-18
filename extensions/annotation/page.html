@@ -94,29 +94,29 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 <script nonce="__NONCE__">
 (() => {
 	"use strict";
-	const sessionPath = location.pathname.replace(/\/+$/, "");
-	const tokenKey = "annotate-token:" + sessionPath.slice(1);
+	let sessionPath = location.pathname.replace(/\/+$/, "");
+	const tokenKeyFor = (path) => "annotate-token:" + path.slice(1);
 	const fragmentToken = new URLSearchParams(location.hash.slice(1)).get("t") || "";
 	history.replaceState(null, "", location.pathname);
 	function storedToken() {
 		try {
-			return sessionStorage.getItem(tokenKey) || "";
+			return sessionStorage.getItem(tokenKeyFor(sessionPath)) || "";
 		} catch {
 			return "";
 		}
 	}
 	function storeToken(value) {
 		try {
-			sessionStorage.setItem(tokenKey, value);
+			sessionStorage.setItem(tokenKeyFor(sessionPath), value);
 		} catch {}
 	}
 	function forgetToken() {
 		try {
-			sessionStorage.removeItem(tokenKey);
+			sessionStorage.removeItem(tokenKeyFor(sessionPath));
 		} catch {}
 	}
 	if (fragmentToken) storeToken(fragmentToken);
-	const token = fragmentToken || storedToken();
+	let token = fragmentToken || storedToken();
 	const byId = (id) => document.getElementById(id);
 	const conversation = byId("conversation");
 	const list = byId("list");
@@ -132,6 +132,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 	let finished = false;
 	let sending = false;
 	let closed = false;
+	let following;
 	let version = 0;
 	let nextSeq = 1;
 	let messageCount = 0;
@@ -352,6 +353,10 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		if (follow && items.length > 0) window.scrollTo(0, document.documentElement.scrollHeight);
 	}
 
+	function updateSendButton() {
+		sendButton.disabled = finished || sending || closed || annotations.length === 0;
+	}
+
 	function renderList() {
 		list.replaceChildren();
 		annotations.forEach((annotation, index) => {
@@ -376,7 +381,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 		});
 		countEl.textContent = String(annotations.length);
 		emptyEl.hidden = annotations.length > 0;
-		sendButton.disabled = finished || sending || closed || annotations.length === 0;
+		updateSendButton();
 	}
 
 	function codeAncestor(node) {
@@ -471,6 +476,50 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 	}
 	const SWITCHED = "Session switched, run /annotate again.";
 
+	async function followFrom(response) {
+		const data = await response.json().catch(() => ({}));
+		const successor = data && data.successor;
+		if (!successor) {
+			stop(SWITCHED);
+			return false;
+		}
+		const path = "/" + encodeURIComponent(successor.sessionId);
+		if (sessionPath === path) return following ?? true;
+		forgetToken();
+		sessionPath = path;
+		token = successor.token;
+		storeToken(token);
+		history.replaceState(null, "", path);
+		following = loadSnapshot("pi moved to a new session; your list is kept").finally(() => { following = undefined; });
+		return following;
+	}
+
+	async function loadSnapshot(statusText) {
+		let response;
+		try {
+			response = await api("snapshot");
+		} catch {
+			stop(CLOSED);
+			return false;
+		}
+		if (response.status === 410) return followFrom(response);
+		if (response.status === 403) {
+			lostToken();
+			return false;
+		}
+		const snapshot = await response.json().catch(() => ({}));
+		if (!response.ok) {
+			stop((snapshot && snapshot.error) || "Could not load the conversation: HTTP " + response.status);
+			return false;
+		}
+		version = snapshot.version;
+		nextSeq = snapshot.nextSeq;
+		applyItems(snapshot.items, true);
+		liveStatus(statusText);
+		updateSendButton();
+		return true;
+	}
+
 	sendButton.addEventListener("click", async () => {
 		if (finished || sending || annotations.length === 0) return;
 		sending = true;
@@ -489,6 +538,14 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 			serverClosed();
 			return;
 		}
+		if (response.status === 410) {
+			sending = false;
+			if (await followFrom(response)) {
+				setStatus("pi moved to a new session. Your list is kept; press Send again.", true);
+				updateSendButton();
+			}
+			return;
+		}
 		const data = await response.json().catch(() => ({}));
 		sending = false;
 		if (response.ok) {
@@ -502,7 +559,6 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 			liveStatus("sent " + data.inserted + " to the pi editor (round " + rounds + ")");
 			return;
 		}
-		if (response.status === 410) return stop(SWITCHED);
 		if (response.status === 409 && data && data.expectedSeq) {
 			nextSeq = data.expectedSeq;
 			setStatus("Another tab sent first. Your list is kept; press Send again.", true);
@@ -532,7 +588,10 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 				await wait(2000);
 				continue;
 			}
-			if (response.status === 410) return stop(SWITCHED);
+			if (response.status === 410) {
+				if (await followFrom(response)) continue;
+				return;
+			}
 			if (response.status === 403) return lostToken();
 			if (response.status === 429) {
 				setStatus("Too many open annotate tabs; live updates paused. Retrying…", true);
@@ -558,22 +617,7 @@ pre.code-block { margin: 0; padding: 10px 12px; background: var(--tool); border:
 
 	async function load() {
 		if (!token) return stop(NO_TOKEN);
-		let response;
-		try {
-			response = await api("snapshot");
-		} catch {
-			return stop(CLOSED);
-		}
-		const data = await response.json().catch(() => ({}));
-		if (response.status === 410) return stop(SWITCHED);
-		if (response.status === 403) return lostToken();
-		if (!response.ok) return stop((data && data.error) || "Could not load the conversation: HTTP " + response.status);
-		version = data.version;
-		nextSeq = data.nextSeq;
-		applyItems(data.items, true);
-		liveStatus("");
-		renderList();
-		poll();
+		if (await loadSnapshot("")) poll();
 	}
 
 	load();

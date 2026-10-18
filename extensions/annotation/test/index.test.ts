@@ -5,7 +5,10 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import annotation, { BIN_PATH } from "../index.ts";
+import { setTimeout as delay } from "node:timers/promises";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import annotation, { BIN_PATH, newSessionWithAnnotation } from "../index.ts";
+import { SESSION_SWITCHED } from "../server.ts";
 import { listEntries } from "../registry.ts";
 
 type Handler = (args: string, ctx: unknown) => Promise<void>;
@@ -46,7 +49,15 @@ async function freePort(): Promise<number> {
 
 const msg = (id: string, role: string, content: unknown) => ({ type: "message", id, message: { role, content } });
 
-async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor?: string; submitError?: Error } = {}) {
+async function setup(options: {
+	env?: NodeJS.ProcessEnv;
+	hasUI?: boolean;
+	editor?: string;
+	submitError?: Error;
+	sessionId?: string;
+	registryDir?: string;
+	newSession?: ExtensionCommandContext["newSession"];
+} = {}) {
 	const commands = new Map<string, Handler>();
 	const listeners = new Map<string, Listener[]>();
 	const notices: string[] = [];
@@ -54,7 +65,7 @@ async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor
 	const userMessages: unknown[] = [];
 	let editorText = options.editor ?? "";
 	let stale = false;
-	let sessionId = "session-a";
+	let sessionId = options.sessionId ?? "session-a";
 	let branch: unknown[] = [msg("u1", "user", "explain the cache"), msg("a1", "assistant", [{ type: "text", text: "The cache is LRU." }])];
 	const guard = () => {
 		if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
@@ -68,6 +79,7 @@ async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor
 		},
 	};
 	const ctx = {
+		newSession: options.newSession ?? (async () => ({ cancelled: false })),
 		hasUI: options.hasUI ?? true,
 		cwd: "/work/project",
 		sessionManager: {
@@ -103,8 +115,8 @@ async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor
 		},
 	};
 	const env = options.env ?? { PI_ANNOTATE_PORT: String(await freePort()) };
-	const registry = mkdtempSync(join(tmpdir(), "annotate-registry-"));
-	cleanups.push(() => rmSync(registry, { recursive: true, force: true }));
+	const registry = options.registryDir ?? mkdtempSync(join(tmpdir(), "annotate-registry-"));
+	if (!options.registryDir) cleanups.push(() => rmSync(registry, { recursive: true, force: true }));
 	annotation(pi as never, { env, refreshDelayMs: 0, longPollMs: 3000, registryDir: registry });
 	const emit = async (event: string) => {
 		for (const listener of listeners.get(event) ?? []) await listener({ type: event }, ctx);
@@ -116,6 +128,7 @@ async function setup(options: { env?: NodeJS.ProcessEnv; hasUI?: boolean; editor
 		return { url, token: new URLSearchParams(url.hash.slice(1)).get("t")! };
 	};
 	return {
+		ctx,
 		run: (args = "") => commands.get("annotate")!(args, ctx),
 		registry,
 		commands,
@@ -425,6 +438,207 @@ describe("live updates and lifecycle", () => {
 		assert.equal(b.parts().url.port, String(port));
 		assert.notEqual(b.parts().token, first.token);
 		assert.equal((await call(first.url, "GET", "snapshot", first.token)).status, 403);
+	});
+});
+
+describe("annotation handoff", () => {
+	it("follows into a new extension instance on the same port with fresh credentials and delivery callbacks", async () => {
+		let replacement: Awaited<ReturnType<typeof setup>>;
+		let heldSnapshot: ReturnType<typeof call>;
+		let heldSend: ReturnType<typeof call>;
+		const t = await setup({
+			editor: "SOURCE DRAFT",
+			newSession: async (options) => {
+				assert.equal(options?.parentSession, "/sessions/source.jsonl");
+				await t.shutdown();
+				t.makeStale();
+				replacement = await setup({ sessionId: "session-b", registryDir: t.registry, editor: "NEW DRAFT" });
+				cleanups.push(replacement.shutdown);
+				replacement.setBranch([msg("new-user", "user", "read the handoff")]);
+				await replacement.emit("session_start");
+				heldSnapshot = call(old.url, "GET", "snapshot", old.token);
+				heldSend = call(old.url, "POST", "send", old.token, { seq: 1, delivery: "agent", items: [{ quote: "during handoff" }] });
+				assert.equal(await Promise.race([Promise.race([heldSnapshot, heldSend]).then(() => "answered"), delay(50, "held")]), "held");
+				assert.deepEqual(t.userMessages, []);
+				assert.deepEqual(replacement.userMessages, []);
+				await options?.withSession?.(replacement.ctx as never);
+				return { cancelled: false };
+			},
+		});
+		cleanups.push(t.shutdown);
+		await t.run();
+		const old = t.parts();
+		const result = await newSessionWithAnnotation(t.ctx as never, {
+			parentSession: "/sessions/source.jsonl",
+			withSession: async (ctx) => {
+				assert.equal(ctx.sessionManager.getSessionId(), "session-b");
+				assert.equal(listEntries(t.registry)[0]?.sessionId, "session-a");
+				replacement.setBranch([msg("new-user", "user", "read the handoff"), msg("bootstrap", "user", "handoff prompt sent")]);
+			},
+		});
+		assert.deepEqual(result, { cancelled: false });
+		const [entry] = listEntries(t.registry);
+		assert.equal(entry?.sessionId, "session-b");
+		assert.equal(entry?.port, Number(old.url.port));
+		assert.notEqual(entry!.token, old.token);
+		assert.equal(replacement!.statuses.at(-1), `annotate: live on 127.0.0.1:${old.url.port}`);
+		assert.equal(replacement!.notices.at(-1), [
+			`annotate: followed to this session on 127.0.0.1:${old.url.port}`,
+			`Browser: http://127.0.0.1:${old.url.port}/session-b#t=${entry!.token}`,
+			`Terminal: '${BIN_PATH}' session-b`,
+			"Run /annotate again to stop it.",
+		].join("\n"));
+		for (const reply of await Promise.all([heldSnapshot!, heldSend!])) {
+			assert.equal(reply.status, 410);
+			assert.deepEqual(JSON.parse(reply.body), { error: "Session switched, run /annotate again.", successor: { sessionId: "session-b", token: entry!.token } });
+		}
+		const retired = await call(old.url, "GET", "snapshot", old.token);
+		assert.equal(retired.status, 410);
+		assert.deepEqual(JSON.parse(retired.body), { error: SESSION_SWITCHED, successor: { sessionId: "session-b", token: entry!.token } });
+		const url = new URL(`http://127.0.0.1:${entry!.port}/session-b`);
+		const snapshot = await call(url, "GET", "snapshot", entry!.token);
+		assert.equal(snapshot.status, 200);
+		assert.equal(JSON.parse(snapshot.body).sessionId, "session-b");
+		assert.equal(JSON.parse(snapshot.body).nextSeq, 1);
+		assert.deepEqual(JSON.parse(snapshot.body).items.map((item: { id: string }) => item.id), ["new-user", "bootstrap"]);
+		assert.equal((await call(url, "GET", "snapshot", old.token)).status, 403);
+		const items = [{ quote: "quoted", note: "fix it" }];
+		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, delivery: "agent", items })).status, 410);
+		assert.equal((await call(url, "POST", "send", entry!.token, { seq: 1, delivery: "agent", items })).status, 200);
+		assert.deepEqual(replacement!.userMessages, [{ message: "> quoted\n\nfix it\n\n", delivery: { deliverAs: "followUp" } }]);
+		assert.deepEqual(t.userMessages, []);
+		assert.equal((await call(url, "POST", "send", entry!.token, { seq: 2, delivery: "editor", items })).status, 200);
+		assert.equal(replacement!.editor(), "NEW DRAFT\n> quoted\n\nfix it\n\n");
+		assert.equal(t.editor(), "SOURCE DRAFT");
+		await t.shutdown();
+		await replacement!.emit("session_start");
+		assert.equal(replacement!.notices.filter((notice) => notice.includes("followed")).length, 1);
+		assert.equal((await call(url, "GET", "snapshot", entry!.token)).status, 200);
+		await replacement!.shutdown();
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.equal(await canListen(entry!.port), true);
+	});
+
+	it("leaves the token and registry unchanged when the handoff is cancelled", async () => {
+		let heldSend: ReturnType<typeof call>;
+		const t = await setup({ newSession: async () => {
+			heldSend = call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "still here" }] });
+			assert.equal(await Promise.race([heldSend.then(() => "answered"), delay(50, "held")]), "held");
+			assert.equal(t.editor(), "");
+			return { cancelled: true };
+		} });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const old = t.parts();
+		const entries = listEntries(t.registry);
+		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, {}), { cancelled: true });
+		assert.deepEqual(listEntries(t.registry), entries);
+		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 200);
+		const accepted = await heldSend!;
+		assert.equal(accepted.status, 200);
+		assert.deepEqual(JSON.parse(accepted.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
+		assert.equal(t.editor(), "> still here\n\n");
+		await t.shutdown();
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.equal(await canListen(Number(old.url.port)), true);
+	});
+
+	it("closes the parked server when replacement completes without an annotation instance", async () => {
+		const t = await setup({ newSession: async () => {
+			await t.shutdown();
+			t.makeStale();
+			return { cancelled: false };
+		} });
+		cleanups.push(t.shutdown);
+		await t.run();
+		const old = t.parts();
+		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 200);
+		assert.equal(listEntries(t.registry)[0]?.token, old.token);
+		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, {}), { cancelled: false });
+		await assert.rejects(call(old.url, "GET", "snapshot", old.token));
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.equal(await canListen(Number(old.url.port)), true);
+	});
+
+	it("closes the parked server if replacement throws after teardown", async () => {
+		const failure = new Error("replacement runtime failed");
+		const t = await setup({
+			newSession: async () => {
+				await t.shutdown();
+				t.makeStale();
+				throw failure;
+			},
+		});
+		cleanups.push(t.shutdown);
+		await t.run();
+		const old = t.parts();
+		assert.equal(listEntries(t.registry)[0]?.token, old.token);
+		await assert.rejects(newSessionWithAnnotation(t.ctx as never, {}), failure);
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.equal(await canListen(Number(old.url.port)), true);
+	});
+
+	it("passes through newSession without starting a server when none was running", async () => {
+		const result = { cancelled: false };
+		let replacement: Awaited<ReturnType<typeof setup>>;
+		const t = await setup({
+			newSession: async (options) => {
+				assert.equal(options?.parentSession, "/sessions/source.jsonl");
+				await t.shutdown();
+				t.makeStale();
+				replacement = await setup({ sessionId: "session-b", registryDir: t.registry });
+				cleanups.push(replacement.shutdown);
+				await replacement.emit("session_start");
+				await options?.withSession?.(replacement.ctx as never);
+				return result;
+			},
+		});
+		assert.equal(await newSessionWithAnnotation(t.ctx as never, { parentSession: "/sessions/source.jsonl" }), result);
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.deepEqual(replacement!.statuses, []);
+		assert.deepEqual(replacement!.notices, []);
+		await replacement!.run();
+		assert.equal(listEntries(t.registry)[0]?.sessionId, "session-b");
+		assert.equal(replacement!.statuses.at(-1), `annotate: live on 127.0.0.1:${replacement!.parts().url.port}`);
+	});
+
+	it("does not follow a plain new session into the replacement instance", async () => {
+		const t = await setup();
+		await t.run();
+		const old = t.parts();
+		await t.shutdown();
+		t.makeStale();
+		const replacement = await setup({ sessionId: "session-b", registryDir: t.registry });
+		cleanups.push(replacement.shutdown);
+		await replacement.emit("session_start");
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.deepEqual(replacement.statuses, []);
+		assert.equal(await canListen(Number(old.url.port)), true);
+		await replacement.run();
+		assert.equal(listEntries(t.registry)[0]?.sessionId, "session-b");
+		assert.notEqual(replacement.parts().token, old.token);
+	});
+
+	it("does not follow a server that is still starting when the handoff tears down", async () => {
+		const port = await freePort();
+		const t = await setup({
+			env: { PI_ANNOTATE_PORT: String(port) },
+			newSession: async (options) => {
+				await t.shutdown();
+				const replacement = await setup({ sessionId: "session-b", registryDir: t.registry });
+				await replacement.emit("session_start");
+				await options?.withSession?.(replacement.ctx as never);
+				assert.deepEqual(replacement.statuses, []);
+				return { cancelled: false };
+			},
+		});
+		cleanups.push(t.shutdown);
+		const starting = t.run();
+		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, {}), { cancelled: false });
+		await starting;
+		assert.equal(t.notices.at(-1), `annotate: closed, port ${port} released`);
+		assert.deepEqual(listEntries(t.registry), []);
+		assert.equal(await canListen(port), true);
 	});
 });
 

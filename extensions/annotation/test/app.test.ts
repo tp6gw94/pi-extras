@@ -6,7 +6,7 @@ import { render } from "grok-mermaid";
 import type { Annotation, AnnotationDelivery } from "../quote.ts";
 import type { SnapshotItem } from "../snapshot.ts";
 import { AnnotateApp } from "../tui/app.ts";
-import { type AnnotateClient, createClient, type LiveUpdate, ProtocolError, type SendOutcome } from "../tui/client.ts";
+import { type AnnotateClient, createClient, type LiveEvent, ProtocolError, type SendOutcome } from "../tui/client.ts";
 
 const ESC = "\x1b";
 const ENTER = "\r";
@@ -29,12 +29,16 @@ const diagramItem = (text: string): SnapshotItem => ({ id: "a1", kind: "assistan
 function setup(source: SnapshotItem[], options: { send?: (seq: number, items: readonly Annotation[]) => SendOutcome | Promise<SendOutcome>; rows?: number; columns?: number } = {}) {
 	const sent: { seq: number; items: Annotation[] }[] = [];
 	const deliveries: AnnotationDelivery[] = [];
-	let watcher: { resolve: (update: LiveUpdate) => void; reject: (error: unknown) => void } | undefined;
+	let watcher: { resolve: (event: LiveEvent) => void; reject: (error: unknown) => void } | undefined;
+	let sessionId = "abc12345";
 	let exited = false;
 	const client: AnnotateClient = {
+		get sessionId() {
+			return sessionId;
+		},
 		snapshot: async () => ({ version: 1, nextSeq: 1, items: source }),
 		watch: (_after, signal) =>
-			new Promise<LiveUpdate>((resolve, reject) => {
+			new Promise<LiveEvent>((resolve, reject) => {
 				watcher = { resolve, reject };
 				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
 			}),
@@ -46,7 +50,7 @@ function setup(source: SnapshotItem[], options: { send?: (seq: number, items: re
 	};
 	const columns = options.columns ?? 60;
 	const tui = { terminal: { rows: options.rows ?? 20, columns }, requestRender: () => {} } as unknown as TUI;
-	const app = new AnnotateApp({ lib, tui, client, snapshot: { version: 1, nextSeq: 1, items: source }, title: "pi-annotation · repo · abc12345", onExit: () => (exited = true) });
+	const app = new AnnotateApp({ lib, tui, client, snapshot: { version: 1, nextSeq: 1, items: source }, title: (id) => `pi-annotation · repo · ${id.slice(-8)}`, onExit: () => (exited = true) });
 	app.focused = true;
 	const keys = (...inputs: string[]) => {
 		for (const input of inputs) {
@@ -58,7 +62,9 @@ function setup(source: SnapshotItem[], options: { send?: (seq: number, items: re
 		app,
 		keys,
 		screen: () => app.render(columns).map(strip),
-		push: (update: LiveUpdate) => watcher?.resolve(update),
+		push: (update: Omit<Extract<LiveEvent, { type: "update" }>, "type">) => watcher?.resolve({ type: "update", ...update }),
+		pushMoved: (snapshot: { version: number; nextSeq: number; items: SnapshotItem[] }) => watcher?.resolve({ type: "moved", snapshot }),
+		moveSession: (id: string) => (sessionId = id),
 		fail: (error: unknown) => watcher?.reject(error),
 		sent,
 		deliveries,
@@ -140,6 +146,265 @@ describe("annotation TUI shell", () => {
 		assert.match(t.screen()[0]!, /1 note {2}● live$/);
 	});
 
+	it("keeps notes and clears sending when a send finds a successor", async () => {
+		const t = setup(items, { send: () => ({ ok: false, kind: "moved", snapshot: { version: 7, nextSeq: 12, items } }) });
+		t.keys("A", "keep me", ENTER, "s");
+		await settle();
+		assert.match(t.screen()[0]!, /1 note {2}● live$/);
+		assert.equal(strip(t.app.render(120).at(-1)!).trim(), "NORMAL  pi moved to a new session; notes kept; choose s or S again");
+		t.keys("s");
+		await settle();
+		assert.deepEqual(t.sent, [
+			{ seq: 1, items: [{ quote: "The cache is LRU.\nIt holds 100 entries.", note: "keep me" }] },
+			{ seq: 12, items: [{ quote: "The cache is LRU.\nIt holds 100 entries.", note: "keep me" }] },
+		]);
+		t.keys(TAB);
+		assert.ok(t.screen().some((line) => line.trim() === "keep me"));
+	});
+
+	for (const first of ["send", "poll"] as const) {
+		it(`shares a simultaneous handoff snapshot and moves once when ${first} answers first`, async () => {
+			const requests: { path: string; body: unknown; token: string | null }[] = [];
+			const replies = new Map<string, (response: Response) => void>();
+			const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+				const path = new URL(String(input)).pathname + new URL(String(input)).search;
+				requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null, token: new Headers(init?.headers).get("x-annotate-token") });
+				return new Promise<Response>((resolve, reject) => {
+					replies.set(path, resolve);
+					init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				});
+			}) as typeof fetch;
+			const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+			const moves: unknown[] = [];
+			const outcomes: SendOutcome[] = [];
+			const observed: AnnotateClient = {
+				get sessionId() { return client.sessionId; },
+				snapshot: () => client.snapshot(),
+				watch: async (after, signal) => {
+					const event = await client.watch(after, signal);
+					if (event.type === "moved") moves.push(event.snapshot);
+					return event;
+				},
+				send: async (seq, notes, delivery) => {
+					const outcome = await client.send(seq, notes, delivery);
+					outcomes.push(outcome);
+					return outcome;
+				},
+			};
+			const tui = { terminal: { rows: 20, columns: 120 }, requestRender: () => {} } as unknown as TUI;
+			const app = new AnnotateApp({ lib, tui, client: observed, snapshot: { version: 1, nextSeq: 1, items }, title: (id) => `pi-annotation · ${id}`, onExit: () => {} });
+			const screen = () => app.render(120).map(strip);
+			const answer = (path: string, status: number, body: unknown) => replies.get(path)!(new Response(JSON.stringify(body), { status }));
+			app.start();
+			try {
+				for (const key of ["A", ..."keep me", ENTER, "s"]) app.handleInput(key);
+				const paths = ["/old-session/api/send", "/old-session/api/events?after=1"];
+				if (first === "poll") paths.reverse();
+				for (const path of paths) answer(path, 410, { successor: { sessionId: "new-session", token: "new-token" } });
+				await settle();
+				assert.deepEqual(requests.filter(({ path }) => path.endsWith("/snapshot")), [{ path: "/new-session/api/snapshot", body: null, token: "new-token" }]);
+				answer("/new-session/api/snapshot", 200, { version: 7, nextSeq: 12, items });
+				await settle();
+				assert.deepEqual(moves, first === "poll" ? [{ version: 7, nextSeq: 12, items }] : []);
+				assert.deepEqual(outcomes, [{ ok: false, kind: "moved", snapshot: { version: 7, nextSeq: 12, items } }]);
+				assert.equal(screen()[0]!.trim().replace(/ +/g, " "), "pi-annotation · new-session 1 note ● live");
+				assert.equal(screen().at(-1)!.trim(), "NORMAL  pi moved to a new session; notes kept; choose s or S again");
+				assert.equal(requests.at(-1)!.path, "/new-session/api/events?after=7");
+				app.handleInput(TAB);
+				assert.equal(screen().find((line) => line.trim() === "keep me")?.trim(), "keep me");
+				app.handleInput("s");
+				assert.deepEqual(requests.at(-1), { path: "/new-session/api/send", token: "new-token", body: { seq: 12, delivery: "editor", items: [{ quote: "The cache is LRU.\nIt holds 100 entries.", note: "keep me" }] } });
+				answer("/new-session/api/send", 200, { inserted: 1, nextSeq: 13 });
+				await settle();
+				assert.match(screen()[0]!, /0 notes {2}● live$/);
+			} finally {
+				app.stop();
+			}
+		});
+	}
+
+	it("reports the head once when the successor snapshot finds another successor", async () => {
+		const requests: { path: string; token: string | null }[] = [];
+		const replies = new Map<string, (response: Response) => void>();
+		const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input));
+			const path = url.pathname + url.search;
+			requests.push({ path, token: new Headers(init?.headers).get("x-annotate-token") });
+			return new Promise<Response>((resolve, reject) => {
+				replies.set(path, resolve);
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		const events: LiveEvent[] = [];
+		const observed: AnnotateClient = {
+			get sessionId() { return client.sessionId; },
+			snapshot: () => client.snapshot(),
+			watch: async (after, signal) => {
+				const event = await client.watch(after, signal);
+				events.push(event);
+				return event;
+			},
+			send: (seq, notes, delivery) => client.send(seq, notes, delivery),
+		};
+		const tui = { terminal: { rows: 20, columns: 120 }, requestRender: () => {} } as unknown as TUI;
+		const app = new AnnotateApp({ lib, tui, client: observed, snapshot: { version: 1, nextSeq: 1, items }, title: (id) => `pi-annotation · ${id}`, onExit: () => {} });
+		const screen = () => app.render(120).map(strip);
+		const answer = (path: string, status: number, body: unknown) => replies.get(path)!(new Response(JSON.stringify(body), { status }));
+		app.start();
+		try {
+			for (const key of ["A", ..."keep me", ENTER]) app.handleInput(key);
+			answer("/old-session/api/events?after=1", 410, { successor: { sessionId: "new-session", token: "new-token" } });
+			await settle();
+			answer("/new-session/api/snapshot", 410, { successor: { sessionId: "head-session", token: "head-token" } });
+			await settle();
+			answer("/head-session/api/snapshot", 200, { version: 9, nextSeq: 14, items });
+			await settle();
+			assert.deepEqual(events, [{ type: "moved", snapshot: { version: 9, nextSeq: 14, items } }]);
+			assert.deepEqual(requests, [
+				{ path: "/old-session/api/events?after=1", token: "old-token" },
+				{ path: "/new-session/api/snapshot", token: "new-token" },
+				{ path: "/head-session/api/snapshot", token: "head-token" },
+				{ path: "/head-session/api/events?after=9", token: "head-token" },
+			]);
+			assert.equal(screen()[0]!.trim().replace(/ +/g, " "), "pi-annotation · head-session 1 note ● live");
+			assert.equal(screen().at(-1)!.trim(), "NORMAL  pi moved to a new session; notes kept");
+			answer("/head-session/api/events?after=9", 200, { version: 10, reset: false, items: [] });
+			await settle();
+			assert.deepEqual(events, [
+				{ type: "moved", snapshot: { version: 9, nextSeq: 14, items } },
+				{ type: "update", version: 10, reset: false, items: [] },
+			]);
+			assert.deepEqual(requests.at(-1), { path: "/head-session/api/events?after=10", token: "head-token" });
+			app.handleInput(TAB);
+			assert.equal(screen().find((line) => line.trim() === "keep me")?.trim(), "keep me");
+		} finally {
+			app.stop();
+		}
+	});
+
+	it("keeps notes when a delayed send finds the successor already reported by the poll", async () => {
+		const requests: string[] = [];
+		const replies = new Map<string, (response: Response) => void>();
+		const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input));
+			const path = url.pathname + url.search;
+			requests.push(path);
+			return new Promise<Response>((resolve, reject) => {
+				replies.set(path, resolve);
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		const outcomes: SendOutcome[] = [];
+		const observed: AnnotateClient = {
+			get sessionId() { return client.sessionId; },
+			snapshot: () => client.snapshot(),
+			watch: (after, signal) => client.watch(after, signal),
+			send: async (seq, notes, delivery) => {
+				const outcome = await client.send(seq, notes, delivery);
+				outcomes.push(outcome);
+				return outcome;
+			},
+		};
+		const tui = { terminal: { rows: 20, columns: 120 }, requestRender: () => {} } as unknown as TUI;
+		const app = new AnnotateApp({ lib, tui, client: observed, snapshot: { version: 1, nextSeq: 1, items }, title: (id) => `pi-annotation · ${id}`, onExit: () => {} });
+		const screen = () => app.render(120).map(strip);
+		const answer = (path: string, status: number, body: unknown) => replies.get(path)!(new Response(JSON.stringify(body), { status }));
+		const successor = { sessionId: "new-session", token: "new-token" };
+		app.start();
+		try {
+			for (const key of ["A", ..."keep me", ENTER, "s"]) app.handleInput(key);
+			answer("/old-session/api/events?after=1", 410, { successor });
+			await settle();
+			answer("/new-session/api/snapshot", 200, { version: 7, nextSeq: 12, items });
+			await settle();
+			assert.equal(screen().at(-1)!.trim(), "NORMAL  pi moved to a new session; notes kept");
+			app.handleInput("s");
+			assert.deepEqual(requests, [
+				"/old-session/api/events?after=1",
+				"/old-session/api/send",
+				"/new-session/api/snapshot",
+				"/new-session/api/events?after=7",
+			]);
+			answer("/old-session/api/send", 410, { successor });
+			await settle();
+			assert.deepEqual(outcomes, [{ ok: false, kind: "moved", snapshot: undefined }]);
+			assert.deepEqual(requests, [
+				"/old-session/api/events?after=1",
+				"/old-session/api/send",
+				"/new-session/api/snapshot",
+				"/new-session/api/events?after=7",
+			]);
+			assert.equal(screen()[0]!.trim().replace(/ +/g, " "), "pi-annotation · new-session 1 note ● live");
+			assert.equal(screen().at(-1)!.trim(), "NORMAL  pi moved to a new session; notes kept; choose s or S again");
+			app.handleInput(TAB);
+			assert.equal(screen().find((line) => line.trim() === "keep me")?.trim(), "keep me");
+			app.handleInput("s");
+			assert.equal(requests.at(-1), "/new-session/api/send");
+			answer("/new-session/api/send", 200, { inserted: 1, nextSeq: 13 });
+			await settle();
+			assert.deepEqual(outcomes, [
+				{ ok: false, kind: "moved", snapshot: undefined },
+				{ ok: true, inserted: 1, nextSeq: 13 },
+			]);
+			assert.match(screen()[0]!, /0 notes {2}● live$/);
+		} finally {
+			app.stop();
+		}
+	});
+
+	it("keeps incremental items when a delayed send reports an already applied move", async () => {
+		const requests: string[] = [];
+		const replies = new Map<string, (response: Response) => void>();
+		const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input));
+			const path = url.pathname + url.search;
+			requests.push(path);
+			return new Promise<Response>((resolve, reject) => {
+				replies.set(path, resolve);
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		const tui = { terminal: { rows: 20, columns: 120 }, requestRender: () => {} } as unknown as TUI;
+		const app = new AnnotateApp({ lib, tui, client, snapshot: { version: 1, nextSeq: 1, items }, title: (id) => `pi-annotation · ${id}`, onExit: () => {} });
+		const screen = () => app.render(120).map(strip);
+		const answer = (path: string, status: number, body: unknown) => replies.get(path)!(new Response(JSON.stringify(body), { status }));
+		const successor = { sessionId: "new-session", token: "new-token" };
+		app.start();
+		try {
+			for (const key of ["A", ..."keep me", ENTER, "s"]) app.handleInput(key);
+			answer("/old-session/api/events?after=1", 410, { successor });
+			await settle();
+			answer("/new-session/api/snapshot", 200, { version: 7, nextSeq: 12, items });
+			await settle();
+			answer("/new-session/api/events?after=7", 200, { version: 8, reset: false, items: [{ id: "a2", kind: "assistant", label: "Assistant", text: "Version eight reply" }] });
+			await settle();
+			assert.equal(screen().find((line) => line === "  Version eight reply"), "  Version eight reply");
+			answer("/old-session/api/send", 410, { successor });
+			await settle();
+			assert.equal(screen().find((line) => line === "  Version eight reply"), "  Version eight reply");
+			assert.equal(screen().at(-1)!.trim(), "NORMAL  pi moved to a new session; notes kept; choose s or S again");
+			assert.deepEqual(requests, [
+				"/old-session/api/events?after=1",
+				"/old-session/api/send",
+				"/new-session/api/snapshot",
+				"/new-session/api/events?after=7",
+				"/new-session/api/events?after=8",
+			]);
+			app.handleInput(TAB);
+			assert.equal(screen().find((line) => line.trim() === "keep me")?.trim(), "keep me");
+			app.handleInput("s");
+			assert.equal(requests.at(-1), "/new-session/api/send");
+			answer("/new-session/api/send", 200, { inserted: 1, nextSeq: 13 });
+			await settle();
+			assert.match(screen()[0]!, /0 notes {2}● live$/);
+		} finally {
+			app.stop();
+		}
+	});
+
 	it("appends live updates and keeps the caret", async () => {
 		const t = setup(items);
 		t.app.start();
@@ -160,6 +425,21 @@ describe("annotation TUI shell", () => {
 		await settle();
 		assert.match(t.screen().at(-1)!, /selection cleared: conversation changed/);
 		assert.match(t.screen()[0]!, /0 notes {2}● live$/);
+		t.app.stop();
+	});
+
+	it("follows a moved session in place while keeping notes and editor text", async () => {
+		const t = setup(items);
+		t.keys("A", "saved note", ENTER, "A", "draft text");
+		t.app.start();
+		t.moveSession("new-session-23456789");
+		t.pushMoved({ version: 8, nextSeq: 14, items });
+		await settle();
+		const screen = t.screen();
+		assert.match(screen[0]!, /^pi-annotation · repo · 23456789 +1 note {2}● live$/);
+		assert.match(screen.at(-1)!, /pi moved to a new session; notes kept/);
+		assert.ok(screen.some((line) => line.includes("draft text")), screen.join("\n"));
+		assert.match(screen.at(-1)!, /^ NOTE/);
 		t.app.stop();
 	});
 
@@ -561,6 +841,94 @@ describe("client send outcomes", () => {
 	it("returns the inserted count on 200 and the expected seq on 409", async () => {
 		assert.deepEqual(await send(reply(200, { inserted: 1, nextSeq: 2 })), { ok: true, inserted: 1, nextSeq: 2 });
 		assert.deepEqual(await send(reply(409, { error: "expected seq 5", expectedSeq: 5 })), { ok: false, kind: "conflict", expectedSeq: 5 });
+	});
+
+	it("yields one moved event and polls the successor path with its token", async () => {
+		const requests: { url: string; token: string | null }[] = [];
+		const replies = [
+			new Response(JSON.stringify({ error: "SESSION_SWITCHED", successor: { sessionId: "new-session", token: "new-token" } }), { status: 410 }),
+			new Response(JSON.stringify({ version: 7, nextSeq: 12, items: [] }), { status: 200 }),
+			new Response(JSON.stringify({ version: 8, reset: false, items: [{ id: "a", kind: "assistant", label: "Assistant", text: "new reply" }] }), { status: 200 }),
+		];
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			requests.push({ url: String(input), token: new Headers(init?.headers).get("x-annotate-token") });
+			return replies.shift()!;
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		const signal = new AbortController().signal;
+		assert.deepEqual(await client.watch(1, signal), { type: "moved", snapshot: { version: 7, nextSeq: 12, items: [] } });
+		assert.deepEqual(await client.watch(7, signal), { type: "update", version: 8, reset: false, items: [{ id: "a", kind: "assistant", label: "Assistant", text: "new reply" }] });
+		assert.equal(client.sessionId, "new-session");
+		assert.deepEqual(requests, [
+			{ url: "http://127.0.0.1:4747/old-session/api/events?after=1", token: "old-token" },
+			{ url: "http://127.0.0.1:4747/new-session/api/snapshot", token: "new-token" },
+			{ url: "http://127.0.0.1:4747/new-session/api/events?after=7", token: "new-token" },
+		]);
+	});
+
+	it("follows chained successors to the head snapshot", async () => {
+		const requests: { url: string; token: string | null }[] = [];
+		const replies = [
+			new Response(JSON.stringify({ error: "SESSION_SWITCHED", successor: { sessionId: "new-session", token: "new-token" } }), { status: 410 }),
+			new Response(JSON.stringify({ successor: { sessionId: "head-session", token: "head-token" } }), { status: 410 }),
+			new Response(JSON.stringify({ version: 3, nextSeq: 4, items: [{ id: "head", kind: "user", label: "You", text: "head conversation" }] }), { status: 200 }),
+		];
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			requests.push({ url: String(input), token: new Headers(init?.headers).get("x-annotate-token") });
+			return replies.shift()!;
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		assert.deepEqual(await client.snapshot(), { version: 3, nextSeq: 4, items: [{ id: "head", kind: "user", label: "You", text: "head conversation" }] });
+		assert.equal(client.sessionId, "head-session");
+		assert.deepEqual(requests, [
+			{ url: "http://127.0.0.1:4747/old-session/api/snapshot", token: "old-token" },
+			{ url: "http://127.0.0.1:4747/new-session/api/snapshot", token: "new-token" },
+			{ url: "http://127.0.0.1:4747/head-session/api/snapshot", token: "head-token" },
+		]);
+	});
+
+	it("accepts a delayed 200 send after a poll moved and yields only one moved event", async () => {
+		let finishSend!: (response: Response) => void;
+		const requests: string[] = [];
+		const fetchImpl = (async (input: RequestInfo | URL) => {
+			const url = String(input);
+			requests.push(url);
+			if (url.endsWith("/send")) return new Promise<Response>((resolve) => { finishSend = resolve; });
+			if (url.includes("/old-session/")) return new Response(JSON.stringify({ successor: { sessionId: "new-session", token: "new-token" } }), { status: 410 });
+			if (url.endsWith("/snapshot")) return new Response(JSON.stringify({ version: 7, nextSeq: 1, items: [] }));
+			return new Response(JSON.stringify({ version: 8, reset: false, items: [{ id: "reply", kind: "assistant", label: "Assistant", text: "new reply" }] }));
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		const pending = client.send(3, [{ quote: "q", note: "n" }], "editor");
+		const signal = new AbortController().signal;
+		assert.deepEqual(await client.watch(1, signal), { type: "moved", snapshot: { version: 7, nextSeq: 1, items: [] } });
+		finishSend(new Response(JSON.stringify({ inserted: 1, nextSeq: 4 })));
+		assert.deepEqual(await pending, { ok: true, inserted: 1, nextSeq: 4 });
+		assert.deepEqual(await client.watch(7, signal), { type: "update", version: 8, reset: false, items: [{ id: "reply", kind: "assistant", label: "Assistant", text: "new reply" }] });
+		assert.deepEqual(requests, [
+			"http://127.0.0.1:4747/old-session/api/send",
+			"http://127.0.0.1:4747/old-session/api/events?after=1",
+			"http://127.0.0.1:4747/new-session/api/snapshot",
+			"http://127.0.0.1:4747/new-session/api/events?after=7",
+		]);
+	});
+
+	it("returns the successor snapshot when a send receives a successor", async () => {
+		const requests: { url: string; token: string | null }[] = [];
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			requests.push({ url: String(input), token: new Headers(init?.headers).get("x-annotate-token") });
+			if (String(input).endsWith("/snapshot")) return new Response(JSON.stringify({ version: 7, nextSeq: 12, items: [{ id: "new", kind: "user", label: "You", text: "new conversation" }] }));
+			return new Response(JSON.stringify({ error: "SESSION_SWITCHED", successor: { sessionId: "new-session", token: "new-token" } }), { status: 410 });
+		}) as typeof fetch;
+		const client = createClient({ sessionId: "old-session", port: 4747, token: "old-token" }, fetchImpl);
+		assert.deepEqual(await client.send(3, [{ quote: "q", note: "n" }], "editor"), {
+			ok: false, kind: "moved", snapshot: { version: 7, nextSeq: 12, items: [{ id: "new", kind: "user", label: "You", text: "new conversation" }] },
+		});
+		assert.equal(client.sessionId, "new-session");
+		assert.deepEqual(requests, [
+			{ url: "http://127.0.0.1:4747/old-session/api/send", token: "old-token" },
+			{ url: "http://127.0.0.1:4747/new-session/api/snapshot", token: "new-token" },
+		]);
 	});
 
 	it("reports 400, 413 and 500 as rejections with the server's text", async () => {
