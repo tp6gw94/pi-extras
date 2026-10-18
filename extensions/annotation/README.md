@@ -46,7 +46,9 @@ pi --extension ./extensions/annotation/index.ts
 
 `/annotate` is a toggle. If no server is running for this session, `/annotate` starts one and prints the notice. If a server is running, `/annotate` stops it. Pending requests end at once, pi releases the port, and pi shows `annotate: closed, port <port> released`. If you run `/annotate` while the server is still starting, the server also ends up stopped.
 
-The server also stops when the session ends: `/new`, `/resume`, a fork, a reload, or quitting pi. The server has no idle timeout. After a session switch, `/annotate` starts a new server for the new session, and the old tab says that the session switched.
+The server also stops when the session ends: `/new`, `/resume`, a fork, a reload, or quitting pi. The clients then say that the session switched. The server has no idle timeout.
+
+`/resume-handoff` is the exception. The server stays on the same port, pi prints the new URL and the terminal command, and attached terminal views and open browser tabs follow the new session with their unsent notes.
 
 ### Get a new URL
 
@@ -234,6 +236,7 @@ The end-to-end scripts run a real pi with a fake model. `PI_BIN` is the director
 
 - `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` checks `s`, `S`, busy follow-up ordering, interactive selection, cancellation, and terminal restoration. It creates an isolated home, project, registry, local provider, and tmux socket. It keeps the evidence in a new directory under the `--evidence` directory, or under `EVIDENCE_DIR`.
 - `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` under tmux. It checks the editor, live updates, `/tree`, stopping and restarting with `/annotate`, the page after the server closes, and session switches.
+- `extensions/annotation/test/e2e/tmux-handoff.sh` runs pi with annotation and resume-handoff under tmux. It checks that terminal views and browser tabs follow a handoff, keep their notes, and send to the new session. Set `DRIVER=browser` with `PLAYWRIGHT_CORE` and `CHROME_BIN` to run the browser checks.
 - `extensions/annotation/test/e2e/herdr-tui.sh` runs pi and the bin in two herdr panes. It checks the note flow, live replies, quitting, and stopping. It also needs `HERDR_ENV=1`, so run it from inside herdr.
 - `extensions/annotation/test/e2e/tmux-markdown.sh` runs pi with a markdown reply and drives `extensions/annotation/test/e2e/markdown.mjs`. The script checks rendering, the diagram iframes, quoting, live updates, the timeout fallback, CSP violations, and network requests. It also needs `PLAYWRIGHT_CORE` and `CHROME_BIN`.
 

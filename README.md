@@ -30,6 +30,8 @@ Each extension lives in `extensions/<name>/`, with its tests and any skills it s
 
 All modes send an English bootstrap that instructs the new agent to read the exact handoff path as its first action, then continue the work. Generated files remain in the temporary directory after success or failure. Remove them when no session needs them.
 
+If an annotation server is running, a manual or automatic handoff keeps the server on the same port. Attached terminal views and open browser tabs follow the new session and keep their unsent notes. Every other session switch closes the server.
+
 ### Automatic handoff by context usage
 
 Automatic handoff is off by default. To enable it, create `<agentDir>/resume-handoff/config.json` with `{"enabled": true, "softThresholdPercent": 75, "hardThresholdPercent": 88}`. `agentDir` is pi's agent directory, `~/.pi/agent` unless `PI_CODING_AGENT_DIR` is set. The percentages default to 75 and 88 when omitted. An invalid config disables the feature and shows a warning at session start. The extension reads the config at session start, so changes apply to the next session or to `/reload`. Automatic handoff works in the TUI only.

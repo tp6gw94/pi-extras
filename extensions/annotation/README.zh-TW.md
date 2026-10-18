@@ -46,7 +46,9 @@ pi --extension ./extensions/annotation/index.ts
 
 `/annotate` 是開關。這個 session 沒有伺服器在執行時，`/annotate` 會啟動伺服器並印出通知。有伺服器在執行時，`/annotate` 會停止它。等待中的請求立刻結束，pi 釋放 port，並顯示 `annotate: closed, port <port> released`。伺服器還在啟動時執行 `/annotate`，伺服器最後也會停止。
 
-session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或離開 pi。伺服器沒有閒置逾時。切換 session 之後，`/annotate` 會為新的 session 啟動新的伺服器，舊分頁會顯示 session 已切換。
+session 結束時伺服器也會停止：`/new`、`/resume`、fork、reload 或離開 pi。此時 client 會顯示 session 已切換。伺服器沒有閒置逾時。
+
+`/resume-handoff` 是例外。伺服器留在原本的 port，pi 會印出新的網址與終端機指令，已連接的終端機檢視與開啟的瀏覽器分頁會跟到新 session，並保留尚未送出的筆記。
 
 ### 取得新的網址
 
@@ -234,6 +236,7 @@ end-to-end 腳本會用假的模型跑真的 pi。`PI_BIN` 是放 `pi` 執行檔
 
 - `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` 檢查 `s`、`S`、忙碌時的 follow-up 順序、互動選擇、取消與終端機模式還原。它會建立隔離的 home、專案、registry、本機 provider 與 tmux socket。證據保留在 `--evidence` 目錄或 `EVIDENCE_DIR` 底下的新目錄。
 - `extensions/annotation/test/e2e/tmux-annotate.sh` 在 tmux 裡執行 `/annotate`。它檢查編輯器、即時更新、`/tree`、用 `/annotate` 停止與重新啟動、伺服器關閉後的頁面，以及切換 session。
+- `extensions/annotation/test/e2e/tmux-handoff.sh` 在 tmux 裡同時載入 annotation 與 resume-handoff。它檢查終端機檢視和瀏覽器分頁會跟隨交接、保留筆記，並送到新 session。設定 `DRIVER=browser`、`PLAYWRIGHT_CORE` 與 `CHROME_BIN` 可執行瀏覽器檢查。
 - `extensions/annotation/test/e2e/herdr-tui.sh` 在 herdr 的兩個 pane 裡跑 pi 與執行檔。它檢查筆記流程、即時回覆、離開與停止。它還需要 `HERDR_ENV=1`，所以請在 herdr 裡執行。
 - `extensions/annotation/test/e2e/tmux-markdown.sh` 讓 pi 回覆一段 markdown，並執行 `extensions/annotation/test/e2e/markdown.mjs`。這個腳本檢查顯示結果、圖表 iframe、引用、即時更新、逾時退回、CSP 違規與網路請求。它還需要 `PLAYWRIGHT_CORE` 與 `CHROME_BIN`。
 

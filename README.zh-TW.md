@@ -30,6 +30,8 @@ pi-extras 需要 `@earendil-works/pi-coding-agent` 1.3.0 以上與 Node.js 22。
 
 所有模式都會送出英文啟動指示，要求新 agent 的第一個動作讀取精確的交接檔案路徑，再接續工作。不論成功或失敗，生成的檔案都會留在暫存目錄。確認沒有 session 需要它後可自行刪除。
 
+如果 annotation 伺服器正在執行，手動或自動交接都會讓伺服器留在原本的 port。已連接的終端機檢視與開啟的瀏覽器分頁會跟到新 session，並保留尚未送出的筆記。其他任何 session 切換都會關閉伺服器。
+
 ### 依 context 用量自動交接
 
 自動交接預設關閉。要啟用，建立 `<agentDir>/resume-handoff/config.json`，內容為 `{"enabled": true, "softThresholdPercent": 75, "hardThresholdPercent": 88}`。`agentDir` 是 pi 的 agent 目錄，除非設了 `PI_CODING_AGENT_DIR`，否則為 `~/.pi/agent`。省略百分比時預設為 75 與 88。設定無效時會停用此功能，並在 session 開始時顯示警告。extension 在 session 開始時讀取設定，因此變更要到下一個 session 或執行 `/reload` 才生效。自動交接只在 TUI 中運作。
