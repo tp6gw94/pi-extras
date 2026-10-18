@@ -383,6 +383,8 @@ test("threshold generation instructs the next session to continue authorized wor
 	assert.match(instruction, /remain pending/);
 	assert.doesNotMatch(instruction, /\bconfirm/i);
 	assert.match(instruction, /Always include a ## Resume policy section/);
+	assert.match(instruction, /Preserve conditional instructions for the next session, including branches that become active on handoff, and identify the effective next action with its conditions intact\./);
+	assert.match(instruction, /Keep constraints, decisions, pending approvals, and blockers together in one section/);
 	assert.equal(instruction.match(/continue only the work/gi)?.length, 1);
 });
 
