@@ -104,7 +104,7 @@ class FakeStorage {
 	}
 }
 
-function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record<string, unknown>; hash?: string; pathname?: string; storage?: FakeStorage; snapshotStatus?: number } = {}) {
+function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record<string, unknown>; hash?: string; pathname?: string; storage?: FakeStorage; snapshotStatus?: number; snapshots?: Record<string, Reply>; deferSnapshots?: string[] } = {}) {
 	const ids = ["conversation", "list", "send", "status", "composer", "composer-quote", "note", "count", "empty"];
 	const byId = new Map(ids.map((id) => [id, new FakeElement(id === "note" ? "textarea" : "div")]));
 	const created: FakeElement[] = [];
@@ -112,6 +112,7 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 	const sendReplies = [...(options.send ?? [])];
 	const eventWaiters: ((reply: Reply) => void)[] = [];
 	const eventQueue: Reply[] = [];
+	const snapshotWaiters = new Map<string, ((reply: Reply) => void)[]>();
 	let selectionText = "";
 	let selectionStart: unknown = {};
 	let selectionEnd: unknown = {};
@@ -125,6 +126,7 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		calls: [] as unknown[][],
 		replaceState(...args: unknown[]) {
 			this.calls.push(args);
+			if (typeof args[2] === "string") location.pathname = args[2];
 			location.hash = "";
 		},
 	};
@@ -175,17 +177,32 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 			},
 		}),
 	};
-	const respond = (reply: Reply) => ({ ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body });
+	const respond = (reply: Reply) => ({
+		ok: reply.status >= 200 && reply.status < 300,
+		status: reply.status,
+		json: async () => reply.body,
+	});
 	const fetch = (path: string, init: Record<string, unknown> = {}) => {
 		requests.push({ path, init });
-		if (path === base + "/api/snapshot") return Promise.resolve(respond({ status: options.snapshotStatus ?? 200, body: options.snapshotStatus ? {} : snapshot }));
-		if (path.startsWith(base + "/api/events")) {
+		const snapshotPath = path.match(/^(.*)\/api\/snapshot$/)?.[1];
+		if (snapshotPath !== undefined) {
+			if (options.deferSnapshots?.includes(snapshotPath)) {
+				return new Promise((resolve) => {
+					const waiters = snapshotWaiters.get(snapshotPath) ?? [];
+					waiters.push((reply) => resolve(respond(reply)));
+					snapshotWaiters.set(snapshotPath, waiters);
+				});
+			}
+			const reply = options.snapshots?.[snapshotPath] ?? (snapshotPath === base ? { status: options.snapshotStatus ?? 200, body: options.snapshotStatus ? {} : snapshot } : { status: 200, body: snapshot });
+			return Promise.resolve(respond(reply));
+		}
+		if (/\/api\/events\?/.test(path)) {
 			const answer = (reply: Reply) => (reply.status === 0 ? Promise.reject(new TypeError("network")) : Promise.resolve(respond(reply)));
 			const queued = eventQueue.shift();
 			if (queued) return answer(queued);
 			return new Promise((resolve, reject) => eventWaiters.push((reply) => answer(reply).then(resolve, reject)));
 		}
-		if (path === base + "/api/send") {
+		if (path.endsWith("/api/send")) {
 			const reply = sendReplies.shift() ?? { status: 200, body: { ok: true, inserted: 1, nextSeq: 2 } };
 			if (reply.status === 0) return Promise.reject(new TypeError("network"));
 			return Promise.resolve(respond(reply));
@@ -255,9 +272,10 @@ function loadPage(snapshot: unknown, options: { send?: Reply[]; globals?: Record
 		byId.get("note")!.value = noteText;
 		byId.get("note")!.dispatch("keydown", { key: "Enter" });
 	};
-	const sends = () => requests.filter((entry) => entry.path === "/sid-1/api/send").map((entry) => JSON.parse(String(entry.init.body)));
+	const sends = () => requests.filter((entry) => entry.path.endsWith("/api/send")).map((entry) => JSON.parse(String(entry.init.body)));
 	const blocks = () => byId.get("conversation")!.children.filter((child) => child.tag === "article").map((child) => child.attributes["data-id"]);
-	return { byId, created, requests, flush, select, history, location, sessionStorage, pushEvent, annotate, sends, blocks, message, timers };
+	const resolveSnapshot = (path: string, reply: Reply) => snapshotWaiters.get(path)!.shift()!(reply);
+	return { byId, created, requests, flush, select, history, location, sessionStorage, pushEvent, annotate, sends, blocks, message, timers, resolveSnapshot };
 }
 
 const item = (id: string, text: string, kind = "assistant") => ({ id, kind, label: kind, text });
@@ -508,7 +526,143 @@ describe("annotate page script", () => {
 		}
 	});
 
-	it("shows the session-switched message when a send or the long-poll gets 410", async () => {
+	it("follows a successor from the long-poll without rebuilding the list or closing the composer", async () => {
+		const storage = new FakeStorage();
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "alpha beta")] }, {
+			storage,
+			snapshots: { "/sid-2": { status: 200, body: { version: 7, nextSeq: 8, items: [item("a2", "new conversation")] } } },
+		});
+		await page.flush();
+		await page.annotate("alpha", "kept note");
+		const listEdit = page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea")!;
+		listEdit.value = "edited kept note";
+		listEdit.dispatch("input");
+		page.select("beta");
+		await page.flush();
+		page.byId.get("note")!.value = "open composer draft";
+		await page.pushEvent({ status: 410, body: { error: "Session switched", successor: { sessionId: "sid-2", token: "tok-new" } } });
+		assert.equal(page.location.pathname, "/sid-2");
+		assert.equal(storage.getItem("annotate-token:sid-1"), null);
+		assert.equal(storage.getItem("annotate-token:sid-2"), "tok-new");
+		assert.equal(page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea"), listEdit);
+		assert.equal(listEdit.value, "edited kept note");
+		assert.equal(page.byId.get("count")!.textContent, "1");
+		assert.equal(page.byId.get("composer")!.hidden, false);
+		assert.equal(page.byId.get("composer-quote")!.textContent, "beta");
+		assert.equal(page.byId.get("note")!.value, "open composer draft");
+		assert.match(page.byId.get("status")!.textContent, /pi moved to a new session; your list is kept/);
+		const successorSnapshot = page.requests.find((entry) => entry.path === "/sid-2/api/snapshot")!;
+		assert.deepEqual(plain([successorSnapshot.init.headers]), [{ "X-Annotate-Token": "tok-new" }]);
+		const successorPoll = page.requests.find((entry) => entry.path === "/sid-2/api/events?after=7")!;
+		assert.deepEqual(plain([successorPoll.init.headers]), [{ "X-Annotate-Token": "tok-new" }]);
+	});
+
+	it("follows chained successor snapshots to the head and keeps the editable list", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "alpha")] }, {
+			snapshots: {
+				"/sid-2": { status: 410, body: { successor: { sessionId: "sid-3", token: "tok-head" } } },
+				"/sid-3": { status: 200, body: { version: 9, nextSeq: 6, items: [item("head", "head conversation")] } },
+			},
+		});
+		await page.flush();
+		await page.annotate("alpha", "kept note");
+		const listEdit = page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea")!;
+		await page.pushEvent({ status: 410, body: { successor: { sessionId: "sid-2", token: "tok-next" } } });
+		assert.equal(page.location.pathname, "/sid-3");
+		assert.equal(page.sessionStorage.getItem("annotate-token:sid-2"), null);
+		assert.equal(page.sessionStorage.getItem("annotate-token:sid-3"), "tok-head");
+		assert.deepEqual(page.blocks(), ["head"]);
+		assert.equal(page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea"), listEdit);
+		assert.equal(listEdit.value, "kept note");
+		assert.equal(page.byId.get("count")!.textContent, "1");
+		assert.equal(page.byId.get("send")!.disabled, false);
+		const poll = page.requests.find((entry) => entry.path === "/sid-3/api/events?after=9")!;
+		assert.deepEqual(plain([poll.init.headers]), [{ "X-Annotate-Token": "tok-head" }]);
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		assert.deepEqual(page.sends(), [{ seq: 6, items: [{ quote: "alpha", note: "kept note" }] }]);
+		assert.equal(page.byId.get("count")!.textContent, "0");
+	});
+
+	it("returns to the head and keeps polling when an old poll names an already-retired successor", async () => {
+		const snapshots = {
+			"/sid-2": { status: 200, body: { version: 4, nextSeq: 2, items: [item("middle", "middle conversation")] } } as Reply,
+			"/sid-3": { status: 200, body: { version: 9, nextSeq: 6, items: [item("head", "head conversation")] } },
+		};
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "alpha")] }, {
+			send: [
+				{ status: 410, body: { successor: { sessionId: "sid-2", token: "tok-middle" } } },
+				{ status: 410, body: { successor: { sessionId: "sid-3", token: "tok-head" } } },
+			],
+			snapshots,
+		});
+		await page.flush();
+		await page.annotate("alpha", "kept note");
+		const listEdit = page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea")!;
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		assert.equal(page.location.pathname, "/sid-2");
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		assert.equal(page.location.pathname, "/sid-3");
+		snapshots["/sid-2"] = { status: 410, body: { successor: { sessionId: "sid-3", token: "tok-head" } } };
+		await page.pushEvent({ status: 410, body: { successor: { sessionId: "sid-2", token: "tok-middle" } } });
+		assert.equal(page.location.pathname, "/sid-3");
+		assert.deepEqual(page.blocks(), ["head"]);
+		assert.equal(page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea"), listEdit);
+		assert.equal(listEdit.value, "kept note");
+		assert.equal(page.requests.at(-1)!.path, "/sid-3/api/events?after=9");
+		await page.pushEvent({ status: 200, body: { version: 10, reset: false, items: [item("reply", "head reply")] } });
+		assert.deepEqual(page.blocks(), ["head", "reply"]);
+		assert.equal(page.requests.at(-1)!.path, "/sid-3/api/events?after=10");
+		assert.deepEqual(plain([page.requests.at(-1)!.init.headers]), [{ "X-Annotate-Token": "tok-head" }]);
+		assert.equal(page.byId.get("count")!.textContent, "1");
+	});
+
+	it("keeps the list after a send follows a successor and retries with its path, token and next seq", async () => {
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] }, {
+			send: [{ status: 410, body: { successor: { sessionId: "sid-2", token: "tok-new" } } }],
+			snapshots: { "/sid-2": { status: 200, body: { version: 4, nextSeq: 9, items: [item("a2", "new conversation")] } } },
+		});
+		await page.flush();
+		await page.annotate("x", "keep me");
+		const listEdit = page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea")!;
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		assert.equal(page.byId.get("count")!.textContent, "1");
+		assert.equal(page.byId.get("list")!.children[0]!.all().find((element) => element.tag === "textarea"), listEdit);
+		assert.equal(page.byId.get("status")!.textContent, "pi moved to a new session. Your list is kept; press Send again.");
+		assert.equal(page.byId.get("send")!.disabled, false);
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		const request = page.requests.find((entry) => entry.path === "/sid-2/api/send")!;
+		assert.deepEqual(plain([request.init.headers]), [{ "X-Annotate-Token": "tok-new", "Content-Type": "application/json" }]);
+		assert.deepEqual(page.sends(), [
+			{ seq: 1, items: [{ quote: "x", note: "keep me" }] },
+			{ seq: 9, items: [{ quote: "x", note: "keep me" }] },
+		]);
+	});
+
+	it("shares one successor snapshot when the poll and send both receive the handoff", async () => {
+		const successor = { sessionId: "sid-2", token: "tok-new" };
+		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] }, {
+			send: [{ status: 410, body: { successor } }],
+			deferSnapshots: ["/sid-2"],
+		});
+		await page.flush();
+		await page.annotate("x", "keep me");
+		page.byId.get("send")!.dispatch("click");
+		await page.flush();
+		await page.pushEvent({ status: 410, body: { successor } });
+		assert.equal(page.requests.filter((entry) => entry.path === "/sid-2/api/snapshot").length, 1);
+		page.resolveSnapshot("/sid-2", { status: 200, body: { version: 3, nextSeq: 5, items: [item("a2", "new conversation")] } });
+		await page.flush();
+		assert.equal(page.location.pathname, "/sid-2");
+		assert.equal(page.requests.filter((entry) => entry.path === "/sid-2/api/snapshot").length, 1);
+		assert.equal(page.byId.get("status")!.textContent, "pi moved to a new session. Your list is kept; press Send again.");
+	});
+
+	it("shows the session-switched message when a send or the long-poll gets 410 without a successor", async () => {
 		const page = loadPage({ version: 1, nextSeq: 1, items: [item("a1", "x")] }, { send: [{ status: 410, body: { error: "Session switched, run /annotate again." } }] });
 		await page.flush();
 		await page.annotate("x");
