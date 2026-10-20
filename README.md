@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-extras is one [pi](https://github.com/earendil-works/pi) package with ten extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
+pi-extras is one [pi](https://github.com/earendil-works/pi) package with nine extensions. You install it once, and pi loads every extension in it. You can turn single extensions off in pi's settings.
 
 pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 22.
 
@@ -10,7 +10,6 @@ pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
-| `ego-browser` | Runs bounded browser tasks in one Ego Lite TaskSpace, with Jev choosing authorized actions and evidence saved for review. | [README](extensions/ego-browser/README.md) |
 | `annotation` | Quotes parts of the conversation with notes and appends them to the editor, from a browser page or a terminal view. `/annotate` starts the server, and `/annotate` again stops it. | [README](extensions/annotation/README.md) |
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
@@ -37,11 +36,11 @@ To install it for the current project only, add `--local`. pi then writes the pa
 pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-When pi starts, it lists the ten extensions under `[Extensions]`:
+When pi starts, it lists the nine extensions under `[Extensions]`:
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:ego-browser, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:quota-resume, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
+  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:quota-resume, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
 tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
