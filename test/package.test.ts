@@ -24,10 +24,9 @@ function headingLevels(text: string): number[] {
 }
 
 describe("package layout", () => {
-	it("has the ten extensions, each with an index.ts", () => {
+	it("has the nine extensions, each with an index.ts", () => {
 		assert.deepEqual(extensions, [
 			"annotation",
-			"ego-browser",
 			"hooks",
 			"inline-skills",
 			"quota-resume",
@@ -76,10 +75,9 @@ describe("package layout", () => {
 		assert.deepEqual(lock.packages[""].engines, { node: ">=22" });
 	});
 
-	it("keeps the skills that ralph, rpc-subagents and ego-browser find next to their index.ts", () => {
+	it("keeps the skills that ralph and rpc-subagents find next to their index.ts", () => {
 		assert.ok(existsSync(join(root, "extensions/ralph/skills/ralph-completion/SKILL.md")));
 		assert.ok(existsSync(join(root, "extensions/rpc-subagents/skills/rpc-subagents/SKILL.md")));
-		assert.ok(existsSync(join(root, "extensions/ego-browser/skills/ego-browser-tools/SKILL.md")));
 	});
 });
 

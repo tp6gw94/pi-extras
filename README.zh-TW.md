@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-pi-extras 是一個 [pi](https://github.com/earendil-works/pi) 套件，裡面有十個 extension。安裝一次，pi 就會載入其中每個 extension。你可以在 pi 的設定裡關掉個別的 extension。
+pi-extras 是一個 [pi](https://github.com/earendil-works/pi) 套件，裡面有九個 extension。安裝一次，pi 就會載入其中每個 extension。你可以在 pi 的設定裡關掉個別的 extension。
 
 pi-extras 需要 `@earendil-works/pi-coding-agent` 1.3.0 以上與 Node.js 22。
 
@@ -10,7 +10,6 @@ pi-extras 需要 `@earendil-works/pi-coding-agent` 1.3.0 以上與 Node.js 22。
 
 | Extension | 用途 | 文件 |
 | --- | --- | --- |
-| `ego-browser` | 在一個 Ego Lite TaskSpace 中執行有界瀏覽器任務，以 Jev 選擇已授權動作並保存驗收證據。 | [README](extensions/ego-browser/README.zh-TW.md) |
 | `annotation` | 引用對話段落並加上筆記，再附加到編輯器。`/annotate` 啟動伺服器，可從瀏覽器頁面或終端機檢視引用。再執行一次 `/annotate` 就會停止。 | [README](extensions/annotation/README.zh-TW.md) |
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
@@ -37,11 +36,11 @@ pi install git:github.com/tp6gw94/pi-extras
 pi install --local git:github.com/tp6gw94/pi-extras
 ```
 
-pi 啟動時，會在 `[Extensions]` 底下列出十個 extension：
+pi 啟動時，會在 `[Extensions]` 底下列出九個 extension：
 
 ```text
 [Extensions]
-  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:ego-browser, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:quota-resume, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
+  tp6gw94/pi-extras:annotation, tp6gw94/pi-extras:hooks, tp6gw94/pi-extras:inline-skills, tp6gw94/pi-extras:quota-resume, tp6gw94/pi-extras:ralph, tp6gw94/pi-extras:resume-handoff,
 tp6gw94/pi-extras:rpc-subagents, tp6gw94/pi-extras:skill-name-normalizer, tp6gw94/pi-extras:ux
 ```
 
