@@ -1,5 +1,6 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
+import annotation from "../../index.ts";
 
 interface Armed {
 	readonly ctx: ExtensionCommandContext;
@@ -7,6 +8,33 @@ interface Armed {
 }
 
 export default function (pi: ExtensionAPI) {
+	let annotationMode: RegisteredCommand["handler"] | undefined;
+	const proxy = new Proxy(pi, {
+		get(target, property) {
+			if (property === "registerCommand") {
+				return (name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void => {
+					if (name === "annotation-mode") annotationMode = options.handler;
+					target.registerCommand(name, options);
+				};
+			}
+			const value = Reflect.get(target, property, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	annotation(proxy);
+
+	pi.registerCommand("probe-mode", {
+		description: "test: set the editor draft and run the real annotation-mode command",
+		handler: async (args, ctx) => {
+			if (!annotationMode) {
+				ctx.ui.notify("probe-mode: annotation-mode is not registered", "error");
+				return;
+			}
+			ctx.ui.setEditorText(JSON.parse(args.trim()));
+			await annotationMode("", ctx);
+		},
+	});
+
 	let armed: Armed | undefined;
 	let unlisten: (() => void) | undefined;
 

@@ -260,7 +260,6 @@ def setup():
     main = [
         "env", "-i", *[f"{key}={value}" for key, value in main_env.items()], str(PI),
         "--tui-mode", "fullscreen", "--provider", "fake", "--model", "fake-model",
-        "--extension", str(ROOT / "index.ts"),
         "--extension", str(HERE / "annotation-mode-probe.ts"),
         "--extension", str(HERE / "editor-probe.ts"),
     ]
@@ -281,7 +280,6 @@ def start_regular():
     argv = [
         "env", "-i", *[f"{key}={value}" for key, value in base.items()], str(PI),
         "--tui-mode", "regular", "--provider", "fake", "--model", "fake-model",
-        "--extension", str(ROOT / "index.ts"),
         "--extension", str(HERE / "annotation-mode-probe.ts"),
         "--extension", str(HERE / "editor-probe.ts"),
     ]
@@ -293,7 +291,7 @@ def run():
     setup()
     version = subprocess.run([str(PI), "--version"], capture_output=True, text=True, env=tmux_env()).stdout.strip()
     (EVIDENCE / "setup.json").write_text(
-        json.dumps({"pi": str(PI), "version": version, "extension": str(ROOT / "index.ts"), "work": str(WORK), "modelPort": port, "tmuxSocket": str(SOCKET)}),
+        json.dumps({"pi": str(PI), "version": version, "extension": str(HERE / "annotation-mode-probe.ts"), "work": str(WORK), "modelPort": port, "tmuxSocket": str(SOCKET)}),
         encoding="utf-8",
     )
 
@@ -304,10 +302,8 @@ def run():
     check_true("transcript renders markdown instead of source", "The cache has two layers and uses the docs." in plain and "**two layers**" not in plain)
     check_true("transcript renders fenced code and CJK", "```ts" in plain and "const limit = 3;" in plain and "日本語テキスト 🚀 完了" in plain)
 
-    command('/probe-set-editor ' + json.dumps("DRAFT_DOC"))
+    command('/probe-mode ' + json.dumps("DRAFT_DOC"))
     wait_editor("DRAFT_DOC", "draft prepared")
-
-    command("/annotation-mode")
     entry = wait_status("NORMAL", 0)
     plain, ansi = shot("01-entry")
     check_true("status positions start at the transcript top", entry["row"] >= 1 and entry["col"] >= 1)
@@ -477,7 +473,9 @@ def run():
     press("q")
     wait_closed()
     wait_editor("DRAFT_DOC", "draft after quit")
-    command("/annotation-mode")
+    special("C-c")
+    wait_editor("", "Ctrl-C before re-entry")
+    command('/probe-mode ' + json.dumps("DRAFT_DOC"))
     wait_status("NORMAL", 3)
     shot("08-reentry")
 
@@ -499,13 +497,12 @@ def run():
     special("C-c")
     wait_editor("", "Ctrl-C clears the restored editor")
 
-    command('/probe-set-editor ' + json.dumps("DRAFT_FOLLOWUP"))
-    wait_editor("DRAFT_FOLLOWUP", "follow-up draft prepared")
     command("MODE_HOLD")
     wait(lambda: model_held(), "held model response")
     wait(lambda: "Holding current work." in pane(), "held response displayed")
     held_count = model_count()
-    command("/annotation-mode")
+    command('/probe-mode ' + json.dumps("DRAFT_FOLLOWUP"))
+    wait_editor("DRAFT_FOLLOWUP", "follow-up draft prepared")
     wait_status("NORMAL")
     wait(lambda: (value := status()) and value["working"] and value, "busy marker")
     press("G")
@@ -536,12 +533,13 @@ def run():
     wait_editor("DRAFT_FOLLOWUP", "S keeps the draft after the reply")
     (EVIDENCE / "model-events-followup.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
 
-    command('/probe-set-editor ' + json.dumps("DRAFT_STREAM"))
-    wait_editor("DRAFT_STREAM", "stream draft prepared")
+    special("C-c")
+    wait_editor("", "Ctrl-C before the stream")
     stream_request = model_count() + 1
     command("MODE_STREAM")
     wait(lambda: "stream line 01" in pane(), "stream started", 20)
-    command("/annotation-mode")
+    command('/probe-mode ' + json.dumps("DRAFT_STREAM"))
+    wait_editor("DRAFT_STREAM", "stream draft prepared")
     stream_entry = wait_status("NORMAL")
     wait(lambda: (value := status()) and value["working"] and value, "stream busy marker")
     plain, _ = shot("11-stream-entry")
@@ -562,9 +560,8 @@ def run():
     special("C-c")
     wait_editor("", "Ctrl-C after the stream")
 
-    command('/probe-set-editor ' + json.dumps("DRAFT_RESIZE"))
+    command('/probe-mode ' + json.dumps("DRAFT_RESIZE"))
     wait_editor("DRAFT_RESIZE", "resize draft prepared")
-    command("/annotation-mode")
     wait_status("NORMAL")
     press("a")
     wait_status("NOTE")
@@ -597,9 +594,8 @@ def run():
     special("C-c")
     wait_editor("", "Ctrl-C after resize")
 
-    command('/probe-set-editor ' + json.dumps("DRAFT_EVICT"))
+    command('/probe-mode ' + json.dumps("DRAFT_EVICT"))
     wait_editor("DRAFT_EVICT", "eviction draft prepared")
-    command("/annotation-mode")
     wait_status("NORMAL")
     press("G")
     press("a")
@@ -619,19 +615,20 @@ def run():
     wait_editor("DRAFT_EVICTX", "editor accepts input after eviction")
     special("C-c")
     wait_editor("", "Ctrl-C after eviction")
-    command("/annotation-mode")
+    command('/probe-mode ' + json.dumps("DRAFT_EVICT"))
     wait_status("NORMAL", 1)
     press("q")
     check_true("notes survive eviction", "1 unsent note; press again to quit" in pane())
     press("q")
     wait_closed()
     wait_editor("DRAFT_EVICT", "eviction draft after re-entry")
+    special("C-c")
+    wait_editor("", "Ctrl-C after eviction re-entry")
 
-    command('/probe-set-editor ' + json.dumps("DRAFT_TREE"))
-    wait_editor("DRAFT_TREE", "tree draft prepared")
     command("/probe-arm-tree two layers")
     wait(lambda: "armed" in pane(), "tree probe armed")
-    command("/annotation-mode")
+    command('/probe-mode ' + json.dumps("DRAFT_TREE"))
+    wait_editor("DRAFT_TREE", "tree draft prepared")
     wait_status("NORMAL", 1)
     press("G")
     press("{")
@@ -647,7 +644,7 @@ def run():
     check_true("a selection is painted before the rebuild", "\x1b[7m" in ansi and "\x1b[4m" in ansi)
     special("C-t")
     wait(lambda: "selection cleared: conversation changed" in pane(), "selection cleared after the rebuild", 20)
-    wait_status("NORMAL", 1)
+    wait_status("NORMAL", 2)
     plain, ansi = shot("19-tree-rebuild")
     check_true("the rebuild drops stale note marks", "\x1b[4m" not in ansi)
     check_true("the rebuild removes the selected message", "stream line 01" not in plain)
@@ -657,12 +654,16 @@ def run():
     press("q")
     wait_closed()
     wait_editor("DRAFT_TREE", "tree draft after exit")
-    command("/annotation-mode")
+    special("C-c")
+    wait_editor("", "Ctrl-C before the tree re-entry")
+    command('/probe-mode ' + json.dumps("DRAFT_TREE"))
     wait_status("NORMAL", 2)
     press("q")
     press("q")
     wait_closed()
     wait_editor("DRAFT_TREE", "tree draft after the final re-entry")
+    special("C-c")
+    wait_editor("", "Ctrl-C after the tree scenarios")
 
     command('/probe-set-editor ' + json.dumps("DRAFT_EXIT"))
     wait_editor("DRAFT_EXIT", "exit draft prepared")
