@@ -143,6 +143,56 @@ def full_capture(target=MAIN):
     return plain, ansi
 
 
+SGR = re.compile(r"\x1b\[([0-9;:]*)m")
+CSI = re.compile(r"\x1b\[[0-9;:?]*[A-Za-z]")
+
+
+def styled_glyphs(line):
+    glyphs = []
+    underlined = False
+    index = 0
+    while index < len(line):
+        if line[index] == "\x1b":
+            sgr = SGR.match(line, index)
+            if sgr:
+                parameters = sgr.group(1).split(";") if sgr.group(1) else ["0"]
+                at = 0
+                while at < len(parameters):
+                    parameter = parameters[at]
+                    code = parameter.split(":")[0]
+                    if code in ("38", "48", "58"):
+                        if ":" not in parameter and at + 1 < len(parameters):
+                            at += 3 if parameters[at + 1] == "5" else 5 if parameters[at + 1] == "2" else 0
+                        at += 1
+                        continue
+                    if code in ("", "0"):
+                        underlined = False
+                    elif code == "4":
+                        underlined = ":" not in parameter or parameter.split(":", 1)[1] != "0"
+                    elif code == "24":
+                        underlined = False
+                    at += 1
+                index = sgr.end()
+                continue
+            escape = CSI.match(line, index)
+            if escape:
+                index = escape.end()
+                continue
+        glyphs.append((line[index], underlined))
+        index += 1
+    return glyphs
+
+
+def underline_states(ansi, needle):
+    for line in ansi.splitlines():
+        glyphs = styled_glyphs(line)
+        text = "".join(glyph for glyph, _ in glyphs)
+        at = text.find(needle)
+        if at >= 0:
+            return [state for _, state in glyphs[at:at + len(needle)]]
+    return None
+
+
 def press(char, target=MAIN):
     tmux("send-keys", "-t", target, "-l", char)
     time.sleep(0.12)
@@ -259,7 +309,7 @@ def setup():
     main_env = dict(base, ANNOTATE_EDITOR_PROBE=str(EDITOR))
     main = [
         "env", "-i", *[f"{key}={value}" for key, value in main_env.items()], str(PI),
-        "--tui-mode", "fullscreen", "--provider", "fake", "--model", "fake-model",
+        "--tui-mode", "fullscreen", "--provider", "fake", "--model", "fake-model", "--approve",
         "--extension", str(HERE / "annotation-mode-probe.ts"),
         "--extension", str(HERE / "editor-probe.ts"),
     ]
@@ -279,7 +329,7 @@ def start_regular():
     }
     argv = [
         "env", "-i", *[f"{key}={value}" for key, value in base.items()], str(PI),
-        "--tui-mode", "regular", "--provider", "fake", "--model", "fake-model",
+        "--tui-mode", "regular", "--provider", "fake", "--model", "fake-model", "--approve",
         "--extension", str(HERE / "annotation-mode-probe.ts"),
         "--extension", str(HERE / "editor-probe.ts"),
     ]
@@ -308,6 +358,8 @@ def run():
     plain, ansi = shot("01-entry")
     check_true("status positions start at the transcript top", entry["row"] >= 1 and entry["col"] >= 1)
     check_true("caret uses reverse video", "\x1b[7m" in ansi)
+    check("the fixture CJK text starts without underline", underline_states(ansi, "日"), [False])
+    check("the native link starts underlined", underline_states(ansi, "the docs"), [True] * len("the docs"))
     check("mode keys do not change the draft", editor_text(), "DRAFT_DOC")
     check_true("status line shows the mode hints", "v select" in plain and "s editor" in plain and "S submit" in plain and "Tab list" in plain)
 
@@ -361,26 +413,22 @@ def run():
     press("^")
     wait_position(col=2)
     press("$")
-    list_end = wait_position(col=12)
-    check("line motions use the first non-blank and the row end", list_end["col"], 12)
+    list_end = wait_position(col=11)
+    check("line motions use the first non-blank and the row end", list_end["col"], 11)
 
     press("g")
     press("g")
     wait_position(row=1)
+    start = status()
     special("C-d")
-    half_down = wait(lambda: (value := status()) and value["row"] > 1 and value, "half page down")
+    half_down = wait(lambda: (value := status()) and value["row"] > start["row"] and value, "half page down")
     special("C-u")
     wait(lambda: (value := status()) and value["row"] < half_down["row"] and value, "half page up")
+    before_page = status()
     special("C-f")
-    page_down = wait(lambda: (value := status()) and value["row"] > half_down["row"] and value, "page down")
+    page_down = wait(lambda: (value := status()) and value["row"] > before_page["row"] and value, "page down")
     special("C-b")
     wait(lambda: (value := status()) and value["row"] < page_down["row"] and value, "page up")
-    before_page = status()
-    special("NPage")
-    wait(lambda: (value := status()) and value["row"] > before_page["row"] and value, "PageDown moves a page")
-    after_page = status()
-    special("PPage")
-    wait(lambda: (value := status()) and value["row"] < after_page["row"] and value, "PageUp moves a page")
 
     press("G")
     press("{")
@@ -409,7 +457,7 @@ def run():
     special("Enter")
     wait_status("NORMAL", 1)
     _, ansi = shot("02-cjk-note")
-    check_true("saved notes are underlined", "\x1b[4m" in ansi)
+    check("the annotated CJK text is underlined", underline_states(ansi, "日"), [True])
     check("note keys still do not change the draft", editor_text(), "DRAFT_DOC")
 
     for _ in range(2):
@@ -486,7 +534,7 @@ def run():
     expected = (
         "DRAFT_DOC\n"
         "> 日本語テキスト 🚀 完了\n\ncjk note edited\n\n"
-        "> The cache has two layers and uses the docs.\n\nmarkdown note\n\n"
+        "> The cache has two layers and uses the docs (https://example.com/cache).\n\nmarkdown note\n\n"
         "> ```ts\n> const limit = 3;\n> ```\n\ncode note\n\n"
     )
     check("s appends the exact quote format after the draft", editor_text(), expected)
@@ -496,6 +544,43 @@ def run():
     shot("09-appended")
     special("C-c")
     wait_editor("", "Ctrl-C clears the restored editor")
+
+    command('/probe-mode ' + json.dumps("DRAFT_GLYPHS"))
+    wait_editor("DRAFT_GLYPHS", "glyph draft prepared")
+    wait_status("NORMAL", 0)
+    press("G")
+    press("{")
+    wait_status("NORMAL")
+    press("0")
+    wait_position(col=1)
+    press("^")
+    wait_position(col=2)
+    press("v")
+    wait_status("VISUAL")
+    press("a")
+    wait_status("NOTE")
+    type_text("single CJK")
+    special("Enter")
+    wait_status("NORMAL", 1)
+    press("w")
+    wait_position(col=17)
+    press("v")
+    wait_status("VISUAL")
+    press("a")
+    wait_status("NOTE")
+    type_text("single emoji")
+    special("Enter")
+    wait_status("NORMAL", 2)
+    before_glyph = model_count()
+    press("s")
+    wait(lambda: "single emoji" in (editor_text() or ""), "glyph payload appended")
+    wait_closed()
+    check("s appends quotes for a single CJK and emoji grapheme", editor_text(), "DRAFT_GLYPHS\n> 日\n\nsingle CJK\n\n> 🚀\n\nsingle emoji\n\n")
+    check("the glyph payload does not call the model", model_count(), before_glyph)
+    save_editor("editor-glyphs.json")
+    shot("09b-glyph-payload")
+    special("C-c")
+    wait_editor("", "Ctrl-C clears the glyph draft")
 
     command("MODE_HOLD")
     wait(lambda: model_held(), "held model response")
@@ -554,6 +639,19 @@ def run():
     press("G")
     wait(lambda: "STREAM_DONE" in pane(), "G reaches the streamed end")
     check_true("G moves the caret past the recorded position", status()["row"] > stream_entry["row"])
+    native_caret = status()
+    before_native_page = pane()
+    special("PPage")
+    wait(lambda: pane() != before_native_page, "PageUp scrolls the native viewport")
+    check_true("PageUp leaves the latest message", "Jump to latest message" in pane())
+    check("PageUp keeps the caret row", status()["row"], native_caret["row"])
+    check("PageUp keeps the caret column", status()["col"], native_caret["col"])
+    after_native_page = pane()
+    special("NPage")
+    wait(lambda: pane() != after_native_page, "PageDown scrolls the native viewport")
+    check_true("PageDown returns to the latest message", "Jump to latest message" not in pane())
+    check("PageDown keeps the caret row", status()["row"], native_caret["row"])
+    check("PageDown keeps the caret column", status()["col"], native_caret["col"])
     press("q")
     wait_closed()
     wait_editor("DRAFT_STREAM", "stream draft after exit")
@@ -641,12 +739,13 @@ def run():
     press("v")
     wait_status("VISUAL")
     _, ansi = shot("18-tree-selection")
-    check_true("a selection is painted before the rebuild", "\x1b[7m" in ansi and "\x1b[4m" in ansi)
+    check_true("a selection is painted before the rebuild", "\x1b[7m" in ansi and underline_states(ansi, "stream line 01") == [True] * len("stream line 01"))
     special("C-t")
     wait(lambda: "selection cleared: conversation changed" in pane(), "selection cleared after the rebuild", 20)
     wait_status("NORMAL", 2)
     plain, ansi = shot("19-tree-rebuild")
-    check_true("the rebuild drops stale note marks", "\x1b[4m" not in ansi)
+    check("the rebuild drops the annotation underline", underline_states(ansi, "日"), [False])
+    check("the rebuild keeps the native link underline", underline_states(ansi, "the docs"), [True] * len("the docs"))
     check_true("the rebuild removes the selected message", "stream line 01" not in plain)
     check("the rebuild keeps both notes", status()["notes"], 2)
     press("q")
@@ -687,7 +786,8 @@ def run():
     (CAPTURES / "20-exit-transcript.txt").write_text(plain, encoding="utf-8")
     (CAPTURES / "20-exit-transcript.ansi").write_text(ansi, encoding="utf-8")
     check_true("the exit transcript has no caret", "\x1b[7m" not in ansi)
-    check_true("the exit transcript has no selection or note paint", "\x1b[4m" not in ansi)
+    check("the exit transcript has no annotation underline", underline_states(ansi, "日"), [False])
+    check("the exit transcript keeps the native link underline", underline_states(ansi, "the docs"), [True] * len("the docs"))
     check_true("the exit transcript has no dock", "NORMAL ·" not in plain)
     check_true("the exit transcript keeps the conversation", "The cache has two layers and uses the docs." in plain)
 
