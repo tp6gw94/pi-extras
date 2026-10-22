@@ -591,7 +591,6 @@ def run():
     wait_status("NORMAL")
     wait(lambda: (value := status()) and value["working"] and value, "busy marker")
     press("G")
-    press("{")
     wait_status("NORMAL")
     press("a")
     wait_status("NOTE")

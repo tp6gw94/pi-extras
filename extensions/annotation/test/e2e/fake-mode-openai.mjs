@@ -97,10 +97,10 @@ http
 			res.on("finish", () => events.push({ kind: "complete", requestId }));
 			res.writeHead(200, { "content-type": "text/event-stream" });
 			chunk(res, { role: "assistant", content: "" });
-			if (lastRole === "user" && lastText.includes("MODE_HOLD")) hold(res);
+			if (lastRole === "user" && lastText.includes("followup note")) reply(res, "Note received.");
+			else if (lastRole === "user" && lastText.includes("MODE_HOLD")) hold(res);
 			else if (lastRole === "user" && lastText.includes("MODE_STREAM")) void stream(res, streamLines);
 			else if (lastRole === "user" && lastText.includes("MODE_FIXTURE")) reply(res, fixture);
-			else if (lastRole === "user" && lastText.includes("followup note")) reply(res, "Note received.");
 			else reply(res, `Reply for ${lastText.slice(0, 40)}`);
 		});
 	})
