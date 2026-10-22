@@ -5,6 +5,8 @@ import { bindings } from "../mode/state.ts";
 
 describe("keyOf", () => {
 	it("decodes the named keys from legacy and kitty sequences", () => {
+		assert.equal(keyOf("\x03"), "ctrl+c");
+		assert.equal(keyOf("\x1b[99;5u"), "ctrl+c");
 		assert.equal(keyOf("\x04"), "ctrl+d");
 		assert.equal(keyOf("\x1b[100;5u"), "ctrl+d");
 		assert.equal(keyOf("\x15"), "ctrl+u");

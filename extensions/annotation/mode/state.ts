@@ -52,7 +52,7 @@ export const bindings: readonly Binding[] = [
 	{ keys: ["a"], modes: BROWSE, action: { type: "annotate", scope: "selectionOrLine" }, group: "Annotate", label: "note on selection or row", hint: "note" },
 	{ keys: ["A"], modes: BROWSE, action: { type: "annotate", scope: "unit" }, group: "Annotate", label: "note on whole message" },
 	{ keys: ["enter"], modes: NOTE, group: "Note editor", label: "save note", hint: "save" },
-	{ keys: ["escape"], modes: NOTE, action: { type: "back" }, group: "Note editor", label: "cancel note", hint: "cancel" },
+	{ keys: ["escape", "ctrl+c"], modes: NOTE, action: { type: "back" }, group: "Note editor", label: "cancel note", hint: "cancel" },
 	{ keys: ["tab"], modes: BROWSE, action: { type: "openList" }, group: "List", label: "notes list", hint: "list" },
 	{ keys: ["j", "down"], modes: LIST, action: { type: "listMove", delta: 1 }, group: "List", label: "next note" },
 	{ keys: ["k", "up"], modes: LIST, action: { type: "listMove", delta: -1 }, group: "List", label: "previous note" },
@@ -61,6 +61,7 @@ export const bindings: readonly Binding[] = [
 	{ keys: ["tab", "escape", "q"], modes: LIST, action: { type: "back" }, group: "List", label: "back", hint: "back" },
 	{ keys: ["s"], modes: ["normal", "list"], action: { type: "deliver", delivery: "editor" }, group: "Send", label: "append notes to the editor", hint: "editor" },
 	{ keys: ["S"], modes: ["normal", "list"], action: { type: "deliver", delivery: "agent" }, group: "Send", label: "submit notes to pi", hint: "submit" },
+	{ keys: ["ctrl+c"], modes: ["normal", "visual", "list", "help"], action: { type: "quit" }, group: "Quit", label: "quit" },
 	{ keys: ["q", "escape"], modes: NORMAL, action: { type: "quit" }, group: "Quit", label: "quit", hint: "quit" },
 	{ keys: ["?"], modes: ["normal", "visual", "list"], action: { type: "openHelp" }, group: "Help", label: "help", hint: "help" },
 	{ keys: ["j", "down"], modes: HELP, action: { type: "helpScroll", delta: 1 }, group: "Help", label: "scroll down", hint: "scroll" },
@@ -77,6 +78,7 @@ const KEY_NAMES: Record<string, string> = {
 	"ctrl+u": "Ctrl-u",
 	"ctrl+f": "Ctrl-f",
 	"ctrl+b": "Ctrl-b",
+	"ctrl+c": "Ctrl-c",
 	pageDown: "PgDn",
 	pageUp: "PgUp",
 	enter: "Enter",
@@ -161,6 +163,7 @@ export function keyAction(state: State, key: string): Action | undefined {
 		case "help":
 			return actionFor(key, "help") ?? { type: "back" };
 		default:
+			if (key === "ctrl+c") return actionFor(key, mode.kind);
 			if (mode.prefix !== "") return actionFor(mode.prefix + key, mode.kind) ?? { type: "prefix", prefix: "" };
 			if (key === "g") return { type: "prefix", prefix: "g" };
 			if (/^[1-9]$/.test(key) || (key === "0" && mode.count !== "")) return { type: "count", digit: key };

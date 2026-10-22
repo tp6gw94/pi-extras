@@ -191,6 +191,23 @@ describe("notes", () => {
 		assert.equal(refused.state.message?.error, true);
 	});
 
+	it("quits with Ctrl-C from every non-note mode, even after a pending prefix, and cancels a draft", () => {
+		const doc = chat();
+		const env = envOf(doc);
+		for (const sequence of [[], ["v"], ["tab"], ["?"], ["2", "g"]]) {
+			const state = keys(withNote(doc, env), sequence, env).state;
+			const armed = press(state, "ctrl+c", env);
+			assert.deepEqual(armed.effects, []);
+			assert.equal(armed.state.quitArmed, true);
+			assert.deepEqual(press(armed.state, "ctrl+c", env).effects, [{ type: "exit", outcome: { kind: "quit" } }]);
+		}
+		const draft = press(withNote(doc, env), "a", env).state;
+		const cancelled = press(draft, "ctrl+c", env);
+		assert.equal(cancelled.state.mode.kind, "normal");
+		assert.deepEqual(noteTexts(cancelled.state), ["first"]);
+		assert.deepEqual(cancelled.effects, []);
+	});
+
 	it("arms the quit when notes are unsent, disarms on any other key and exits on the second press", () => {
 		const doc = chat();
 		const env = envOf(doc);
@@ -248,7 +265,7 @@ describe("conversation changes", () => {
 describe("keys and help", () => {
 	it("binds exactly the v1 key set", () => {
 		const bound = new Set(bindings.flatMap((binding) => binding.keys));
-		const expected = ["h", "j", "k", "l", "left", "down", "up", "right", "w", "b", "e", "0", "home", "^", "$", "end", "gg", "G", "{", "}", "ctrl+d", "ctrl+u", "ctrl+f", "pageDown", "ctrl+b", "pageUp", "v", "V", "o", "a", "A", "tab", "d", "s", "S", "?", "q", "escape", "enter"];
+		const expected = ["h", "j", "k", "l", "left", "down", "up", "right", "w", "b", "e", "0", "home", "^", "$", "end", "gg", "G", "{", "}", "ctrl+d", "ctrl+u", "ctrl+f", "pageDown", "ctrl+b", "pageUp", "v", "V", "o", "a", "A", "tab", "d", "s", "S", "?", "q", "escape", "enter", "ctrl+c"];
 		assert.deepEqual([...bound].sort(), [...new Set(expected)].sort());
 	});
 
