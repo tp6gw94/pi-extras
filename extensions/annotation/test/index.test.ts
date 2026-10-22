@@ -72,6 +72,7 @@ async function setup(options: {
 	};
 	const pi = {
 		registerCommand: (name: string, spec: { handler: Handler }) => commands.set(name, spec.handler),
+		registerShortcut: () => {},
 		on: (event: string, handler: Listener) => listeners.set(event, [...(listeners.get(event) ?? []), handler]),
 		sendUserMessage: (message: unknown, delivery: unknown) => {
 			if (options.submitError) throw options.submitError;

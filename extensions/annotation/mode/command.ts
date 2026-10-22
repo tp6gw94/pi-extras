@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { annotationsText } from "../quote.ts";
 import type { Notebook, Outcome } from "./data.ts";
 import { attach, type BlockRegistry, isRefusal } from "./host.ts";
@@ -10,6 +10,7 @@ interface Session extends BlockRegistry {
 }
 
 const EMPTY = { render: () => [], invalidate: () => {} };
+const DESCRIPTION = "Annotate the fullscreen transcript, then append notes to the editor or submit them";
 
 export function registerAnnotationMode(pi: ExtensionAPI): void {
 	let session: Session | undefined;
@@ -21,23 +22,28 @@ export function registerAnnotationMode(pi: ExtensionAPI): void {
 		run = undefined;
 	};
 
-	const interact = async (ctx: ExtensionCommandContext, store: Session, current: number): Promise<void> => {
+	const interact = async (ctx: ExtensionContext, store: Session, current: number): Promise<void> => {
+		const restoreDraft = ctx.ui.getEditorText();
 		let dock: AnnotationDock | undefined;
 		let outcome: Outcome | undefined;
 		try {
 			outcome = await ctx.ui.custom<Outcome | undefined>((tui, theme, _kb, done) => {
-				dock = new AnnotationDock({ tui, theme, notebook: store.notebook, commit: (next) => { store.notebook = next; }, finish: done, isIdle: () => ctx.isIdle() });
+				const finish = (result: Outcome | undefined): void => {
+					done(result);
+					if (ctx.ui.getEditorText() !== restoreDraft) ctx.ui.setEditorText(restoreDraft);
+				};
+				dock = new AnnotationDock({ tui, theme, notebook: store.notebook, commit: (next) => { store.notebook = next; }, finish, isIdle: () => ctx.isIdle() });
 				const result = attach(tui, store, dock.hooks());
 				if (isRefusal(result)) {
 					ctx.ui.notify(`annotation-mode: ${result.refused}`, "warning");
-					done(undefined);
+					finish(undefined);
 					return EMPTY;
 				}
 				run = dock;
 				if (!dock.bind(result)) {
 					dock.dispose();
 					ctx.ui.notify("annotation-mode: the conversation is empty", "warning");
-					done(undefined);
+					finish(undefined);
 					return EMPTY;
 				}
 				return dock;
@@ -68,22 +74,26 @@ export function registerAnnotationMode(pi: ExtensionAPI): void {
 		}
 	};
 
+	const open = (ctx: ExtensionContext): void => {
+		abandon();
+		if (ctx.mode !== "tui") {
+			if (ctx.hasUI) ctx.ui.notify("annotation-mode needs the interactive terminal UI", "warning");
+			return;
+		}
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (session?.sessionId !== sessionId) session = { sessionId, notebook: { sessionId, notes: [], nextId: 1 }, blocks: new WeakMap(), nextBlock: 1 };
+		const current = generation;
+		void interact(ctx, session, current).catch((error) => {
+			if (generation === current) ctx.ui.notify(`annotation-mode: ${error instanceof Error ? error.message : String(error)}`, "error");
+		});
+	};
+
 	pi.registerCommand("annotation-mode", {
-		description: "Annotate the fullscreen transcript, then append notes to the editor or submit them",
-		handler: async (_args, ctx) => {
-			abandon();
-			if (ctx.mode !== "tui") {
-				if (ctx.hasUI) ctx.ui.notify("annotation-mode needs the interactive terminal UI", "warning");
-				return;
-			}
-			const sessionId = ctx.sessionManager.getSessionId();
-			if (session?.sessionId !== sessionId) session = { sessionId, notebook: { sessionId, notes: [], nextId: 1 }, blocks: new WeakMap(), nextBlock: 1 };
-			const current = generation;
-			void interact(ctx, session, current).catch((error) => {
-				if (generation === current) ctx.ui.notify(`annotation-mode: ${error instanceof Error ? error.message : String(error)}`, "error");
-			});
-		},
+		description: DESCRIPTION,
+		handler: async (_args, ctx) => open(ctx),
 	});
+
+	pi.registerShortcut("ctrl+shift+a", { description: DESCRIPTION, handler: open });
 
 	pi.on("session_shutdown", abandon);
 }

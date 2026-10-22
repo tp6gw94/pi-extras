@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { registerAnnotationMode } from "../mode/command.ts";
 import { annotationsText } from "../quote.ts";
 import { hostHarness, linesComponent, settle } from "./mode-harness.ts";
+
+type Entry = "command" | "shortcut";
+type Shortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 
 type Dock = Component & Partial<Focusable> & { dispose?(): void };
 const cleanups: (() => void)[] = [];
@@ -17,15 +20,23 @@ function deferred() {
 	return { promise, resolve, reject };
 }
 
-function setup(options: { draft?: string; rows?: number; columns?: number; messages?: Component[]; idle?: boolean; preMountDraw?: boolean; customResolution?: Promise<void> } = {}) {
+function setup(options: { draft?: string; pastes?: Record<string, string>; rows?: number; columns?: number; messages?: Component[]; idle?: boolean; preMountDraw?: boolean; customResolution?: Promise<void> } = {}) {
 	const host = hostHarness(options);
 	const original = host.chat.render;
-	const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>();
+	const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
+	const shortcuts = new Map<string, Shortcut>();
 	const listeners = new Map<string, () => void>();
 	const notices: { text: string; type: string | undefined }[] = [];
 	const messages: { text: string; options: unknown }[] = [];
 	const timeline: string[] = [];
+	const pastes = new Map(Object.entries(options.pastes ?? {}));
+	const writes: string[] = [];
 	let editorText = options.draft ?? "DRAFT";
+	const expandedText = (): string => [...pastes].reduce((text, [marker, body]) => text.replaceAll(marker, body), editorText);
+	const setBuffer = (text: string): void => {
+		editorText = text;
+		pastes.clear();
+	};
 	let sessionId = "session-a";
 	let idle = options.idle ?? true;
 	let sendError: Error | undefined;
@@ -35,7 +46,7 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 	let doneCount = 0;
 	let customCount = 0;
 	let mounted: Dock | undefined;
-	const core: Dock = { render: () => [editorText], invalidate: () => {}, handleInput: (data) => { editorText = data === "\x03" ? "" : editorText + data; } };
+	const core: Dock = { render: () => [expandedText()], invalidate: () => {}, handleInput: (data) => { editorText = data === "\x03" ? "" : editorText + data; } };
 	let focus: Dock = core;
 	const setFocus = (next: Dock) => {
 		if ("focused" in focus) focus.focused = false;
@@ -59,7 +70,7 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 				doneCount++;
 				host.editor.clear();
 				host.editor.addChild(core);
-				editorText = savedText;
+				setBuffer(savedText);
 				setFocus(core);
 				timeline.push("restore");
 				resolve(outcome as never);
@@ -91,16 +102,18 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 		ui: {
 			custom,
 			notify: (text: string, type?: string) => notices.push({ text, type }),
-			getEditorText: () => editorText,
+			getEditorText: () => expandedText(),
 			setEditorText: (text: string) => {
 				if (editorError) throw editorError;
+				writes.push(text);
 				timeline.push("append");
-				editorText = text;
+				setBuffer(text);
 			},
 		},
-	} as unknown as ExtensionCommandContext;
+	} as unknown as ExtensionContext;
 	const pi = {
-		registerCommand: (name: string, spec: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) => commands.set(name, spec.handler),
+		registerCommand: (name: string, spec: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => commands.set(name, spec.handler),
+		registerShortcut: (key: string, spec: Shortcut) => shortcuts.set(key, spec),
 		on: (event: string, listener: () => void) => listeners.set(event, listener),
 		sendUserMessage: (text: string, delivery: unknown) => {
 			if (sendError) throw sendError;
@@ -111,9 +124,12 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 	registerAnnotationMode(pi);
 	const shutdown = () => listeners.get("session_shutdown")!();
 	cleanups.push(shutdown);
-	const run = () => commands.get("annotation-mode")!("", ctx);
-	const begin = async () => {
-		await run();
+	const run = async (entry: Entry = "command") => {
+		if (entry === "command") await commands.get("annotation-mode")!("", ctx);
+		else await shortcuts.get("ctrl+shift+a")!.handler(ctx);
+	};
+	const begin = async (entry: Entry = "command") => {
+		await run(entry);
 		await settle();
 		host.draw();
 		await settle();
@@ -129,9 +145,9 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 	const type = (text: string) => keys(...text);
 	const screen = () => host.editor.render(host.tui.terminal.columns).map(stripTerminalSequences);
 	return {
-		...host, original, pi, ctx, run, begin, keys, type, screen, notices, messages, timeline, shutdown,
+		...host, original, pi, ctx, run, begin, keys, type, screen, notices, messages, timeline, shutdown, shortcuts, writes,
 		command: (name: string) => commands.get(name)!("", ctx),
-		editorText: () => editorText,
+		editorText: () => expandedText(),
 		doneCount: () => doneCount,
 		customCount: () => customCount,
 		setIdle: (value: boolean) => { idle = value; },
@@ -238,6 +254,113 @@ describe("annotation-mode entry", () => {
 			assert.deepEqual(t.screen(), ["DRAFT"]);
 		});
 	}
+});
+
+describe("annotation-mode shortcut", () => {
+	it("binds Ctrl+Shift+A and opens the mode without submitting the draft", async () => {
+		const t = setup({ draft: "keep this draft" });
+		assert.deepEqual([...t.shortcuts.keys()], ["ctrl+shift+a"]);
+		await t.begin("shortcut");
+		assert.equal(t.customCount(), 1);
+		assert.match(t.screen()[0], /^NORMAL/);
+		assert.match(t.screen()[0], /0 notes/);
+		assert.equal(t.editorText(), "keep this draft");
+		assert.deepEqual(t.messages, []);
+		t.keys("q");
+		await settle();
+		assert.deepEqual(t.screen(), ["keep this draft"]);
+		assert.deepEqual(t.messages, []);
+	});
+
+	it("shares the notebook and delivery with the slash command in one session", async () => {
+		const t = setup();
+		await t.begin("shortcut");
+		addNote(t, "from shortcut");
+		t.keys("q", "q");
+		await t.begin("command");
+		assert.match(t.screen()[0], /1 note/);
+		t.keys("\t");
+		assert.ok(t.screen().some((line) => line.includes("from shortcut")));
+		t.keys("S");
+		await settle();
+		assert.deepEqual(t.messages, [{ text: "> alpha 中文 👨‍👩‍👧\n\nfrom shortcut\n\n", options: { deliverAs: "followUp" } }]);
+		await t.begin("command");
+		addNote(t, "from command");
+		t.keys("q", "q");
+		await t.begin("shortcut");
+		t.keys("s");
+		await settle();
+		assert.equal(t.editorText(), "DRAFT\n> alpha 中文 👨‍👩‍👧\n\nfrom command\n\n");
+	});
+});
+
+describe("annotation-mode paste preservation", () => {
+	const marker = "[paste #1 +13 lines]";
+	const body = Array.from({ length: 13 }, (_, index) => `pasted line ${index + 1}`).join("\n");
+	const draft = `before\n${marker}\nafter`;
+	const expanded = `before\n${body}\nafter`;
+	const withPaste = () => setup({ draft, pastes: { [marker]: body } });
+
+	it("restores the expanded paste after q", async () => {
+		const t = withPaste();
+		await t.begin();
+		assert.equal(t.ctx.ui.getEditorText(), expanded);
+		t.keys("q");
+		await settle();
+		assert.equal(t.editorText(), expanded);
+		assert.deepEqual(t.messages, []);
+	});
+
+	it("appends annotations after the expanded paste on s", async () => {
+		const t = withPaste();
+		await t.begin();
+		addNote(t);
+		t.keys("s");
+		await settle();
+		assert.equal(t.editorText(), expanded + annotationsText([{ quote: "alpha 中文 👨‍👩‍👧", note: "fix it" }], expanded));
+		assert.deepEqual(t.messages, []);
+	});
+
+	it("restores the expanded paste after an attach refusal", async () => {
+		const t = withPaste();
+		t.tui.mode = "regular";
+		await t.run();
+		await settle();
+		assert.equal(t.editorText(), expanded);
+		assert.deepEqual(t.writes, [expanded]);
+		assert.equal(t.notices.length, 1);
+	});
+
+	it("restores the expanded paste when the conversation is empty", async () => {
+		const t = withPaste();
+		t.chat.clear();
+		await t.run();
+		await settle();
+		assert.equal(t.editorText(), expanded);
+		assert.deepEqual(t.writes, [expanded]);
+	});
+
+	it("does not rewrite a draft that has no paste", async () => {
+		const t = setup();
+		await t.begin();
+		t.keys("q");
+		await settle();
+		assert.deepEqual(t.writes, []);
+		assert.deepEqual(t.timeline, ["mount", "restore", "resolve", "dispose"]);
+	});
+
+	it("does not write the editor when the dock is evicted", async () => {
+		const t = withPaste();
+		const { dock } = await t.begin();
+		t.replaceDock();
+		t.draw();
+		await settle();
+		dock.handleInput!("q");
+		dock.dispose!();
+		assert.equal(t.doneCount(), 0);
+		assert.deepEqual(t.writes, []);
+		assert.equal(t.editorText(), expanded);
+	});
 });
 
 describe("annotation-mode delivery", () => {
