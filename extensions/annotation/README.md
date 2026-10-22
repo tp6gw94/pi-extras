@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-pi-annotation is a [pi](https://github.com/earendil-works/pi) extension for quoting parts of the current conversation with notes. Run `/annotate` to start a server for the session. pi prints one notice with the browser URL and the terminal attach command.
+pi-annotation is a [pi](https://github.com/earendil-works/pi) extension for quoting parts of the current conversation with notes. Run `/annotate` to start a server for the session, or `/annotation-mode` to quote the transcript inside pi's fullscreen TUI without a server. `/annotate` prints one notice with the browser URL and the terminal attach command.
 
 You can send saved annotations in two ways:
 
@@ -215,6 +215,84 @@ ssh -L 4747:127.0.0.1:4747 <host>
 
 The local port must be the same as the remote port, because the server accepts only requests whose `Host` is `127.0.0.1:<port>`. If pi picked another port, for example 4748, forward that port instead. You can run the `ssh -L` command in a second terminal while pi keeps running in the first one.
 
+## Quote the conversation in fullscreen mode
+
+Run `/annotation-mode` to quote the transcript inside pi's fullscreen TUI. The mode needs no server, port, or browser, so it works without `/annotate`.
+
+The mode quotes the text pi draws on screen, not the message source. Markdown markers are gone. Bold text and link text appear as plain text, and code keeps the fence and language that pi shows.
+
+The mode works in fullscreen mode only. In regular mode, `/annotation-mode` prints `annotation-mode: needs fullscreen mode` and does nothing.
+
+The dock replaces the editor. Its status line shows the mode, an optional count, the caret row and terminal column (both start at 1), the note count, and `working` while pi runs a turn.
+
+### Move and select with vim-like keys
+
+| Keys | Action |
+| --- | --- |
+| `h` `j` `k` `l`, arrow keys | Move by character or screen row |
+| `w` `b` `e` | Move by word |
+| `0` `^` `$`, Home, End | Row start, first non-blank, row end |
+| `gg` `G` | Start and end of the transcript |
+| `{` `}` | Previous and next message |
+| Ctrl-d, Ctrl-u | Half page |
+| Ctrl-f, Ctrl-b, PageUp, PageDown | Full page |
+| `v`, `V` | Start a character or line selection |
+| `o` | Swap the selection ends |
+| Esc, `q` | Leave the selection |
+| `a` | Note on the selection, or on the row under the caret |
+| `A` | Note on the whole message |
+| Tab | Open the notes list. In the list, `j` and `k` move, `e` edits, `d` deletes, and Tab, Esc, or `q` goes back. |
+| `?` | Show the keys. In help, `j` and `k` scroll, and Esc, `?`, or `q` closes it. |
+| `s` | Append the notes to the editor and leave the mode |
+| `S` | Submit the notes to pi and leave the mode |
+| `q`, Esc, Ctrl-C | Leave the mode. With unsent notes, press again. |
+
+Keys take a count prefix, for example `3j` or `2}`. The mode does not implement folds, search, or caret centering.
+
+### What a quote contains
+
+The quote contains the visible characters between the endpoints. The mode drops trailing spaces and blank rows at the edges. Rows selected from their first character lose their common leading whitespace, which removes the indent pi adds. A selection that starts in the middle of a row keeps that row unchanged. Blockquote bars and list markers are visible characters, so the quote includes them.
+
+Bold text is quoted as its text, without `**`. A link is quoted as its text, without the URL. If every selected row is inside one fenced code block, the quote is a fenced block with that block's language. The fence uses more backticks when the code contains a run of backticks. The code is the visible code with the common indentation removed.
+
+The fence scan reads rendered rows. A fence that pi draws on the same row as a list marker is not detected, so a selection there is quoted as plain text. An unclosed fence runs to the end of the message.
+
+CJK characters and emoji count as one character and take two terminal cells. The caret moves over one character, and the status line reports the terminal column.
+
+### Save, edit, and send notes
+
+Press `a` or `A`, type the note, and press Enter. Ctrl-J adds a line. Esc or Ctrl-C cancels the note. A note with no text quotes the text and adds no note line.
+
+Tab lists the notes. `e` opens the note with its saved text, `d` deletes it, and `j` or `k` selects another note. In the list, `s` and `S` send every note too.
+
+`s` appends every saved note to the pi editor and leaves the mode. It does not start a model turn. The text goes after the current draft, in the `> quote` format that `/annotate` uses. `S` sends every saved note to pi as a new user message and leaves the mode. It uses `followUp`, so the notes wait when pi is busy, and your editor draft stays as it is. A successful send removes the notes. A failed send keeps them and shows an error.
+
+Unsent notes stay in memory for the pi session. `q` with unsent notes asks for a second press, and running `/annotation-mode` again shows the notes. They do not survive `/reload`, a new session, or a pi restart.
+
+### Leave the mode
+
+The quit keys depend on where the caret is.
+
+- In the transcript, `q`, Esc, and Ctrl-C leave the mode. With unsent notes, each of them asks for a second press.
+- In a selection, `q` and Esc return to the transcript. Ctrl-C leaves the mode, with the unsent note question.
+- In the note editor, `q` types `q`. Esc and Ctrl-C cancel the note and keep the notes you saved.
+- In the notes list, Tab, Esc, and `q` return to the transcript. Ctrl-C leaves the mode, with the unsent note question.
+- In help, Esc, `q`, and `?` close help. Ctrl-C leaves the mode, with the unsent note question.
+
+Leaving the mode restores the pi editor, its draft, and Ctrl-C.
+
+### Conversation changes and terminal limits
+
+A reply that streams while the mode is open does not move the caret or the viewport. Use `j`, `k`, or `G` to go to the new text.
+
+`/tree`, compaction, and other rebuilds can change the rendered rows. If the message under a selection changes, the mode drops the selection and shows a notice. Notes stay. A note underline appears only while the quoted characters still match their place. After a reflow or rebuild changes them, the underline disappears and the note stays in the list.
+
+The dock uses at most the bottom third of the terminal. Make the terminal taller to see more lines of a long note.
+
+The mode paints only in fullscreen. Leaving fullscreen closes it, and the transcript pi prints on exit has no caret or selection. If another dialog takes the editor slot, the mode closes without a notice and the notes stay in memory.
+
+On Windows and WSL, pi binds Ctrl-F to its fullscreen search and handles the key before the mode. Use PageDown to move down a page there. PageUp moves up.
+
 ## Development
 
 Run these from the pi-extras root:
@@ -235,6 +313,7 @@ npm test
 The end-to-end scripts run a real pi with a fake model. `PI_BIN` is the directory that contains the `pi` executable, not the executable itself. The shell scripts require `PI_BIN`. `direct-send.py` uses the directory of `pi` on your `PATH` when `PI_BIN` is not set.
 
 - `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` checks `s`, `S`, busy follow-up ordering, interactive selection, cancellation, and terminal restoration. It creates an isolated home, project, registry, local provider, and tmux socket. It keeps the evidence in a new directory under the `--evidence` directory, or under `EVIDENCE_DIR`.
+- `extensions/annotation/test/e2e/tmux-annotation-mode.sh` runs `/annotation-mode` under tmux with a fake model. It checks entry and keys, notes, `s` and `S`, code quoting, streaming, resize, another dialog taking the editor, a session rebuild, regular-mode refusal, and the exit transcript.
 - `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` under tmux. It checks the editor, live updates, `/tree`, stopping and restarting with `/annotate`, the page after the server closes, and session switches.
 - `extensions/annotation/test/e2e/tmux-handoff.sh` runs pi with annotation and resume-handoff under tmux. It checks that terminal views and browser tabs follow a handoff, keep their notes, and send to the new session. Set `DRIVER=browser` with `PLAYWRIGHT_CORE` and `CHROME_BIN` to run the browser checks.
 - `extensions/annotation/test/e2e/herdr-tui.sh` runs pi and the bin in two herdr panes. It checks the note flow, live replies, quitting, and stopping. It also needs `HERDR_ENV=1`, so run it from inside herdr.
