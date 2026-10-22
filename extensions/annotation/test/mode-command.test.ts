@@ -10,7 +10,14 @@ type Dock = Component & Partial<Focusable> & { dispose?(): void };
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
-function setup(options: { draft?: string; rows?: number; columns?: number; messages?: Component[]; idle?: boolean } = {}) {
+function deferred() {
+	let resolve!: () => void;
+	let reject!: (error: Error) => void;
+	const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+	return { promise, resolve, reject };
+}
+
+function setup(options: { draft?: string; rows?: number; columns?: number; messages?: Component[]; idle?: boolean; customResolution?: Promise<void> } = {}) {
 	const host = hostHarness(options);
 	const original = host.chat.render;
 	const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>();
@@ -37,11 +44,11 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 	};
 	host.editor.addChild(core);
 	const theme = { fg: (_color: string, text: string) => text, getBgAnsi: () => selected } as unknown as Theme;
-	const custom: ExtensionUIContext["custom"] = (factory, customOptions) => {
+	const custom: ExtensionUIContext["custom"] = async (factory, customOptions) => {
 		assert.equal(customOptions?.overlay, false);
 		customCount++;
 		const savedText = editorText;
-		return new Promise((resolve, reject) => {
+		const result = await new Promise((resolve, reject) => {
 			let closed = false;
 			let component: Dock | undefined;
 			const done = (outcome: unknown) => {
@@ -68,6 +75,8 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 				setFocus(value);
 			}).catch(reject);
 		});
+		if (options.customResolution) await options.customResolution;
+		return result as never;
 	};
 	const ctx = {
 		mode: "tui",
@@ -99,12 +108,12 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 	cleanups.push(shutdown);
 	const run = () => commands.get("annotation-mode")!("", ctx);
 	const begin = async () => {
-		const completion = run();
+		await run();
 		await settle();
 		host.draw();
 		await settle();
 		host.draw();
-		return { completion, dock: mounted! };
+		return { dock: mounted! };
 	};
 	const keys = (...inputs: string[]) => {
 		for (const data of inputs) {
@@ -115,7 +124,8 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 	const type = (text: string) => keys(...text);
 	const screen = () => host.editor.render(host.tui.terminal.columns).map(stripTerminalSequences);
 	return {
-		...host, original, ctx, run, begin, keys, type, screen, notices, messages, timeline, shutdown,
+		...host, original, pi, ctx, run, begin, keys, type, screen, notices, messages, timeline, shutdown,
+		command: (name: string) => commands.get(name)!("", ctx),
 		editorText: () => editorText,
 		doneCount: () => doneCount,
 		customCount: () => customCount,
@@ -141,6 +151,12 @@ function addNote(t: ReturnType<typeof setup>, text = "fix it"): void {
 }
 
 describe("annotation-mode entry", () => {
+	it("returns while custom remains unresolved and the dock stays active", async () => {
+		const t = setup();
+		assert.equal(await Promise.race([t.run().then(() => "returned"), settle().then(() => "blocked")]), "returned");
+		assert.match(t.screen()[0], /^NORMAL/);
+	});
+
 	for (const mode of ["rpc", "json", "print"] as const) {
 		it(`refuses ${mode} without opening custom UI`, async () => {
 			const t = setup();
@@ -161,6 +177,7 @@ describe("annotation-mode entry", () => {
 			if (failure === "missing layout") t.tui.children = [];
 			if (failure === "empty") t.chat.clear();
 			await t.run();
+			await settle();
 			assert.equal(t.chat.render, t.original);
 			assert.equal(t.editorText(), "DRAFT");
 			assert.equal(t.notices.length, 1);
@@ -172,65 +189,84 @@ describe("annotation-mode entry", () => {
 });
 
 describe("annotation-mode delivery", () => {
+	for (const key of ["s", "S"]) {
+		it(`waits for custom resolution before ${key} delivery even after the handler returns`, async () => {
+			const resolution = deferred();
+			const t = setup({ customResolution: resolution.promise });
+			await t.begin();
+			addNote(t);
+			t.keys(key);
+			await settle();
+			assert.deepEqual(t.screen(), ["DRAFT"]);
+			assert.equal(t.editorText(), "DRAFT");
+			assert.deepEqual(t.messages, []);
+			resolution.resolve();
+			await settle();
+			const text = "> alpha 中文 👨‍👩‍👧\n\nfix it\n\n";
+			assert.equal(t.editorText(), key === "s" ? "DRAFT\n" + text : "DRAFT");
+			assert.deepEqual(t.messages, key === "S" ? [{ text, options: { deliverAs: "followUp" } }] : []);
+		});
+	}
+
 	it("appends only after custom restores the draft, with exactly quote.ts formatting", async () => {
 		const t = setup();
-		const { completion } = await t.begin();
+		await t.begin();
 		addNote(t);
 		t.keys("s");
 		assert.equal(t.editorText(), "DRAFT");
 		assert.equal(t.chat.render, t.original);
-		await completion;
+		await settle();
 		const text = annotationsText([{ quote: "alpha 中文 👨‍👩‍👧", note: "fix it" }], "DRAFT");
 		assert.equal(t.editorText(), "DRAFT" + text);
 		assert.equal(t.editorText(), "DRAFT\n> alpha 中文 👨‍👩‍👧\n\nfix it\n\n");
 		assert.deepEqual(t.messages, []);
 		assert.deepEqual(t.timeline, ["restore", "resolve", "dispose", "append"]);
 		assert.match(t.notices.at(-1)!.text, /appended 1/);
-		const again = await t.begin();
+		await t.begin();
 		assert.match(t.screen()[0], /0 notes/);
 		t.keys("q");
-		await again.completion;
+		assert.deepEqual(t.screen(), [t.editorText()]);
 	});
 
 	it("submits once as followUp after closing and never changes the editor draft", async () => {
 		const t = setup();
-		const { completion, dock } = await t.begin();
+		const { dock } = await t.begin();
 		addNote(t);
 		t.keys("\t", "S");
 		dock.handleInput!("S");
 		assert.deepEqual(t.messages, []);
-		await completion;
+		await settle();
 		assert.deepEqual(t.messages, [{ text: "> alpha 中文 👨‍👩‍👧\n\nfix it\n\n", options: { deliverAs: "followUp" } }]);
 		assert.equal(t.editorText(), "DRAFT");
 		assert.deepEqual(t.timeline, ["restore", "resolve", "dispose", "submit"]);
 		assert.equal(t.chat.render, t.original);
-		const again = await t.begin();
+		await t.begin();
 		assert.match(t.screen()[0], /0 notes/);
 		t.keys("q");
-		await again.completion;
+		assert.deepEqual(t.screen(), ["DRAFT"]);
 	});
 
 	for (const key of ["s", "S"]) {
 		it(`keeps notes after ${key} throws and permits an exact retry`, async () => {
 			const t = setup();
-			const { completion } = await t.begin();
+			await t.begin();
 			addNote(t);
 			if (key === "s") t.failEditor(new Error("editor unavailable"));
 			else t.failSend(new Error("submission failed"));
 			t.keys(key);
-			await completion;
+			await settle();
 			assert.equal(t.editorText(), "DRAFT");
 			assert.deepEqual(t.messages, []);
 			assert.match(t.notices.at(-1)!.text, /notes kept/);
 			assert.equal(t.chat.render, t.original);
-			const again = await t.begin();
+			await t.begin();
 			assert.match(t.screen()[0], /1 note/);
 			t.keys("\t");
 			assert.ok(t.screen().some((line) => line.includes("fix it")));
 			t.failSend();
 			t.failEditor();
 			t.keys("S");
-			await again.completion;
+			await settle();
 			assert.deepEqual(t.messages, [{ text: "> alpha 中文 👨‍👩‍👧\n\nfix it\n\n", options: { deliverAs: "followUp" } }]);
 		});
 	}
@@ -239,7 +275,7 @@ describe("annotation-mode delivery", () => {
 describe("annotation-mode lifecycle", () => {
 	it("requires q twice with unsent notes, keeps notes and underlines across re-entry, and resets on a new session", async () => {
 		const t = setup();
-		const first = await t.begin();
+		await t.begin();
 		addNote(t);
 		t.keys("q");
 		assert.equal(t.doneCount(), 0);
@@ -247,51 +283,105 @@ describe("annotation-mode lifecycle", () => {
 		await settle();
 		assert.match(t.screen()[0], /press again to quit/);
 		t.keys("q");
-		await first.completion;
 		assert.equal(t.chat.render, t.original);
-		const second = await t.begin();
+		await t.begin();
 		assert.match(t.screen()[0], /1 note/);
 		assert.match(t.content()[2], /\x1b\[4m/);
 		t.keys("q", "q");
-		await second.completion;
 		t.switchSession("session-b");
-		const third = await t.begin();
+		await t.begin();
 		assert.match(t.screen()[0], /0 notes/);
 		assert.doesNotMatch(t.content()[2], /\x1b\[4m/);
 		t.keys("q");
-		await third.completion;
+		assert.deepEqual(t.screen(), ["DRAFT"]);
 	});
 
 	it("cleans up if the custom factory or mounting fails", async () => {
 		const t = setup();
 		t.failCustom(new Error("mount failed"));
 		await t.run();
+		await settle();
 		assert.equal(t.chat.render, t.original);
 		assert.match(t.notices.at(-1)!.text, /mount failed/);
 		const u = setup();
 		Object.defineProperty(u.view, "viewportHeight", { get: () => { throw new Error("bind failed"); } });
 		await u.run();
+		await settle();
 		assert.equal(u.chat.render, u.original);
 		assert.match(u.notices.at(-1)!.text, /bind failed/);
 	});
 
 	it("does not deliver an already-closed run after shutdown or a replacement command abandons it", async () => {
 		for (const replacement of ["shutdown", "command"]) {
-			const t = setup();
-			const first = await t.begin();
+			const resolution = deferred();
+			const t = setup({ customResolution: resolution.promise });
+			await t.begin();
 			addNote(t);
 			t.keys("S");
 			if (replacement === "shutdown") t.shutdown();
-			const next = t.begin();
-			await first.completion;
+			else await t.begin();
+			resolution.resolve();
+			await settle();
 			assert.deepEqual(t.messages, []);
-			const active = await next;
+			assert.equal(t.editorText(), "DRAFT");
+			if (replacement === "shutdown") await t.begin();
 			assert.match(t.screen()[0], /1 note/);
+			addNote(t, "new note");
 			t.keys("S");
-			await active.completion;
-			assert.equal(t.messages.length, 1);
+			await settle();
+			assert.deepEqual(t.messages, [{ text: "> alpha 中文 👨‍👩‍👧\n\nfix it\n\n> alpha 中文 👨‍👩‍👧\n\nnew note\n\n", options: { deliverAs: "followUp" } }]);
 			assert.equal(t.chat.render, t.original);
 		}
+	});
+
+	it("ignores a late custom rejection after shutdown or replacement without disturbing a newer dock", async () => {
+		for (const replacement of ["shutdown", "command"]) {
+			const resolution = deferred();
+			const t = setup({ customResolution: resolution.promise });
+			await t.begin();
+			addNote(t);
+			t.keys("q", "q");
+			await settle();
+			if (replacement === "shutdown") t.shutdown();
+			else await t.begin();
+			resolution.reject(new Error("old custom failed"));
+			await settle();
+			assert.deepEqual(t.notices, []);
+			assert.deepEqual(t.messages, []);
+			if (replacement === "shutdown") await t.begin();
+			assert.match(t.screen()[0], /1 note/);
+			t.keys("\t");
+			assert.ok(t.screen().some((line) => line.includes("fix it")));
+		}
+	});
+
+	it("processes another user command and re-entry serially after external eviction", async () => {
+		const t = setup();
+		const evicted = deferred();
+		t.pi.registerCommand("probe", { handler: async (_args, ctx) => { ctx.ui.notify("probe ran", "info"); } });
+		const inputs = (async () => {
+			await t.command("annotation-mode");
+			await evicted.promise;
+			await t.command("probe");
+			await t.command("annotation-mode");
+		})();
+		await settle();
+		t.draw();
+		addNote(t);
+		t.replaceDock();
+		for (let frame = 0; frame < 4; frame++) t.draw();
+		await settle();
+		assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
+		assert.equal(t.doneCount(), 0);
+		evicted.resolve();
+		assert.equal(await Promise.race([inputs.then(() => "returned"), settle().then(() => "blocked")]), "returned");
+		assert.ok(t.notices.some((notice) => notice.text === "probe ran"));
+		assert.match(t.screen()[0], /^NORMAL.*1 note/);
+		t.keys("S");
+		await settle();
+		assert.deepEqual(t.messages, [{ text: "> alpha 中文 👨‍👩‍👧\n\nfix it\n\n", options: { deliverAs: "followUp" } }]);
+		assert.equal(t.doneCount(), 1);
+		assert.deepEqual(t.screen(), ["DRAFT"]);
 	});
 
 	it("abandons an evicted dock without calling stale done or removing the replacement dialog", async () => {
@@ -307,10 +397,10 @@ describe("annotation-mode lifecycle", () => {
 		first.dock.handleInput!("q");
 		first.dock.dispose!();
 		assert.equal(t.doneCount(), 0);
-		const next = await t.begin();
+		await t.begin();
 		assert.match(t.screen()[0], /1 note/);
 		t.keys("q", "q");
-		await next.completion;
+		assert.deepEqual(t.screen(), ["DRAFT"]);
 	});
 
 	it("does not let a queued empty-transcript update close a dialog that evicted the dock", async () => {
@@ -335,12 +425,11 @@ describe("annotation-mode lifecycle", () => {
 		first.dock.handleInput!("q");
 		assert.equal(t.doneCount(), 0);
 		const second = await t.begin();
-		const third = await t.begin();
+		await t.begin();
 		second.dock.handleInput!("q");
 		assert.equal(t.doneCount(), 0);
 		assert.match(t.screen()[0], /1 note/);
 		t.keys("q", "q");
-		await third.completion;
 		assert.equal(t.chat.render, t.original);
 	});
 
@@ -354,24 +443,24 @@ describe("annotation-mode lifecycle", () => {
 				assert.doesNotMatch(t.content().join("\n"), /\x1b\[(?:7|4)m/);
 				assert.equal(t.doneCount(), 0);
 			} else first.dock.handleInput!("j");
-			await first.completion;
+			await settle();
 			assert.equal(t.chat.render, t.original);
 			assert.equal(t.editorText(), "DRAFT");
 			assert.match(t.notices.at(-1)!.text, /left fullscreen/);
 			t.tui.mode = "fullscreen";
-			const next = await t.begin();
+			await t.begin();
 			assert.match(t.screen()[0], /1 note/);
 			t.keys("q", "q");
-			await next.completion;
+			assert.deepEqual(t.screen(), ["DRAFT"]);
 		});
 	}
 
 	it("exits and restores the editor when the transcript becomes empty", async () => {
 		const t = setup();
-		const first = await t.begin();
+		await t.begin();
 		t.chat.clear();
 		t.draw();
-		await first.completion;
+		await settle();
 		assert.equal(t.chat.render, t.original);
 		assert.equal(t.editorText(), "DRAFT");
 		assert.match(t.notices.at(-1)!.text, /empty/);
@@ -381,12 +470,11 @@ describe("annotation-mode lifecycle", () => {
 describe("annotation dock", () => {
 	it("keeps mode letters, paste and unknown sequences away from the main editor", async () => {
 		const t = setup();
-		const { completion } = await t.begin();
+		await t.begin();
 		t.keys("j", "k", "v", "l", "o", "\x1b", "g", "g", "G", "\x1b[200~sSqq\x1b[201~", "\x1b[999~");
 		assert.equal(t.editorText(), "DRAFT");
 		assert.equal(t.doneCount(), 0);
 		t.keys("q");
-		await completion;
 		t.keys("x");
 		assert.equal(t.editorText(), "DRAFTx");
 		t.keys("\x03");
@@ -395,14 +483,14 @@ describe("annotation dock", () => {
 
 	it("forwards note input, CJK, multiline paste and command letters to the real Editor with IME focus", async () => {
 		const t = setup();
-		const { completion, dock } = await t.begin();
+		const { dock } = await t.begin();
 		t.keys("a", "\x1b[200~中文 qsv\nsecond line\x1b[201~");
 		assert.ok(dock.render(120).some((line) => line.includes(CURSOR_MARKER)));
 		dock.focused = false;
 		assert.ok(dock.render(120).every((line) => !line.includes(CURSOR_MARKER)));
 		dock.focused = true;
 		t.keys("\r", "S");
-		await completion;
+		await settle();
 		assert.equal(t.messages[0].text, "> alpha 中文 👨‍👩‍👧\n\n中文 qsv\nsecond line\n\n");
 		assert.equal(t.editorText(), "DRAFT");
 	});
@@ -410,7 +498,7 @@ describe("annotation dock", () => {
 	it("cancels only the draft with Ctrl-C and quits from every other mode with confirmation", async () => {
 		for (const enter of [[], ["v"], ["\t"], ["?"]] as string[][]) {
 			const t = setup();
-			const { completion } = await t.begin();
+			await t.begin();
 			addNote(t, "saved");
 			t.keys("a");
 			t.type("discard");
@@ -420,7 +508,6 @@ describe("annotation dock", () => {
 			assert.equal(t.doneCount(), 0);
 			assert.match(t.screen()[0], /press again to quit/);
 			t.keys("\x03");
-			await completion;
 			assert.equal(t.chat.render, t.original);
 		}
 	});
