@@ -349,7 +349,7 @@ def run():
     wait(lambda: model_count() == 1, "fixture request")
     wait(lambda: complete_events(1), "fixture response")
     plain, _ = shot("00-transcript")
-    check_true("transcript renders markdown instead of source", "The cache has two layers and uses the docs." in plain and "**two layers**" not in plain)
+    check_true("transcript renders markdown instead of source", "The cache has two layers and uses the docs (https://example.com/cache)." in plain and "**two layers**" not in plain)
     check_true("transcript renders fenced code and CJK", "```ts" in plain and "const limit = 3;" in plain and "日本語テキスト 🚀 完了" in plain)
 
     command('/probe-mode ' + json.dumps("DRAFT_DOC"))
@@ -789,7 +789,7 @@ def run():
     check("the exit transcript has no annotation underline", underline_states(ansi, "日"), [False])
     check("the exit transcript keeps the native link underline", underline_states(ansi, "the docs"), [True] * len("the docs"))
     check_true("the exit transcript has no dock", "NORMAL ·" not in plain)
-    check_true("the exit transcript keeps the conversation", "The cache has two layers and uses the docs." in plain)
+    check_true("the exit transcript keeps the conversation", "The cache has two layers and uses the docs (https://example.com/cache)." in plain)
 
     start_regular()
     command("/annotation-mode", REGULAR)
