@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-pi-annotation 是 [pi](https://github.com/earendil-works/pi) 的 extension，用來引用目前對話的段落並加上筆記。執行 `/annotate`，為這個 session 啟動伺服器。pi 會印出一則通知，裡面有瀏覽器網址與終端機連接指令。
+pi-annotation 是 [pi](https://github.com/earendil-works/pi) 的 extension，用來引用目前對話的段落並加上筆記。執行 `/annotate`，為這個 session 啟動伺服器；或執行 `/annotation-mode`，直接在 pi 的全螢幕 TUI 裡引用對話，不需要伺服器。`/annotate` 會印出一則通知，裡面有瀏覽器網址與終端機連接指令。
 
 已儲存的筆記有兩種送法：
 
@@ -215,6 +215,87 @@ ssh -L 4747:127.0.0.1:4747 <host>
 
 本機 port 必須和遠端 port 相同，因為伺服器只接受 `Host` 為 `127.0.0.1:<port>` 的請求。如果 pi 用的是別的 port，例如 4748，就改轉發那個 port。你可以在第二個終端機執行 `ssh -L`，第一個終端機的 pi 繼續跑。
 
+## 在全螢幕模式引用對話
+
+執行 `/annotation-mode`，直接在 pi 的全螢幕 TUI 裡引用對話。這個模式不需要伺服器、port 或瀏覽器，所以沒有 `/annotate` 也能用。
+
+這個模式引用 pi 畫在畫面上的文字，不是訊息原始碼。pi 的 Markdown 算繪會去掉粗體符號，但其他語法可能還在：程式碼 fence、標題前綴與清單標記，只要 pi 畫出來就會一起引用。連結引用的是 pi 實際畫出的文字；有 OSC 8 支援時網址可能隱藏，但在 tmux 裡 pi 會畫成 `the docs (https://example.com/cache)`。
+
+這個模式只能在全螢幕模式使用。在 regular 模式執行 `/annotation-mode`，pi 會顯示 `annotation-mode: needs fullscreen mode`，不會進入模式。
+
+dock 會取代編輯器。狀態列顯示模式、可選的次數、以 1 起算的游標列與終端機欄、筆記數量，以及 pi 忙碌時的 `working`。模式期間會暫停自動跟隨，並暫時隱藏跳到最新訊息的指示器，避免蓋住可選取的文字；關閉模式後恢復原本行為。
+
+### 用類似 vim 的按鍵移動與選取
+
+| 按鍵 | 動作 |
+| --- | --- |
+| `h` `j` `k` `l`、方向鍵 | 以字元或畫面列移動 |
+| `w` `b` `e` | 以詞為單位移動 |
+| `0` `^` `$`、Home、End | 列首、第一個非空白、列尾 |
+| `gg` `G` | 對話的開頭與結尾 |
+| `{` `}` | 上一則與下一則訊息 |
+| Ctrl-d、Ctrl-u | 半頁 |
+| Ctrl-f、Ctrl-b | 游標往下或往上一頁 |
+| PageUp、PageDown | 捲動畫面；游標先不動，下一次移動才會顯示出來 |
+| `v`、`V` | 開始字元或整列選取 |
+| `o` | 交換選取兩端 |
+| Esc、`q` | 離開選取 |
+| `a` | 為選取範圍或游標所在的列加筆記 |
+| `A` | 為整則訊息加筆記 |
+| Tab | 打開筆記清單。在清單裡，`j` 與 `k` 移動，`e` 編輯，`d` 刪除，Tab、Esc 或 `q` 返回。 |
+| `?` | 顯示按鍵。說明畫面裡 `j` 與 `k` 捲動，Esc、`?` 或 `q` 關閉。 |
+| `s` | 把筆記附加到編輯器並離開模式 |
+| `S` | 把筆記送給 pi 並離開模式 |
+| `q`、Esc、Ctrl-C | 離開模式。有未送出的筆記時要按第二次。 |
+
+按鍵可以加次數前綴，例如 `3j` 或 `2}`。這個模式沒有摺疊、搜尋與游標置中。
+
+### 引用內容
+
+引用包含兩個端點之間看得到的字元。模式會去掉列尾空白與邊緣的空白列。從第一個字元開始選取的列會去掉共同的前置空白。這會去掉 pi 加上的縮排，也可能去掉程式碼本身共有的縮排。從列中間開始的選取，第一列維持原樣。引用區塊的直線與清單標記都是看得到的字元，所以會留在引用裡。
+
+粗體只引用文字，不含 `**`。連結引用 pi 實際畫出的內容；在 tmux 裡會包含括號中的網址，有 OSC 8 支援時網址可能隱藏。選取的每一列都在同一個 fenced code block 裡時，引用會是帶該區塊語言的 fenced block。程式碼裡有連續反引號時，fence 會用更多反引號。程式碼是畫面上看到的程式碼，去掉共同的縮排。
+
+fence 掃描讀的是算繪後的列。pi 把 fence 畫在清單標記的同一列時，模式認不出這個 fence，那裡的選取會引用成純文字。沒有結尾的 fence 會延伸到訊息結尾。
+
+每個 grapheme（包括 CJK 字元與 emoji）算一個字元。移動使用量測到的終端機字元格寬度，所以寬字元佔兩格，其他字元依量測結果佔用寬度。狀態列顯示終端機欄。
+
+### 儲存、編輯與送出筆記
+
+按 `a` 或 `A`，輸入筆記，再按 Enter。Ctrl-J 換行。Esc 或 Ctrl-C 取消這則筆記。沒有筆記文字時，只引用文字，不加上筆記列。
+
+Tab 列出筆記。`e` 帶入已儲存的文字編輯，`d` 刪除，`j` 與 `k` 選擇其他筆記。在清單裡也可以按 `s` 或 `S` 送出全部筆記。
+
+`s` 把所有已儲存的筆記附加到 pi 編輯器，然後離開模式。它不會啟動模型回合。文字接在目前草稿後面，格式與 `/annotate` 的 `> 引用` 相同。`S` 把所有已儲存的筆記當成新的使用者訊息送給 pi，然後離開模式。它使用 `followUp`，所以 pi 忙碌時筆記會等待，編輯器草稿維持原樣。按 `s` 後，編輯器更新成功才移除筆記；編輯器同步拋出錯誤時會保留筆記並顯示錯誤。
+
+對 `S` 而言，`pi.sendUserMessage` 回傳 `void`，模式只能知道同步呼叫被接受。呼叫沒有拋出錯誤就會清除筆記，不代表 pi 之後已排程或送達訊息。同步呼叫失敗時會保留筆記並顯示錯誤。後續非同步錯誤由 pi 在呼叫端之外回報，因此模式無法恢復已清除的筆記。若要先檢查並保留文字，請用 `s` 放進編輯器再送出。
+
+還沒送出的筆記留在 pi 這個 session 的記憶體裡。有未送出的筆記時，`q` 會要求再按一次；再執行 `/annotation-mode` 還看得到這些筆記。`/reload`、新的 session 或 pi 重新啟動之後，筆記不會保留。
+
+### 離開模式
+
+離開的按鍵依游標所在的位置而不同。
+
+- 在對話裡，`q`、Esc 與 Ctrl-C 都會離開模式。有未送出的筆記時，每個按鍵都要按第二次。
+- 在選取裡，`q` 與 Esc 回到對話。Ctrl-C 離開模式，未送出的筆記一樣要確認。
+- 在筆記編輯器裡，`q` 會輸入 `q`。Esc 與 Ctrl-C 取消這則筆記，已儲存的筆記保留。
+- 在筆記清單裡，Tab、Esc 與 `q` 回到對話。Ctrl-C 離開模式，未送出的筆記一樣要確認。
+- 在說明裡，Esc、`q` 與 `?` 關閉說明。Ctrl-C 離開模式，未送出的筆記一樣要確認。
+
+離開模式會還原 pi 編輯器、它的草稿與 Ctrl-C。
+
+### 對話變動與終端機限制
+
+模式開著時，串流中的回覆不會移動游標或畫面。用 `j`、`k` 或 `G` 過去看新的文字。
+
+`/tree`、compaction 與其他重建會改變算繪後的列。選取所在的訊息改變時，模式會丟棄選取並顯示提示。筆記會保留。筆記的底線只在引用的字元仍對得上位置時出現。重排或重建讓字元改變後，底線消失，筆記仍留在清單裡。
+
+dock 最多使用終端機下方三分之一。把終端機調高，就看得到長筆記更多的列。
+
+模式只在全螢幕畫面裡繪製。離開全螢幕會關閉模式，pi 離開時印出的對話不會有游標或選取。其他對話框接手編輯器位置時，模式會安靜地關閉，筆記留在記憶體裡。
+
+在 Windows 與 WSL，pi 把 Ctrl-F 綁到全螢幕搜尋，會在模式之前處理這個按鍵。在那裡用 PageDown 與 PageUp 捲動畫面。游標可能留在原處，下一次移動才會顯示出來。
+
 ## 開發
 
 在 pi-extras 的根目錄執行：
@@ -235,6 +316,7 @@ npm test
 end-to-end 腳本會用假的模型跑真的 pi。`PI_BIN` 是放 `pi` 執行檔的目錄，不是執行檔本身。shell 腳本一定要設定 `PI_BIN`。沒有設定 `PI_BIN` 時，`direct-send.py` 會用你 `PATH` 上 `pi` 所在的目錄。
 
 - `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` 檢查 `s`、`S`、忙碌時的 follow-up 順序、互動選擇、取消與終端機模式還原。它會建立隔離的 home、專案、registry、本機 provider 與 tmux socket。證據保留在 `--evidence` 目錄或 `EVIDENCE_DIR` 底下的新目錄。
+- `extensions/annotation/test/e2e/tmux-annotation-mode.sh` 在 tmux 裡用假模型執行 `/annotation-mode`。它檢查進入模式與按鍵、筆記、`s` 與 `S`、程式碼引用、串流、調整大小、其他對話框接手編輯器位置、session 重建、regular 模式拒絕，以及離開模式的對話。
 - `extensions/annotation/test/e2e/tmux-annotate.sh` 在 tmux 裡執行 `/annotate`。它檢查編輯器、即時更新、`/tree`、用 `/annotate` 停止與重新啟動、伺服器關閉後的頁面，以及切換 session。
 - `extensions/annotation/test/e2e/tmux-handoff.sh` 在 tmux 裡同時載入 annotation 與 resume-handoff。它檢查終端機檢視和瀏覽器分頁會跟隨交接、保留筆記，並送到新 session。設定 `DRIVER=browser`、`PLAYWRIGHT_CORE` 與 `CHROME_BIN` 可執行瀏覽器檢查。
 - `extensions/annotation/test/e2e/herdr-tui.sh` 在 herdr 的兩個 pane 裡跑 pi 與執行檔。它檢查筆記流程、即時回覆、離開與停止。它還需要 `HERDR_ENV=1`，所以請在 herdr 裡執行。

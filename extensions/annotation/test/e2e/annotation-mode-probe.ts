@@ -1,0 +1,101 @@
+import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
+import annotation from "../../index.ts";
+
+interface Armed {
+	readonly ctx: ExtensionCommandContext;
+	readonly needle: string;
+}
+
+export default function (pi: ExtensionAPI) {
+	let annotationMode: RegisteredCommand["handler"] | undefined;
+	const proxy = new Proxy(pi, {
+		get(target, property) {
+			if (property === "registerCommand") {
+				return (name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void => {
+					if (name === "annotation-mode") annotationMode = options.handler;
+					target.registerCommand(name, options);
+				};
+			}
+			const value = Reflect.get(target, property, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	annotation(proxy);
+
+	pi.registerCommand("probe-mode", {
+		description: "test: set the editor draft and run the real annotation-mode command",
+		handler: async (args, ctx) => {
+			if (!annotationMode) {
+				ctx.ui.notify("probe-mode: annotation-mode is not registered", "error");
+				return;
+			}
+			ctx.ui.setEditorText(JSON.parse(args.trim()));
+			await annotationMode("", ctx);
+		},
+	});
+
+	let armed: Armed | undefined;
+	let unlisten: (() => void) | undefined;
+
+	const evict = (ctx: ExtensionContext): void => {
+		void ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+			const timeout = setTimeout(() => done(undefined), 1200);
+			return {
+				render: () => [theme.fg("accent", "PROBE DIALOG")],
+				invalidate: () => {},
+				handleInput: () => {},
+				dispose: () => {
+					clearTimeout(timeout);
+				},
+			};
+		}, { overlay: false });
+	};
+
+	const go = (ctx: ExtensionCommandContext, needle: string): void => {
+		ctx.ui.setStatus("probe-tree", undefined);
+		const entry = ctx.sessionManager
+			.getBranch()
+			.filter((item) => item.type === "message" && JSON.stringify(item.message).includes(needle))
+			.at(-1);
+		if (!entry) {
+			ctx.ui.notify(`probe-tree: no entry for ${needle}`, "error");
+			return;
+		}
+		void ctx
+			.navigateTree(entry.id, { summarize: false })
+			.then((result) => ctx.ui.notify(`probe-tree: ${result.cancelled ? "cancelled" : "moved"} to ${entry.id}`, "info"))
+			.catch((error: unknown) => ctx.ui.notify(`probe-tree: ${error instanceof Error ? error.message : String(error)}`, "error"));
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		unlisten?.();
+		unlisten = ctx.ui.onTerminalInput((data) => {
+			if (matchesKey(data, "ctrl+e")) {
+				evict(ctx);
+				return { consume: true };
+			}
+			if (matchesKey(data, "ctrl+t")) {
+				const target = armed;
+				if (!target) return undefined;
+				armed = undefined;
+				go(target.ctx, target.needle);
+				return { consume: true };
+			}
+			return undefined;
+		});
+	});
+
+	pi.registerCommand("probe-arm-tree", {
+		description: "test: arm ctrl+t to move the session leaf to the last entry whose text contains the argument",
+		handler: async (args, ctx) => {
+			armed = { ctx, needle: args.trim() };
+			ctx.ui.setStatus("probe-tree", "armed");
+		},
+	});
+
+	pi.on("session_shutdown", () => {
+		unlisten?.();
+		unlisten = undefined;
+	});
+}

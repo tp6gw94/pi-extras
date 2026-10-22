@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { registerAnnotationMode } from "./mode/command.ts";
 import { annotationsText } from "./quote.ts";
 import { registryDir, removeEntry, writeEntry } from "./registry.ts";
 import { type AnnotateServer, type SessionBinding, preferredPort, SessionSwitchedError, startAnnotateServer } from "./server.ts";
@@ -208,6 +209,8 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 			ctx.ui.notify(liveNotice(started.sessionId, started.url, started.port, env), "info");
 		},
 	});
+
+	registerAnnotationMode(pi);
 
 	pi.on("message_end", (_event, ctx) => {
 		refreshSoon(ctx);

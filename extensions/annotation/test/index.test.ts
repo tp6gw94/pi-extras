@@ -186,7 +186,7 @@ describe("/annotate command", () => {
 
 	it("registers /annotate and no /annotation-end", async () => {
 		const t = await setup();
-		assert.deepEqual([...t.commands.keys()], ["annotate"]);
+		assert.deepEqual([...t.commands.keys()], ["annotate", "annotation-mode"]);
 	});
 
 	it("adds the ssh -L hint to the notice over SSH", async () => {
