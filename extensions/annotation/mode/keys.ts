@@ -1,7 +1,10 @@
 import { decodeKittyPrintable, type KeyId, matchesKey } from "@earendil-works/pi-tui";
 import { bindings } from "./state.ts";
 
-export const namedKeys: readonly KeyId[] = [...new Set(bindings.flatMap((binding) => binding.keys).filter((key): key is KeyId => key.length > 1))];
+const keyNames = bindings.flatMap((binding) => binding.keys);
+const named = keyNames.filter((key): key is KeyId => key.length > 1);
+
+export const namedKeys: readonly KeyId[] = [...new Set(named)];
 
 export function keyOf(data: string): string | undefined {
 	for (const name of namedKeys) if (matchesKey(data, name)) return name;

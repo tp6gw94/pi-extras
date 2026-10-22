@@ -72,7 +72,8 @@ export class Transcript {
 
 	rowOf(place: Place): number | undefined {
 		const block = this.byId.get(place.block);
-		return block && place.line < block.height ? block.start + place.line : undefined;
+		if (!block || place.line >= block.height) return undefined;
+		return block.start + place.line;
 	}
 
 	placeAt(row: number, char: number): Place {
@@ -115,8 +116,10 @@ export class Transcript {
 		const spans: RowSpan[] = [];
 		for (let row = first.row; row <= last.row; row++) {
 			const count = this.text(row).glyphs.length;
-			const from = shape === "char" && row === first.row ? first.char : 0;
-			const to = shape === "char" && row === last.row ? Math.min(count, last.char + 1) : count;
+			const startsHere = shape === "char" && row === first.row;
+			const endsHere = shape === "char" && row === last.row;
+			const from = startsHere ? first.char : 0;
+			const to = endsHere ? Math.min(count, last.char + 1) : count;
 			spans.push({ row, from, to });
 		}
 		return spans;
@@ -134,7 +137,9 @@ export class Transcript {
 	liveMarks(marks: readonly Mark[]): RowSpan[] {
 		return marks.flatMap((mark) => {
 			const row = this.rowOf({ block: mark.block, line: mark.line, char: 0 });
-			if (row === undefined || this.text(row).glyphs.slice(mark.from, mark.to).join("") !== mark.text) return [];
+			if (row === undefined) return [];
+			const visible = this.text(row).glyphs.slice(mark.from, mark.to).join("");
+			if (visible !== mark.text) return [];
 			return [{ row, from: mark.from, to: mark.to }];
 		});
 	}

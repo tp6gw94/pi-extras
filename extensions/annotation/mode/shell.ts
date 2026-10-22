@@ -7,6 +7,10 @@ import { decorationsOf, type Palette, paintRows } from "./paint.ts";
 import { helpRows, initialState, keyAction, reduce, statusOf } from "./state.ts";
 import type { Transcript } from "./transcript.ts";
 
+type NoteMode = Extract<Mode, { kind: "note" }>;
+type ListMode = Extract<Mode, { kind: "list" }>;
+type HelpMode = Extract<Mode, { kind: "help" }>;
+
 export interface ShellOptions {
 	readonly tui: TUI;
 	readonly theme: Theme;
@@ -34,10 +38,9 @@ export class AnnotationDock implements Component, Focusable {
 	private state!: State;
 	private palette!: Palette;
 	private focusedFlag = false;
-	private phase: "active" | "evicted" | "disposed" = "active";
-	private lastRenderFrame = 0;
-	private renderedHeight = 0;
-	private settleTask: NodeJS.Immediate | undefined;
+	private phase: "prepared" | "active" | "disposed" = "prepared";
+	private viewportHeight = 0;
+	private documentWidth = 0;
 	private capturePending = false;
 
 	constructor(options: ShellOptions) {
@@ -63,19 +66,31 @@ export class AnnotationDock implements Component, Focusable {
 
 	set focused(value: boolean) {
 		this.focusedFlag = value;
+		if (value && this.phase === "prepared") {
+			if (this.attachment.activate()) this.phase = "active";
+			else this.dispose();
+		}
 		this.syncFocus();
 	}
 
 	hooks(): Hooks {
 		return {
-			onCapture: (doc) => {
-				const anchor = anchorOf(this.state.mode);
-				if (!changed(doc, this.state.caret) && (!anchor || !changed(doc, anchor))) return;
+			dock: this,
+			onCapture: () => {
 				if (this.capturePending) return;
 				this.capturePending = true;
 				queueMicrotask(() => {
 					this.capturePending = false;
-					this.dispatch({ type: "docChanged" });
+					if (!this.active()) return;
+					const doc = this.attachment.doc;
+					const { height } = this.attachment.viewport();
+					const geometryChanged = height !== this.viewportHeight || doc.width !== this.documentWidth;
+					this.viewportHeight = height;
+					this.documentWidth = doc.width;
+					const anchor = anchorOf(this.state.mode);
+					if (geometryChanged || changed(doc, this.state.caret) || (anchor !== undefined && changed(doc, anchor))) {
+						this.dispatch({ type: "docChanged" });
+					}
 				});
 			},
 			paint: (rows, doc) => {
@@ -87,17 +102,13 @@ export class AnnotationDock implements Component, Focusable {
 				};
 				return paintRows(rows, doc, decorationsOf(doc, projected), this.palette);
 			},
-			alive: (frame) => {
-				if (frame - this.lastRenderFrame > 2) this.phase = "evicted";
-				return this.phase === "active";
-			},
 			onEvicted: () => this.dispose(),
 			onFullscreenLeft: () => this.finish({ kind: "detached", reason: "left fullscreen" }),
 		};
 	}
 
 	handleInput(data: string): void {
-		if (this.phase !== "active") return;
+		if (!this.active()) return;
 		if (!this.attachment.stillFullscreen()) {
 			this.finish({ kind: "detached", reason: "left fullscreen" });
 			return;
@@ -113,26 +124,14 @@ export class AnnotationDock implements Component, Focusable {
 
 	render(width: number): string[] {
 		if (this.phase !== "active") return [];
-		this.lastRenderFrame = this.attachment.frame;
 		const height = Math.floor(this.options.tui.terminal.rows / 3);
 		const panelHeight = Math.max(0, height - 1);
 		const mode = this.state.mode;
 		let panel: string[] = [];
-		if (mode.kind === "note") panel = this.renderNote(width, panelHeight);
-		else if (mode.kind === "list") {
-			const notes = this.state.notebook.notes;
-			const top = Math.max(0, mode.index - panelHeight + 1);
-			panel = notes.length === 0 ? ["No notes yet; select text with v and press a."] : notes.slice(top, top + panelHeight).map((note, offset) => {
-				const index = top + offset;
-				return `${index === mode.index ? ">" : " "} ${index + 1}. ${note.quote.split("\n")[0]} — ${note.text.split("\n")[0] || "(no note)"}`;
-			});
-		} else if (mode.kind === "help") panel = helpRows().slice(mode.top, mode.top + panelHeight).map((row) => "heading" in row ? row.heading : `  ${row.keys}  ${row.label}  ${row.modes}`);
-		const lines = [this.renderStatus(), ...panel].slice(0, height).map((line) => truncateToWidth(line, width));
-		if (lines.length !== this.renderedHeight) {
-			this.renderedHeight = lines.length;
-			this.scheduleSettle();
-		}
-		return lines;
+		if (mode.kind === "note") panel = this.renderNote(mode, width, panelHeight);
+		else if (mode.kind === "list") panel = this.renderList(mode, panelHeight);
+		else if (mode.kind === "help") panel = this.renderHelp(mode, panelHeight);
+		return [this.renderStatus(), ...panel].slice(0, height).map((line) => truncateToWidth(line, width));
 	}
 
 	invalidate(): void {
@@ -143,19 +142,25 @@ export class AnnotationDock implements Component, Focusable {
 	dispose(): void {
 		if (this.phase === "disposed") return;
 		this.phase = "disposed";
-		if (this.settleTask) clearImmediate(this.settleTask);
 		this.editor.focused = false;
 		this.attachment?.detach();
 	}
 
+	private active(): boolean {
+		if (this.phase !== "active") return false;
+		if (this.attachment.ownsEditor()) return true;
+		this.dispose();
+		return false;
+	}
+
 	private finish(outcome: Outcome): void {
-		if (this.phase !== "active") return;
+		if (!this.active()) return;
 		this.dispose();
 		this.options.finish(outcome);
 	}
 
 	private dispatch(action: Action): void {
-		if (this.phase !== "active") return;
+		if (!this.active()) return;
 		const previous = this.state;
 		const { state, effects } = reduce(previous, action, { doc: this.attachment.doc, viewport: this.attachment.viewport() });
 		this.state = state;
@@ -176,14 +181,6 @@ export class AnnotationDock implements Component, Focusable {
 		this.editor.focused = this.phase === "active" && this.focusedFlag && this.state.mode.kind === "note";
 	}
 
-	private scheduleSettle(): void {
-		if (this.settleTask) return;
-		this.settleTask = setImmediate(() => {
-			this.settleTask = undefined;
-			this.dispatch({ type: "docChanged" });
-		});
-	}
-
 	private renderStatus(): string {
 		const { tag, pending, text, error } = statusOf(this.state);
 		const doc = this.attachment.doc;
@@ -195,10 +192,25 @@ export class AnnotationDock implements Component, Focusable {
 		return `${tag}${pending ? ` ${pending}` : ""} · ${position} · ${notes} note${notes === 1 ? "" : "s"}${busy}  ${this.options.theme.fg(error ? "error" : "muted", text)}`;
 	}
 
-	private renderNote(width: number, height: number): string[] {
+	private renderList(mode: ListMode, height: number): string[] {
+		const notes = this.state.notebook.notes;
+		if (notes.length === 0) return ["No notes yet; select text with v and press a."];
+		const top = Math.max(0, mode.index - height + 1);
+		return notes.slice(top, top + height).map((note, offset) => {
+			const index = top + offset;
+			const marker = index === mode.index ? ">" : " ";
+			const summary = note.text.split("\n")[0] || "(no note)";
+			return `${marker} ${index + 1}. ${note.quote.split("\n")[0]} — ${summary}`;
+		});
+	}
+
+	private renderHelp(mode: HelpMode, height: number): string[] {
+		return helpRows().slice(mode.top, mode.top + height).map((row) => "heading" in row ? row.heading : `  ${row.keys}  ${row.label}  ${row.modes}`);
+	}
+
+	private renderNote(mode: NoteMode, width: number, height: number): string[] {
 		if (height === 0) return [];
-		const mode = this.state.mode;
-		const preview = mode.kind === "note" && height >= 4 ? [this.options.theme.fg("muted", `> ${mode.draft.quote.split("\n")[0]}`)] : [];
+		const preview = height >= 4 ? [this.options.theme.fg("muted", `> ${mode.draft.quote.split("\n")[0]}`)] : [];
 		const available = height - preview.length;
 		const lines = this.editor.render(width);
 		const cursor = lines.findIndex((line) => line.includes(CURSOR_MARKER));

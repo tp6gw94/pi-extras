@@ -1,5 +1,5 @@
 import { sliceByColumn } from "@earendil-works/pi-tui";
-import type { Decorations, RowText, State } from "./data.ts";
+import type { Decorations, RowSpan, RowText, State } from "./data.ts";
 import { isImageRow, type Transcript } from "./transcript.ts";
 
 export interface Palette {
@@ -33,7 +33,9 @@ export function decorationsOf(doc: Transcript, state: State): Decorations {
 	const mode = state.mode;
 	const row = doc.rowOf(state.caret);
 	const browsing = mode.kind === "normal" || mode.kind === "visual";
-	const selected = mode.kind === "visual" ? doc.spansBetween(mode.selection.shape, mode.selection.anchor, state.caret) : mode.kind === "note" ? doc.liveMarks(mode.draft.marks) : [];
+	let selected: readonly RowSpan[] = [];
+	if (mode.kind === "visual") selected = doc.spansBetween(mode.selection.shape, mode.selection.anchor, state.caret);
+	else if (mode.kind === "note") selected = doc.liveMarks(mode.draft.marks);
 	return {
 		caret: browsing && row !== undefined ? { row, char: state.caret.char } : undefined,
 		selected,

@@ -162,7 +162,10 @@ def styled_glyphs(line):
                     code = parameter.split(":")[0]
                     if code in ("38", "48", "58"):
                         if ":" not in parameter and at + 1 < len(parameters):
-                            at += 3 if parameters[at + 1] == "5" else 5 if parameters[at + 1] == "2" else 0
+                            if parameters[at + 1] == "5":
+                                at += 3
+                            elif parameters[at + 1] == "2":
+                                at += 5
                         at += 1
                         continue
                     if code in ("", "0"):
@@ -301,6 +304,7 @@ def setup():
     base = {
         "HOME": str(HOME),
         "PI_CODING_AGENT_DIR": str(AGENT),
+        "PI_OFFLINE": "1",
         "PATH": f"{PI_BIN}:{os.environ['PATH']}",
         "TERM": "xterm-256color",
         "LANG": "en_US.UTF-8",
@@ -321,6 +325,7 @@ def start_regular():
     base = {
         "HOME": str(HOME),
         "PI_CODING_AGENT_DIR": str(AGENT),
+        "PI_OFFLINE": "1",
         "PATH": f"{PI_BIN}:{os.environ['PATH']}",
         "TERM": "xterm-256color",
         "LANG": "en_US.UTF-8",
@@ -641,14 +646,14 @@ def run():
     native_caret = status()
     before_native_page = pane()
     special("PPage")
-    wait(lambda: pane() != before_native_page, "PageUp scrolls the native viewport")
-    check_true("PageUp leaves the latest message", "Jump to latest message" in pane())
+    wait(lambda: (text := pane()) != before_native_page and "STREAM_DONE" not in text and stream_numbers(text) != stream_numbers(before_native_page), "PageUp scrolls the native viewport away from the latest message")
+    check_true("PageUp reveals earlier transcript rows", min(stream_numbers(pane())) < min(stream_numbers(before_native_page)))
     check("PageUp keeps the caret row", status()["row"], native_caret["row"])
     check("PageUp keeps the caret column", status()["col"], native_caret["col"])
     after_native_page = pane()
     special("NPage")
-    wait(lambda: pane() != after_native_page, "PageDown scrolls the native viewport")
-    check_true("PageDown returns to the latest message", "Jump to latest message" not in pane())
+    wait(lambda: (text := pane()) != after_native_page and "STREAM_DONE" in text, "PageDown scrolls the native viewport back to the latest message")
+    check("PageDown restores the transcript viewport", stream_numbers(pane()), stream_numbers(before_native_page))
     check("PageDown keeps the caret row", status()["row"], native_caret["row"])
     check("PageDown keeps the caret column", status()["col"], native_caret["col"])
     press("q")
@@ -853,7 +858,14 @@ def main():
         failure = str(error)
         print("FAIL " + failure, file=sys.stderr, flush=True)
         EVIDENCE.mkdir(parents=True, exist_ok=True)
-        (EVIDENCE / "result.json").write_text(json.dumps({"passed": checks, "error": failure, "evidence": str(EVIDENCE), "work": str(WORK)}, indent=2), encoding="utf-8")
+        diagnostics = {}
+        try:
+            plain, _ = shot("failure")
+            diagnostics["status"] = status(plain)
+        except (subprocess.CalledProcessError, OSError) as capture_error:
+            diagnostics["captureError"] = str(capture_error)
+        print("DIAG " + json.dumps(diagnostics), file=sys.stderr, flush=True)
+        (EVIDENCE / "result.json").write_text(json.dumps({"passed": checks, "error": failure, **diagnostics, "evidence": str(EVIDENCE), "work": str(WORK)}, indent=2), encoding="utf-8")
     finally:
         cleanup(passed)
     return 0 if passed else 1

@@ -39,15 +39,13 @@ export default function (pi: ExtensionAPI) {
 	let unlisten: (() => void) | undefined;
 
 	const evict = (ctx: ExtensionContext): void => {
-		void ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-			const tick = setInterval(() => tui.requestRender(), 60);
+		void ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
 			const timeout = setTimeout(() => done(undefined), 1200);
 			return {
 				render: () => [theme.fg("accent", "PROBE DIALOG")],
 				invalidate: () => {},
 				handleInput: () => {},
 				dispose: () => {
-					clearInterval(tick);
 					clearTimeout(timeout);
 				},
 			};

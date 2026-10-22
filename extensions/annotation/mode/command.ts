@@ -54,11 +54,11 @@ export function registerAnnotationMode(pi: ExtensionAPI): void {
 		if (outcome?.kind !== "append" && outcome?.kind !== "submit") return;
 		try {
 			const items = outcome.notes.map((note) => ({ quote: note.quote, note: note.text }));
-			const current = outcome.kind === "append" ? ctx.ui.getEditorText() : "";
-			const text = annotationsText(items, current);
+			const draft = outcome.kind === "append" ? ctx.ui.getEditorText() : "";
+			const text = annotationsText(items, draft);
 			if (text === undefined) throw new Error("nothing to deliver");
 			if (outcome.kind === "append") {
-				ctx.ui.setEditorText(current + text);
+				ctx.ui.setEditorText(draft + text);
 				ctx.ui.notify(`annotation-mode: appended ${items.length} annotation${items.length === 1 ? "" : "s"} to the editor`, "info");
 			} else pi.sendUserMessage(text, { deliverAs: "followUp" });
 			const delivered = new Set(outcome.notes.map((note) => note.id));

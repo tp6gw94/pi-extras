@@ -41,7 +41,8 @@ export function move(doc: Transcript, from: RowChar, goalX: GoalX, motion: Motio
 	const horizontal = (at: RowChar): MoveResult => ({ ...at, goalX: doc.text(at.row).x[at.char] });
 	const vertical = (row: number): MoveResult => {
 		const target = Math.max(0, Math.min(lastRow, row));
-		return { row: target, char: doc.charAtX(target, goalX === "eol" ? Infinity : goalX), goalX };
+		const char = doc.charAtX(target, goalX === "eol" ? Infinity : goalX);
+		return { row: target, char, goalX };
 	};
 	const toRow = (row: number): MoveResult => {
 		const target = Math.max(0, Math.min(lastRow, row));

@@ -219,11 +219,11 @@ The local port must be the same as the remote port, because the server accepts o
 
 Run `/annotation-mode` to quote the transcript inside pi's fullscreen TUI. The mode needs no server, port, or browser, so it works without `/annotate`.
 
-The mode quotes the text pi draws on screen, not the message source. Markdown markers are gone. Bold text and link text appear as plain text, and code keeps the fence and language that pi shows.
+The mode quotes the text pi draws on screen, not the message source. pi's Markdown renderer drops the bold markers, but other syntax can remain: code fences, heading prefixes, and list markers are quoted when pi shows them. A link is whatever text pi visibly renders; with OSC 8 support the URL can be hidden, but under tmux pi shows `the docs (https://example.com/cache)`.
 
 The mode works in fullscreen mode only. In regular mode, `/annotation-mode` prints `annotation-mode: needs fullscreen mode` and does nothing.
 
-The dock replaces the editor. Its status line shows the mode, an optional count, the caret row and terminal column (both start at 1), the note count, and `working` while pi runs a turn.
+The dock replaces the editor. Its status line shows the mode, an optional count, the caret row and terminal column (both start at 1), the note count, and `working` while pi runs a turn. Automatic following is paused and the jump-to-latest indicator is hidden during the mode so it cannot cover selectable text; both return to normal behavior when the mode closes.
 
 ### Move and select with vim-like keys
 
@@ -235,7 +235,8 @@ The dock replaces the editor. Its status line shows the mode, an optional count,
 | `gg` `G` | Start and end of the transcript |
 | `{` `}` | Previous and next message |
 | Ctrl-d, Ctrl-u | Half page |
-| Ctrl-f, Ctrl-b, PageUp, PageDown | Full page |
+| Ctrl-f, Ctrl-b | Move the caret down or up a page |
+| PageUp, PageDown | Scroll the viewport; the caret stays until the next motion reveals it |
 | `v`, `V` | Start a character or line selection |
 | `o` | Swap the selection ends |
 | Esc, `q` | Leave the selection |
@@ -251,13 +252,13 @@ Keys take a count prefix, for example `3j` or `2}`. The mode does not implement 
 
 ### What a quote contains
 
-The quote contains the visible characters between the endpoints. The mode drops trailing spaces and blank rows at the edges. Rows selected from their first character lose their common leading whitespace, which removes the indent pi adds. A selection that starts in the middle of a row keeps that row unchanged. Blockquote bars and list markers are visible characters, so the quote includes them.
+The quote contains the visible characters between the endpoints. The mode drops trailing spaces and blank rows at the edges. Rows selected from their first character lose their common leading whitespace. That removes indentation pi adds, and it can also remove indentation that the actual code shares. A selection that starts in the middle of a row keeps that row unchanged. Blockquote bars and list markers are visible characters, so the quote includes them.
 
-Bold text is quoted as its text, without `**`. A link is quoted as its text, without the URL. If every selected row is inside one fenced code block, the quote is a fenced block with that block's language. The fence uses more backticks when the code contains a run of backticks. The code is the visible code with the common indentation removed.
+Bold text is quoted as its text, without `**`. A link is quoted as pi draws it; under tmux that includes the URL in parentheses, and with OSC 8 support the URL can be hidden. If every selected row is inside one fenced code block, the quote is a fenced block with that block's language. The fence uses more backticks when the code contains a run of backticks. The code is the visible code with the common indentation removed.
 
 The fence scan reads rendered rows. A fence that pi draws on the same row as a list marker is not detected, so a selection there is quoted as plain text. An unclosed fence runs to the end of the message.
 
-CJK characters and emoji count as one character and take two terminal cells. The caret moves over one character, and the status line reports the terminal column.
+Each grapheme, including a CJK character or an emoji, counts as one character. Movement uses the measured terminal cell width of each grapheme, so wide glyphs take two cells and other glyphs take their measured width. The status line reports the terminal column.
 
 ### Save, edit, and send notes
 
@@ -265,7 +266,9 @@ Press `a` or `A`, type the note, and press Enter. Ctrl-J adds a line. Esc or Ctr
 
 Tab lists the notes. `e` opens the note with its saved text, `d` deletes it, and `j` or `k` selects another note. In the list, `s` and `S` send every note too.
 
-`s` appends every saved note to the pi editor and leaves the mode. It does not start a model turn. The text goes after the current draft, in the `> quote` format that `/annotate` uses. `S` sends every saved note to pi as a new user message and leaves the mode. It uses `followUp`, so the notes wait when pi is busy, and your editor draft stays as it is. A successful send removes the notes. A failed send keeps them and shows an error.
+`s` appends every saved note to the pi editor and leaves the mode. It does not start a model turn. The text goes after the current draft, in the `> quote` format that `/annotate` uses. `S` sends every saved note to pi as a new user message and leaves the mode. It uses `followUp`, so the notes wait when pi is busy, and your editor draft stays as it is. After `s`, a successful editor update removes the notes; a synchronous editor error keeps them and shows an error.
+
+For `S`, `pi.sendUserMessage` returns `void`: only synchronous call acceptance is known. The mode clears the notes when that call returns without throwing, not when pi later schedules or delivers the message. A synchronous call failure keeps the notes and shows an error. Later asynchronous errors are reported by pi outside the caller, so the mode cannot restore the cleared notes. Use `s` to review and keep the text in the editor before submitting.
 
 Unsent notes stay in memory for the pi session. `q` with unsent notes asks for a second press, and running `/annotation-mode` again shows the notes. They do not survive `/reload`, a new session, or a pi restart.
 
@@ -291,7 +294,7 @@ The dock uses at most the bottom third of the terminal. Make the terminal taller
 
 The mode paints only in fullscreen. Leaving fullscreen closes it, and the transcript pi prints on exit has no caret or selection. If another dialog takes the editor slot, the mode closes without a notice and the notes stay in memory.
 
-On Windows and WSL, pi binds Ctrl-F to its fullscreen search and handles the key before the mode. Use PageDown to move down a page there. PageUp moves up.
+On Windows and WSL, pi binds Ctrl-F to its fullscreen search and handles the key before the mode. Use PageDown and PageUp to scroll the viewport there. They can leave the caret where it was; the next motion reveals it.
 
 ## Development
 

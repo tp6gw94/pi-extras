@@ -17,7 +17,7 @@ function deferred() {
 	return { promise, resolve, reject };
 }
 
-function setup(options: { draft?: string; rows?: number; columns?: number; messages?: Component[]; idle?: boolean; customResolution?: Promise<void> } = {}) {
+function setup(options: { draft?: string; rows?: number; columns?: number; messages?: Component[]; idle?: boolean; preMountDraw?: boolean; customResolution?: Promise<void> } = {}) {
 	const host = hostHarness(options);
 	const original = host.chat.render;
 	const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>();
@@ -42,7 +42,9 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 		focus = next;
 		if ("focused" in focus) focus.focused = true;
 	};
+	host.editor.clear();
 	host.editor.addChild(core);
+	host.tui.getFocusedComponent = () => focus;
 	const theme = { fg: (_color: string, text: string) => text, getBgAnsi: () => selected } as unknown as Theme;
 	const custom: ExtensionUIContext["custom"] = async (factory, customOptions) => {
 		assert.equal(customOptions?.overlay, false);
@@ -65,7 +67,9 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 				component?.dispose?.();
 				timeline.push("dispose");
 			};
-			Promise.resolve(factory(host.tui as unknown as TUI, theme, {} as never, done)).then((value) => {
+			const value = factory(host.tui as unknown as TUI, theme, {} as never, done);
+			if (options.preMountDraw) process.nextTick(() => { host.draw(); timeline.push("pre-mount draw"); });
+			Promise.resolve(value).then((value) => {
 				if (closed) return;
 				if (customError) throw customError;
 				component = value;
@@ -73,6 +77,7 @@ function setup(options: { draft?: string; rows?: number; columns?: number; messa
 				host.editor.clear();
 				host.editor.addChild(value);
 				setFocus(value);
+				timeline.push("mount");
 			}).catch(reject);
 		});
 		if (options.customResolution) await options.customResolution;
@@ -151,6 +156,52 @@ function addNote(t: ReturnType<typeof setup>, text = "fix it"): void {
 }
 
 describe("annotation-mode entry", () => {
+	it("survives a busy nextTick draw between factory preparation and Promise mounting", async () => {
+		const t = setup({ idle: false, preMountDraw: true, messages: [linesComponent(Array.from({ length: 20 }, (_, index) => `line ${index + 1}`))] });
+		await new Promise<void>((resolve, reject) => setImmediate(() => { t.run().then(resolve, reject); }));
+		await settle();
+		assert.deepEqual(t.timeline.slice(0, 2), ["pre-mount draw", "mount"]);
+		assert.match(t.screen()[0], /^NORMAL.*working/);
+		t.keys("g", "g", "3");
+		await settle();
+		assert.match(t.screen()[0], /^NORMAL 3 · 1:1/);
+		t.keys("j", "2", "g");
+		await settle();
+		assert.match(t.screen()[0], /^NORMAL 2g · 4:1/);
+		t.keys("g", "v", "l");
+		assert.match(t.screen()[0], /^VISUAL · 2:2/);
+		addNote(t, "still active");
+		assert.match(t.screen()[0], /1 note/);
+		t.keys("q", "q");
+		await settle();
+		assert.equal(t.chat.render, t.original);
+		assert.equal(t.editorText(), "DRAFT");
+	});
+
+	it("uses the focused editor slot after root containers are reordered", async () => {
+		const t = setup();
+		[t.tui.children[2], t.tui.children[4]] = [t.tui.children[4], t.tui.children[2]];
+		await t.begin();
+		assert.match(t.screen()[0], /^NORMAL/);
+		t.keys("j");
+		assert.match(t.screen()[0], /^NORMAL · 2:1/);
+		t.keys("q");
+		assert.deepEqual(t.screen(), ["DRAFT"]);
+	});
+
+	for (const focus of [null, linesComponent(["Unmounted"])]) {
+		it(`refuses ${focus === null ? "absent" : "unmounted"} focus without leaving an inert dock`, async () => {
+			const t = setup();
+			t.tui.getFocusedComponent = () => focus;
+			await t.run();
+			await settle();
+			assert.equal(t.chat.render, t.original);
+			assert.equal(t.resets(), 0);
+			assert.deepEqual(t.screen(), ["DRAFT"]);
+			assert.match(t.notices[0].text, /not supported/);
+		});
+	}
+
 	it("returns while custom remains unresolved and the dock stays active", async () => {
 		const t = setup();
 		assert.equal(await Promise.race([t.run().then(() => "returned"), settle().then(() => "blocked")]), "returned");
@@ -182,7 +233,8 @@ describe("annotation-mode entry", () => {
 			assert.equal(t.editorText(), "DRAFT");
 			assert.equal(t.notices.length, 1);
 			assert.equal(t.notices[0].type, "warning");
-			assert.match(t.notices[0].text, failure === "regular" ? /fullscreen/ : failure === "empty" ? /empty/ : /not supported/);
+			const expected = { regular: /fullscreen/, empty: /empty/, "missing layout": /not supported/ }[failure];
+			assert.match(t.notices[0].text, expected);
 			assert.deepEqual(t.screen(), ["DRAFT"]);
 		});
 	}
@@ -220,7 +272,7 @@ describe("annotation-mode delivery", () => {
 		assert.equal(t.editorText(), "DRAFT" + text);
 		assert.equal(t.editorText(), "DRAFT\n> alpha 中文 👨‍👩‍👧\n\nfix it\n\n");
 		assert.deepEqual(t.messages, []);
-		assert.deepEqual(t.timeline, ["restore", "resolve", "dispose", "append"]);
+		assert.deepEqual(t.timeline, ["mount", "restore", "resolve", "dispose", "append"]);
 		assert.match(t.notices.at(-1)!.text, /appended 1/);
 		await t.begin();
 		assert.match(t.screen()[0], /0 notes/);
@@ -238,7 +290,7 @@ describe("annotation-mode delivery", () => {
 		await settle();
 		assert.deepEqual(t.messages, [{ text: "> alpha 中文 👨‍👩‍👧\n\nfix it\n\n", options: { deliverAs: "followUp" } }]);
 		assert.equal(t.editorText(), "DRAFT");
-		assert.deepEqual(t.timeline, ["restore", "resolve", "dispose", "submit"]);
+		assert.deepEqual(t.timeline, ["mount", "restore", "resolve", "dispose", "submit"]);
 		assert.equal(t.chat.render, t.original);
 		await t.begin();
 		assert.match(t.screen()[0], /0 notes/);
@@ -247,7 +299,7 @@ describe("annotation-mode delivery", () => {
 	});
 
 	for (const key of ["s", "S"]) {
-		it(`keeps notes after ${key} throws and permits an exact retry`, async () => {
+		it(`keeps notes after the ${key} SDK call throws synchronously and permits an exact retry`, async () => {
 			const t = setup();
 			await t.begin();
 			addNote(t);
@@ -369,7 +421,7 @@ describe("annotation-mode lifecycle", () => {
 		t.draw();
 		addNote(t);
 		t.replaceDock();
-		for (let frame = 0; frame < 4; frame++) t.draw();
+		t.draw();
 		await settle();
 		assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
 		assert.equal(t.doneCount(), 0);
@@ -389,8 +441,9 @@ describe("annotation-mode lifecycle", () => {
 		const first = await t.begin();
 		addNote(t);
 		t.replaceDock();
-		for (let frame = 0; frame < 4; frame++) t.draw();
+		const frame = t.draw();
 		await settle();
+		assert.doesNotMatch(frame.lines.join("\n"), /\x1b\[(?:7|4)m/);
 		assert.equal(t.chat.render, t.original);
 		assert.equal(t.doneCount(), 0);
 		assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
@@ -408,12 +461,60 @@ describe("annotation-mode lifecycle", () => {
 		await t.begin();
 		t.replaceDock();
 		t.chat.clear();
-		for (let frame = 0; frame < 4; frame++) t.draw();
+		t.draw();
 		await settle();
 		assert.equal(t.doneCount(), 0);
 		assert.equal(t.chat.render, t.original);
 		assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
 	});
+
+	it("abandons an empty-transcript completion queued before another dialog takes the slot", async () => {
+		const t = setup();
+		await t.begin();
+		t.chat.clear();
+		t.draw();
+		t.replaceDock();
+		await settle();
+		assert.equal(t.doneCount(), 0);
+		assert.equal(t.chat.render, t.original);
+		assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
+	});
+
+	for (const exit of ["render", "input", "queued"] as const) {
+		it(`preserves a replacement dialog when fullscreen ends through ${exit}`, async () => {
+			const t = setup();
+			const { dock } = await t.begin();
+			if (exit !== "queued") t.replaceDock();
+			t.tui.mode = "regular";
+			if (exit === "input") dock.handleInput!("q");
+			else {
+				assert.doesNotMatch(t.draw().lines.join("\n"), /\x1b\[(?:7|4)m/);
+				if (exit === "queued") t.replaceDock();
+			}
+			await settle();
+			assert.equal(t.doneCount(), 0);
+			assert.equal(t.chat.render, t.original);
+			assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
+			assert.deepEqual(t.notices, []);
+		});
+	}
+
+	for (const key of ["q", "s", "S"]) {
+		it(`ignores stale ${key} input before a replacement dialog renders`, async () => {
+			const t = setup();
+			const { dock } = await t.begin();
+			addNote(t);
+			t.replaceDock();
+			dock.handleInput!(key);
+			dock.handleInput!(key);
+			await settle();
+			assert.equal(t.doneCount(), 0);
+			assert.equal(t.chat.render, t.original);
+			assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
+			assert.deepEqual(t.messages, []);
+			assert.equal(t.editorText(), "DRAFT");
+		});
+	}
 
 	it("shutdown and a new command abandon old runs without stale completion", async () => {
 		const t = setup();
@@ -563,6 +664,67 @@ describe("annotation dock", () => {
 		}
 	});
 
+	it("reveals the bottom caret after a height-only resize with an unchanged one-line dock", async () => {
+		const t = setup({ rows: 30, columns: 80, messages: [linesComponent(Array.from({ length: 60 }, (_, index) => `line ${index + 1}`))] });
+		await t.begin();
+		t.keys("G");
+		await settle();
+		assert.match(t.screen()[0], /^NORMAL · 60:1/);
+		assert.equal(t.screen().length, 1);
+		t.tui.terminal.rows = 15;
+		t.draw();
+		await settle();
+		assert.equal(t.screen().length, 1);
+		assert.ok(t.draw().lines.some((line) => line.includes("\x1b[7ml") && stripTerminalSequences(line).includes("line 60")));
+		assert.ok(t.requests.every((request) => !request.duringRender));
+	});
+
+	for (const mode of ["normal", "visual", "note"] as const) {
+		it(`keeps the bottom annotation visible in ${mode} mode after a fixed sibling grows`, async () => {
+			const t = setup({ rows: 30, columns: 80, messages: [linesComponent(Array.from({ length: 60 }, (_, index) => `line ${index + 1}`))] });
+			await t.begin();
+			t.keys("G");
+			if (mode === "visual") t.keys("v");
+			if (mode === "note") t.keys("a");
+			await settle();
+			t.draw();
+			await settle();
+			const height = t.view.viewportHeight;
+			const dockHeight = t.screen().length;
+			const decoration = mode === "note" ? "\x1b[48;5;24m" : "\x1b[7m";
+			const visible = (lines: string[]) => lines.some((line) => line.includes(decoration) && stripTerminalSequences(line).includes("line 60"));
+			assert.ok(visible(t.draw().lines));
+			if (mode === "normal") assert.equal(dockHeight, 1);
+			t.dockSibling.addChild(linesComponent(Array.from({ length: 5 }, (_, index) => `widget ${index + 1}`)));
+			t.draw();
+			await settle();
+			const frame = t.draw();
+			assert.equal(t.view.viewportHeight, height - 5);
+			assert.deepEqual(t.tui.terminal, { rows: 30, columns: 80 });
+			assert.equal(t.screen().length, dockHeight);
+			assert.match(t.screen()[0], new RegExp(`^${mode.toUpperCase()} · 60:1`));
+			assert.ok(visible(frame.lines));
+			assert.ok(t.requests.every((request) => !request.duringRender));
+		});
+	}
+
+	it("leaves a replacement dialog and its scroll position untouched by queued geometry reconciliation", async () => {
+		const t = setup({ rows: 30, messages: [linesComponent(Array.from({ length: 60 }, (_, index) => `line ${index + 1}`))] });
+		await t.begin();
+		t.keys("G");
+		await settle();
+		t.dockSibling.addChild(linesComponent(Array.from({ length: 5 }, () => "widget")));
+		t.draw();
+		t.replaceDock();
+		t.view.scrollTo(10, { disableFollow: true });
+		await settle();
+		const frame = t.draw();
+		assert.equal(t.view.scrollTop, 10);
+		assert.deepEqual(t.screen(), ["OTHER DIALOG"]);
+		assert.equal(t.doneCount(), 0);
+		assert.doesNotMatch(frame.lines.join("\n"), /\x1b\[7m/);
+	});
+
 	it("reveals the caret again after the note panel changes the viewport height", async () => {
 		const t = setup({ rows: 18, messages: [linesComponent(Array.from({ length: 40 }, (_, index) => `line ${index}`))] });
 		await t.begin();
@@ -576,6 +738,69 @@ describe("annotation dock", () => {
 		assert.ok(t.draw().lines.some((line) => stripTerminalSequences(line).includes("line 39")));
 		assert.ok(t.requests.every((request) => !request.duringRender));
 	});
+
+	for (const layout of ["note", "resize"] as const) {
+		it(`keeps the short transcript viewport and caret through ${layout} layout and streaming`, async () => {
+			const rows = Array.from({ length: 12 }, (_, index) => `line ${index}`);
+			const t = setup({ rows: 18, messages: [linesComponent(rows)] });
+			await t.begin();
+			assert.equal(t.view.scrollTop, 0);
+			assert.equal(t.view.isFollowingEnd, false);
+			if (layout === "note") t.keys("a");
+			else { t.tui.terminal.rows = 14; t.draw(); }
+			await settle();
+			if (layout === "note") t.keys("\x1b");
+			else { t.tui.terminal.rows = 18; t.draw(); }
+			await settle();
+			assert.equal(t.view.isFollowingEnd, false);
+			rows.push(...Array.from({ length: 20 }, (_, index) => `stream ${index}`));
+			t.draw();
+			await settle();
+			assert.equal(t.view.scrollTop, 0);
+			assert.match(t.screen()[0], /^NORMAL · 1:1/);
+			assert.ok(t.draw().lines.some((line) => line.includes("\x1b[7ml")));
+			t.keys("G");
+			await settle();
+			assert.match(t.screen()[0], /^NORMAL · 32:1/);
+			assert.equal(t.view.scrollTop, 19);
+			t.draw();
+			await settle();
+			t.requests.length = 0;
+			t.draw();
+			await settle();
+			assert.equal(t.requests.length, 0);
+		});
+	}
+
+	for (const native of ["wheel", "search", "end"] as const) {
+		it(`preserves native ${native} scrolling without revealing the annotation caret on every frame`, async () => {
+			const rows = Array.from({ length: 40 }, (_, index) => `line ${index}`);
+			const t = setup({ rows: 18, messages: [linesComponent(rows)] });
+			await t.begin();
+			t.keys("g", "g");
+			await settle();
+			const height = t.view.viewportHeight;
+			if (native === "wheel") t.view.scrollBy(8);
+			else if (native === "end") t.view.scrollToEnd();
+			t.draw();
+			if (native === "search") t.view.scrollTo(20, { disableFollow: true });
+			const top = t.view.scrollTop;
+			await settle();
+			assert.equal(t.view.scrollTop, top);
+			assert.equal(t.view.isFollowingEnd, false);
+			rows.push("stream");
+			t.draw();
+			await settle();
+			assert.equal(t.view.scrollTop, top);
+			assert.equal(t.view.viewportHeight, height);
+			assert.doesNotMatch(t.draw().lines.join("\n"), /\x1b\[7m/);
+			assert.match(t.screen()[0], /^NORMAL · 1:1/);
+			t.keys("j");
+			assert.match(t.screen()[0], /^NORMAL · 2:1/);
+			assert.equal(t.view.scrollTop, 3);
+			assert.ok(t.requests.every((request) => !request.duringRender));
+		});
+	}
 
 	it("keeps the note cursor visible when its multiline editor exceeds the dock cap", async () => {
 		const t = setup({ rows: 12 });

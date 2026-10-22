@@ -107,7 +107,10 @@ export function helpRows(): HelpRow[] {
 		const modes = binding.modes.join("/");
 		const key = `${binding.group}\0${binding.label}\0${modes}`;
 		const entry = entries.get(key) ?? { group: binding.group, label: binding.label, modes, keys: [] };
-		for (const shown of binding.keys.map(displayKey)) if (!entry.keys.includes(shown)) entry.keys.push(shown);
+		for (const key of binding.keys) {
+			const shown = displayKey(key);
+			if (!entry.keys.includes(shown)) entry.keys.push(shown);
+		}
 		entries.set(key, entry);
 	}
 	const rows: HelpRow[] = [];
@@ -200,25 +203,26 @@ function seat(state: State, env: ViewEnv): Working | undefined {
 	const at = entryAt(doc, env.viewport);
 	if (!at) return undefined;
 	let dropped = false;
-	const resting = <T extends Resting>(mode: T): T | Browse => {
+	const settleResting = <T extends Resting>(mode: T): T | Browse => {
 		if (mode.kind !== "visual") return mode;
 		const anchor = doc.settle(mode.selection.anchor);
 		if (anchor) return { ...mode, selection: { ...mode.selection, anchor } };
 		dropped = true;
 		return BROWSING;
 	};
-	const mode = ((): Mode => {
+	const settleMode = (): Mode => {
 		switch (state.mode.kind) {
 			case "visual":
-				return resting(state.mode);
+				return settleResting(state.mode);
 			case "note":
-				return { ...state.mode, draft: { ...state.mode.draft, back: resting(state.mode.draft.back) } };
+				return { ...state.mode, draft: { ...state.mode.draft, back: settleResting(state.mode.draft.back) } };
 			case "help":
-				return { ...state.mode, back: resting(state.mode.back) };
+				return { ...state.mode, back: settleResting(state.mode.back) };
 			default:
 				return state.mode;
 		}
-	})();
+	};
+	const mode = settleMode();
 	const settled = doc.settle(state.caret);
 	if (settled && !dropped) return { ...state, caret: settled, mode };
 	const caret = settled ?? doc.placeAt(at.row, at.char);
@@ -279,7 +283,10 @@ export function reduce(state: State, action: Action, env: ViewEnv): Transition {
 		}
 		case "annotate": {
 			if (mode.kind !== "normal" && mode.kind !== "visual") break;
-			const spans = action.scope === "unit" ? unitSpans(doc, row) : mode.kind === "visual" ? doc.spansBetween(mode.selection.shape, mode.selection.anchor, next.caret) : [{ row, from: 0, to: doc.text(row).glyphs.length }];
+			let spans: RowSpan[];
+			if (action.scope === "unit") spans = unitSpans(doc, row);
+			else if (mode.kind === "visual") spans = doc.spansBetween(mode.selection.shape, mode.selection.anchor, next.caret);
+			else spans = [{ row, from: 0, to: doc.text(row).glyphs.length }];
 			const quote = doc.quote(spans);
 			if (quote === undefined) {
 				next.message = { text: "nothing to quote here", error: true };
@@ -363,7 +370,8 @@ export function reduce(state: State, action: Action, env: ViewEnv): Transition {
 		case "docChanged":
 			break;
 	}
-	if (action.type !== "count" && action.type !== "prefix" && action.type !== "docChanged" && (next.mode.kind === "normal" || next.mode.kind === "visual")) {
+	const keepsPending = action.type === "count" || action.type === "prefix" || action.type === "docChanged";
+	if (!keepsPending && (next.mode.kind === "normal" || next.mode.kind === "visual")) {
 		next.mode = { ...next.mode, count: "", prefix: "" };
 	}
 	const caretRow = doc.rowOf(next.caret)!;
