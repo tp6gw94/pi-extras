@@ -217,7 +217,9 @@ The local port must be the same as the remote port, because the server accepts o
 
 ## Quote the conversation in fullscreen mode
 
-Run `/annotation-mode` to quote the transcript inside pi's fullscreen TUI. The mode needs no server, port, or browser, so it works without `/annotate`.
+Run `/annotation-mode` to quote the transcript inside pi's fullscreen TUI, or press Ctrl-Shift-A. The mode needs no server, port, or browser, so it works without `/annotate`. When you leave the mode with `q`, `s`, or `S`, or when the mode refuses to open, a large paste in the draft comes back as its full text.
+
+The shortcut needs a terminal that reports Ctrl-Shift-A separately from Ctrl-A, for example through the kitty keyboard protocol or xterm modifyOtherKeys. Inside tmux, tmux must forward extended keys. The [pi tmux guide](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/tmux.md) covers the settings. If your terminal cannot report the key separately, use `/annotation-mode`.
 
 The mode quotes the text pi draws on screen, not the message source. pi's Markdown renderer drops the bold markers, but other syntax can remain: code fences, heading prefixes, and list markers are quoted when pi shows them. A link is whatever text pi visibly renders; with OSC 8 support the URL can be hidden, but under tmux pi shows `the docs (https://example.com/cache)`.
 
@@ -316,7 +318,7 @@ npm test
 The end-to-end scripts run a real pi with a fake model. `PI_BIN` is the directory that contains the `pi` executable, not the executable itself. The shell scripts require `PI_BIN`. `direct-send.py` uses the directory of `pi` on your `PATH` when `PI_BIN` is not set.
 
 - `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` checks `s`, `S`, busy follow-up ordering, interactive selection, cancellation, and terminal restoration. It creates an isolated home, project, registry, local provider, and tmux socket. It keeps the evidence in a new directory under the `--evidence` directory, or under `EVIDENCE_DIR`.
-- `extensions/annotation/test/e2e/tmux-annotation-mode.sh` runs `/annotation-mode` under tmux with a fake model. It checks entry and keys, notes, `s` and `S`, code quoting, streaming, resize, another dialog taking the editor, a session rebuild, regular-mode refusal, and the exit transcript.
+- `extensions/annotation/test/e2e/tmux-annotation-mode.sh` runs `/annotation-mode` under tmux with a fake model. It checks entry, the Ctrl-Shift-A shortcut, keys, notes, `s` and `S`, code quoting, streaming, resize, another dialog taking the editor, a session rebuild, regular-mode refusal, and the exit transcript.
 - `extensions/annotation/test/e2e/tmux-annotate.sh` runs `/annotate` under tmux. It checks the editor, live updates, `/tree`, stopping and restarting with `/annotate`, the page after the server closes, and session switches.
 - `extensions/annotation/test/e2e/tmux-handoff.sh` runs pi with annotation and resume-handoff under tmux. It checks that terminal views and browser tabs follow a handoff, keep their notes, and send to the new session. Set `DRIVER=browser` with `PLAYWRIGHT_CORE` and `CHROME_BIN` to run the browser checks.
 - `extensions/annotation/test/e2e/herdr-tui.sh` runs pi and the bin in two herdr panes. It checks the note flow, live replies, quitting, and stopping. It also needs `HERDR_ENV=1`, so run it from inside herdr.

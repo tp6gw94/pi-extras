@@ -206,9 +206,19 @@ def special(key, target=MAIN):
     time.sleep(0.12)
 
 
+def ctrl_shift_a(target=MAIN):
+    tmux("send-keys", "-t", target, "-l", "\x1b[97;6u")
+    time.sleep(0.12)
+
+
 def type_text(text, target=MAIN):
     tmux("send-keys", "-t", target, "-l", text)
     time.sleep(0.18)
+
+
+def bracketed_paste(text, target=MAIN):
+    tmux("send-keys", "-t", target, "-l", "\x1b[200~" + text + "\x1b[201~")
+    time.sleep(0.3)
 
 
 def command(text, target=MAIN):
@@ -216,11 +226,27 @@ def command(text, target=MAIN):
     special("Enter", target)
 
 
-def editor_text(path=EDITOR):
+def editor_sample(path=EDITOR):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))["editor"]
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def editor_text(path=EDITOR):
+    sample = editor_sample(path)
+    return None if sample is None else sample.get("editor")
+
+
+def fresh_editor_text(label, path=EDITOR, timeout=15):
+    before = editor_sample(path)
+    seq = None if before is None else before.get("seq")
+
+    def newer():
+        sample = editor_sample(path)
+        return sample if sample is not None and sample.get("seq") != seq else None
+
+    return wait(newer, label, timeout)["editor"]
 
 
 def wait_editor(text, label, path=EDITOR, timeout=15):
@@ -353,6 +379,7 @@ def run():
     command("MODE_FIXTURE")
     wait(lambda: model_count() == 1, "fixture request")
     wait(lambda: complete_events(1), "fixture response")
+    wait(lambda: "The cache has two layers and uses the docs (https://example.com/cache)." in pane(), "fixture rendered")
     plain, _ = shot("00-transcript")
     check_true("transcript renders markdown instead of source", "The cache has two layers and uses the docs (https://example.com/cache)." in plain and "**two layers**" not in plain)
     check_true("transcript renders fenced code and CJK", "```ts" in plain and "const limit = 3;" in plain and "日本語テキスト 🚀 完了" in plain)
@@ -773,6 +800,97 @@ def run():
     special("C-c")
     wait_editor("", "Ctrl-C after the tree scenarios")
 
+    command('/probe-set-editor ' + json.dumps("DRAFT_SHORTCUT"))
+    wait_editor("DRAFT_SHORTCUT", "shortcut draft prepared")
+    before_shortcut = model_count()
+    special("C-a")
+    after_plain_ctrl_a = fresh_editor_text("fresh sample after plain Ctrl+A")
+    plain, _ = shot("20-plain-ctrl-a")
+    check_true("plain Ctrl+A does not open the dock", "NORMAL ·" not in plain)
+    check("plain Ctrl+A keeps the non-empty draft", after_plain_ctrl_a, "DRAFT_SHORTCUT")
+    check("plain Ctrl+A does not submit the draft", model_count(), before_shortcut)
+    ctrl_shift_a()
+    wait_status("NORMAL", 2)
+    plain, _ = shot("21-shortcut-entry")
+    check("Ctrl+Shift+A keeps the non-empty draft", fresh_editor_text("fresh sample after Ctrl+Shift+A"), "DRAFT_SHORTCUT")
+    check("Ctrl+Shift+A does not submit the draft", model_count(), before_shortcut)
+    check_true("Ctrl+Shift+A opens the same dock", "v select" in plain and "s editor" in plain and "S submit" in plain)
+    check("the shortcut entry shows the notes kept from /annotation-mode", status(plain)["notes"], 2)
+    press("G")
+    press("{")
+    press("0")
+    wait_position(col=1)
+    press("^")
+    wait_position(col=2)
+    press("v")
+    wait_status("VISUAL")
+    press("a")
+    wait_status("NOTE")
+    type_text("shortcut note")
+    special("Enter")
+    wait_status("NORMAL", 3)
+    expected_shortcut = "DRAFT_SHORTCUT\n> STREAM_DONE\n\nevict note\n\n> stream line 01 of the fullscreen test\n\ntree note\n\n> 日\n\nshortcut note\n\n"
+    press("s")
+    wait(lambda: editor_text() == expected_shortcut, "s appends after the Ctrl+Shift+A entry")
+    wait_closed()
+    check("s after Ctrl+Shift+A appends all three notes in notebook order", editor_text(), expected_shortcut)
+    check("s after Ctrl+Shift+A does not call the model", model_count(), before_shortcut)
+    save_editor("editor-shortcut.json")
+    shot("22-shortcut-appended")
+    special("C-c")
+    wait_editor("", "Ctrl-C after the shortcut entry")
+
+    paste_body = "\n".join(f"PASTE_{index:02d} 中文" for index in range(1, 14))
+    paste_draft = "before " + paste_body
+    bracketed_paste(paste_draft)
+    wait_editor(paste_draft, "probe sees the expanded paste")
+    wait(lambda: re.search(r"\[paste #1 \+13 lines\]", pane()), "editor collapses the large paste")
+    shot("23-paste-collapsed")
+    check_true("the large paste collapses into a marker", re.search(r"\[paste #1 \+13 lines\]", pane()) is not None)
+    before_paste = model_count()
+    ctrl_shift_a()
+    wait_status("NORMAL", 0)
+    check("Ctrl+Shift+A keeps the expanded paste", fresh_editor_text("fresh sample after the pasted Ctrl+Shift+A"), paste_draft)
+    press("q")
+    wait_closed()
+    wait_editor(paste_draft, "q restores the expanded paste")
+    check("q restores the full pasted draft", fresh_editor_text("fresh sample after closing the pasted draft"), paste_draft)
+    check("q after a pasted draft does not call the model", model_count(), before_paste)
+    save_editor("editor-paste-q.json")
+    shot("24-paste-q")
+    special("C-c")
+    wait_editor("", "Ctrl-C before the second paste")
+    bracketed_paste(paste_draft)
+    wait_editor(paste_draft, "probe sees the second expanded paste")
+    wait(lambda: re.search(r"\[paste #1 \+13 lines\]", pane()), "editor collapses the second paste again")
+    shot("24b-paste-collapsed-again")
+    ctrl_shift_a()
+    wait_status("NORMAL", 0)
+    time.sleep(0.3)
+    press("G")
+    press("{")
+    press("0")
+    wait_position(col=1)
+    press("^")
+    wait_position(col=2)
+    press("v")
+    wait_status("VISUAL")
+    press("a")
+    wait_status("NOTE")
+    type_text("paste append note")
+    special("Enter")
+    wait_status("NORMAL", 1)
+    expected_paste = paste_draft + "\n> 日\n\npaste append note\n\n"
+    press("s")
+    wait(lambda: editor_text() == expected_paste, "s appends after the expanded paste")
+    wait_closed()
+    check("s appends the note after the full pasted draft", editor_text(), expected_paste)
+    check("s after a pasted draft does not call the model", model_count(), before_paste)
+    save_editor("editor-paste-s.json")
+    shot("25-paste-s")
+    special("C-c")
+    wait_editor("", "Ctrl-C clears the pasted draft")
+
     command('/probe-set-editor ' + json.dumps("DRAFT_EXIT"))
     wait_editor("DRAFT_EXIT", "exit draft prepared")
     type_text("abc")
@@ -786,14 +904,14 @@ def run():
     special("Escape")
     time.sleep(0.3)
     wait_status("NORMAL")
-    press("q")
+    wait_status("NORMAL", 0)
     press("q")
     wait_closed()
     command("/quit")
     wait(lambda: "PI_EXITED" in full_capture()[0], "pi exited", 30)
     plain, ansi = full_capture()
-    (CAPTURES / "20-exit-transcript.txt").write_text(plain, encoding="utf-8")
-    (CAPTURES / "20-exit-transcript.ansi").write_text(ansi, encoding="utf-8")
+    (CAPTURES / "26-exit-transcript.txt").write_text(plain, encoding="utf-8")
+    (CAPTURES / "26-exit-transcript.ansi").write_text(ansi, encoding="utf-8")
     check_true("the exit transcript has no caret", "\x1b[7m" not in ansi)
     check("the exit transcript has no annotation underline", underline_states(ansi, "日"), [False])
     check("the exit transcript keeps the native link underline", underline_states(ansi, "the docs"), [True] * len("the docs"))
@@ -803,7 +921,7 @@ def run():
     start_regular()
     command("/annotation-mode", REGULAR)
     wait(lambda: "annotation-mode: needs fullscreen mode" in pane(REGULAR), "regular mode refusal")
-    plain, _ = shot("21-regular-refusal", REGULAR)
+    plain, _ = shot("27-regular-refusal", REGULAR)
     check_true("regular mode does not open the dock", "NORMAL ·" not in plain)
     type_text("regular draft", REGULAR)
     wait_editor("regular draft", "regular editor works", EDITOR_REGULAR)
@@ -811,7 +929,7 @@ def run():
     wait_editor("", "regular Ctrl-C works", EDITOR_REGULAR)
     command("/quit", REGULAR)
     wait(lambda: "PI_EXITED" in full_capture(REGULAR)[0], "regular pi exited", 30)
-    shot("22-regular-exit", REGULAR)
+    shot("28-regular-exit", REGULAR)
 
     sessions = AGENT / "annotation" / "sessions"
     files = [] if not sessions.exists() else list(sessions.iterdir())

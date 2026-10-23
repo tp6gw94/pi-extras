@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
 	cat >&2 <<'TXT'
-Runs /annotation-mode in a real pi under tmux with a fake local model. Checks entry and the
-vim-like keys, wide glyphs, notes, the notes list and help, q confirmation, s and S with a
-preserved draft, code and markdown quoting, streaming, resize, eviction, a session rebuild,
-regular-mode refusal, and the exit transcript.
+Runs /annotation-mode in a real pi under tmux with a fake local model. Checks entry, the
+Ctrl-Shift-A shortcut, the vim-like keys, wide glyphs, notes, the notes list and help, q
+confirmation, s and S with a preserved draft, code and markdown quoting, streaming, resize,
+eviction, a session rebuild, regular-mode refusal, and the exit transcript.
 
 Usage:
   PI_BIN=~/.local/pi-1.3.0/bin extensions/annotation/test/e2e/tmux-annotation-mode.sh

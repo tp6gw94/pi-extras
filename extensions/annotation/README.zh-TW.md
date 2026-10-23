@@ -217,7 +217,9 @@ ssh -L 4747:127.0.0.1:4747 <host>
 
 ## 在全螢幕模式引用對話
 
-執行 `/annotation-mode`，直接在 pi 的全螢幕 TUI 裡引用對話。這個模式不需要伺服器、port 或瀏覽器，所以沒有 `/annotate` 也能用。
+執行 `/annotation-mode`，直接在 pi 的全螢幕 TUI 裡引用對話，或按 Ctrl-Shift-A 開啟同一個模式。這個模式不需要伺服器、port 或瀏覽器，所以沒有 `/annotate` 也能用。當你用 `q`、`s` 或 `S` 離開模式，或模式拒絕開啟時，草稿裡的大型貼上會以完整文字回來。
+
+這個快捷鍵需要終端機把 Ctrl-Shift-A 與 Ctrl-A 分開回報，例如透過 kitty keyboard protocol 或 xterm modifyOtherKeys；在 tmux 裡，tmux 必須轉送 extended keys。設定方式見 [pi 的 tmux 指南](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/tmux.md)。終端機無法分開回報時，改用 `/annotation-mode`。
 
 這個模式引用 pi 畫在畫面上的文字，不是訊息原始碼。pi 的 Markdown 算繪會去掉粗體符號，但其他語法可能還在：程式碼 fence、標題前綴與清單標記，只要 pi 畫出來就會一起引用。連結引用的是 pi 實際畫出的文字；有 OSC 8 支援時網址可能隱藏，但在 tmux 裡 pi 會畫成 `the docs (https://example.com/cache)`。
 
@@ -316,7 +318,7 @@ npm test
 end-to-end 腳本會用假的模型跑真的 pi。`PI_BIN` 是放 `pi` 執行檔的目錄，不是執行檔本身。shell 腳本一定要設定 `PI_BIN`。沒有設定 `PI_BIN` 時，`direct-send.py` 會用你 `PATH` 上 `pi` 所在的目錄。
 
 - `PI_BIN="$(dirname "$(command -v pi)")" python3 extensions/annotation/test/e2e/direct-send.py --evidence /tmp` 檢查 `s`、`S`、忙碌時的 follow-up 順序、互動選擇、取消與終端機模式還原。它會建立隔離的 home、專案、registry、本機 provider 與 tmux socket。證據保留在 `--evidence` 目錄或 `EVIDENCE_DIR` 底下的新目錄。
-- `extensions/annotation/test/e2e/tmux-annotation-mode.sh` 在 tmux 裡用假模型執行 `/annotation-mode`。它檢查進入模式與按鍵、筆記、`s` 與 `S`、程式碼引用、串流、調整大小、其他對話框接手編輯器位置、session 重建、regular 模式拒絕，以及離開模式的對話。
+- `extensions/annotation/test/e2e/tmux-annotation-mode.sh` 在 tmux 裡用假模型執行 `/annotation-mode`。它檢查進入模式、Ctrl-Shift-A 快捷鍵、按鍵、筆記、`s` 與 `S`、程式碼引用、串流、調整大小、其他對話框接手編輯器位置、session 重建、regular 模式拒絕，以及離開模式的對話。
 - `extensions/annotation/test/e2e/tmux-annotate.sh` 在 tmux 裡執行 `/annotate`。它檢查編輯器、即時更新、`/tree`、用 `/annotate` 停止與重新啟動、伺服器關閉後的頁面，以及切換 session。
 - `extensions/annotation/test/e2e/tmux-handoff.sh` 在 tmux 裡同時載入 annotation 與 resume-handoff。它檢查終端機檢視和瀏覽器分頁會跟隨交接、保留筆記，並送到新 session。設定 `DRIVER=browser`、`PLAYWRIGHT_CORE` 與 `CHROME_BIN` 可執行瀏覽器檢查。
 - `extensions/annotation/test/e2e/herdr-tui.sh` 在 herdr 的兩個 pane 裡跑 pi 與執行檔。它檢查筆記流程、即時回覆、離開與停止。它還需要 `HERDR_ENV=1`，所以請在 herdr 裡執行。
