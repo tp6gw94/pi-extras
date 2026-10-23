@@ -21,11 +21,11 @@ Choose a task contract with a prompt, acceptance evidence, file ownership, and a
 
 For an explicit model, use `model: { provider: "<provider>", id: "<exact-model-id>" }`. Pass `thinking: "high"` separately. Omitted model and thinking use the calling context. Without a current model, supply the model object. Launch arguments control routing, capabilities, context, and timing; task prose does not configure them. The child reports its actual model and supported thinking level from runtime settings when available; the parent compares the report with launch arguments and task metadata. This is launch verification, not a request for the child to select or switch models. A mismatch fails rather than falling back.
 
-Check the child's capabilities before assigning work. Children use `--no-skills --no-extensions --no-prompt-templates`. Only explicit provider bootstrap sources, the child bridge, and the controlled installed pi-web-access wrapper (when requested) load. Fleet accepts no named-agent profile.
+Check the child's capabilities before assigning work. Children use `--no-skills --no-extensions --no-prompt-templates`. Only explicit provider bootstrap sources, the child bridge, and the trusted installed pi-web-access entrypoint (when `webAccess` is true) load. Fleet accepts no named-agent profile.
 
 ### Child capability selection
 
-`tools` controls child capabilities. Selection applies at task start and at schedule creation; it never changes a live child. Every child also gets the model-only `rpc_subagents_parent` bridge, which `tools` never changes.
+`tools` selects execution tools and `webAccess` switches web tools. Both apply at task start and at schedule creation; neither changes a live child. Every child also gets the model-only `rpc_subagents_parent` bridge, which neither option changes.
 
 | Tool | Use |
 | --- | --- |
@@ -33,40 +33,28 @@ Check the child's capabilities before assigning work. Children use `--no-skills 
 | `bash` | Default command execution. |
 | `codemode` | Default codemode scripting. |
 | `grep`, `find`, `ls` | Optional built-ins for text search, file search, and directory listing; select them like any other name. |
-| `web_search` | Search the web. |
-| `source_check` | Check a claim against sources. |
-| `fetch_content` | Fetch page or document content. |
-| `get_search_content` | Read stored result content. |
 
-Omitted `tools` keeps the five execution defaults and the full enabled web family. Plain names replace the execution defaults, so `["read", "get_page"]` runs exactly `read` plus the configured `get_page`. `[]` keeps only `rpc_subagents_parent`. Signed entries adjust the five defaults in order, so `+fetch_content` keeps all five and adds fetch. Plain and signed entries cannot mix.
+Omitted `tools` keeps the five execution defaults. Plain names replace the execution defaults, so `["read", "grep"]` runs exactly `read` and `grep`. `[]` keeps only `rpc_subagents_parent`. Signed entries adjust the five defaults in order, so `["+grep", "-edit"]` adds `grep` and drops `edit`. Plain and signed entries cannot mix.
 
-Signed selection:
+Signed entries apply in order. Repeating an entry is a no-op, and `+name` then `-name` ends with `name` off. Removing an absent name does nothing. Wildcards, empty entries, duplicate plain names, mixed plain/signed entries, reserved fleet names, and web tool names reject.
+
+Web access is all or nothing. Omitted `webAccess` means `false`, and the child never loads pi-web-access. `webAccess: true` gives the child every enabled pi-web-access tool, plus `web_enable` in auto or dynamic mode. The default names are `web_search` (search the web), `source_check` (check a claim against sources), `fetch_content` (fetch page or document content), and `get_search_content` (read stored result content); `web-search.json` can rename or disable them. `tools: []` with `webAccess: true` gives a web-only child.
 
 ```js
-const signed = await tools.rpc_subagents_run({
-	name: "Search with defaults",
-	prompt: "Search the web, then report sources.",
-	tools: ["+web_search", "-edit"]
+const research = await tools.rpc_subagents_run({
+	name: "Research",
+	prompt: "Read src, search the web, then report sources.",
+	tools: ["read"],
+	webAccess: true
 });
-return signed.webTools;
+return { webAccess: research.webAccess, reachable: research.capabilities?.reachable };
 ```
 
-Plain selection with automatic web support:
+Request web tools only through `webAccess`. Any web name in `tools` fails with `Web tool <name> is not allowed in tools; use webAccess instead`, whether plain or signed. That covers the default names, `web_enable`, and every name configured in `web-search.json`, enabled or disabled.
 
-```js
-const replaced = await tools.rpc_subagents_run({
-	name: "Fetch and read",
-	prompt: "Read src and fetch the linked specification.",
-	tools: ["read", "fetch_content"]
-});
-return replaced.webTools;
-```
+Enabled tasks load only the trusted installed pi-web-access entrypoint with inherited credentials and existing configuration. In auto or dynamic mode, follow the loader's prompt snippet, call `web_enable` when needed, and inspect `capabilities.reachable` after activation. Eager mode has no loader. A missing package or entrypoint, or every web tool disabled, fails startup.
 
-Signed entries apply in order. Repeating an entry is a no-op, and `+name` then `-name` ends with `name` off. Removing an absent name does nothing. Wildcards, empty entries, duplicate plain names, mixed plain/signed entries, and reserved fleet names reject. Naming a web tool loads support automatically. Explicit `tools` enables only the named web tools.
-
-Configured web names come from `toolNames` and disabled slots in the installed `web-search.json`. The current renamed or enabled name succeeds; a renamed-away, disabled, or unknown name fails. Positive conflicts reject instead of silently overriding the selection. `web_enable` is the child's activation helper in auto/dynamic modes and is not selectable.
-
-Schedules persist the resolved execution and web tools and reuse them on every fire without reinterpreting `+`/`-` entries. Enabled tasks use only the trusted local installed pi-web-access entrypoint with inherited credentials and existing configuration. Preserve auto/dynamic/eager activation inside the selected subset: follow the available loader prompt snippets, call `web_enable` when needed, and inspect `capabilities.webTools` plus `reachable` after activation. Absent package, entrypoint, factory, or all-disabled tools fail startup.
+Schedules persist the resolved execution tools and the `webAccess` boolean, and reuse them on every fire without reinterpreting `+`/`-` entries. With `webAccess: true`, each fire loads the web tools enabled in `web-search.json` at that time. Task and schedule outputs report `webAccess`.
 
 It is a tool list, not a sandbox: a read-only prompt is an instruction, not an enforced permission boundary. Put required operating instructions in the prompt. For missing providers or startup dialogs, read the [bootstrap and startup limits](../../README.md). Provider dialogs during `session_start` are unsupported. Post-start dialogs support explicit responses.
 

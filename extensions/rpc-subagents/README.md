@@ -134,7 +134,7 @@ return { taskId, status: result.status, text: result.text };
 
 ## 指定子任務工具
 
-`tools` 控制 child 的能力。純名稱會完整取代預設執行工具清單 `read`、`write`、`edit`、`bash`、`codemode`；`+名稱`／`-名稱` 則按順序調整同一份預設清單，兩者不能混用，也不能使用 `*` 等萬用字元。`[]` 表示不提供執行工具。可選的內建執行工具還包括 `grep`、`find`、`ls`。`rpc_subagents_parent` 由 child 端另外以 model-only 加入，不受 `tools` 影響。
+`tools` 控制 child 的執行工具，網路工具改由 `webAccess` 開關。純名稱會完整取代預設執行工具清單 `read`、`write`、`edit`、`bash`、`codemode`；`+名稱`／`-名稱` 則按順序調整同一份預設清單，兩者不能混用，也不能使用 `*` 等萬用字元。`[]` 表示不提供執行工具。可選的內建執行工具還包括 `grep`、`find`、`ls`。`rpc_subagents_parent` 由 child 端另外以 model-only 加入，不受 `tools` 影響。
 
 ```js
 const task = await tools.rpc_subagents_run({
@@ -145,29 +145,23 @@ const task = await tools.rpc_subagents_run({
 return task;
 ```
 
-在 `tools` 中指名已安裝的 pi-web-access 工具時，會自動載入網路支援，而且只開放指名的功能工具：`web_search`（搜尋網路）、`source_check`（查核宣稱與來源）、`fetch_content`（抓取頁面或文件內容）、`get_search_content`（讀取已保存的結果內容）。`web_enable` 是 child 在 auto／dynamic 模式下的啟用機制，不能直接選取。重新命名或停用的工具依安裝設定處理：指名已停用或已改名的舊名稱會明確失敗，使用目前名稱則成功。
+網路工具只有全開或全關。省略 `webAccess` 等於 `false`，child 完全不載入 pi-web-access。設為 `true` 時，child 取得所有已啟用的 pi-web-access 工具，auto／dynamic 模式另外加入 `web_enable`。預設名稱為 `web_search`（搜尋網路）、`source_check`（查核宣稱與來源）、`fetch_content`（抓取頁面或文件內容）、`get_search_content`（讀取已保存的結果內容），`web-search.json` 可重新命名或停用它們。`tools: []` 搭配 `webAccess: true` 會得到只有網路工具的 child。
 
 ```js
-const fetched = await tools.rpc_subagents_run({
+const task = await tools.rpc_subagents_run({
 	name: "Fetch docs",
-	prompt: "Fetch https://example.com and quote the heading.",
-	tools: ["+fetch_content"]
+	prompt: "Read src, fetch https://example.com, and quote the heading.",
+	tools: ["read"],
+	webAccess: true
 });
-const renamed = await tools.rpc_subagents_run({
-	name: "Read-only fetch",
-	prompt: "Read src and fetch the linked spec.",
-	tools: ["read", "get_page"]
-});
-return [fetched.webTools, renamed.webTools];
+return { webAccess: task.webAccess, reachable: task.capabilities?.reachable };
 ```
 
-`+fetch_content` 保留五個預設執行工具並只加入該網路工具；純名稱 `["read", "get_page"]` 則把執行工具換成 `read`。回傳的 `webTools` 是解析後的網路工具清單。
+在 `tools` 指名任何網路工具都會失敗，錯誤訊息為 `Web tool <name> is not allowed in tools; use webAccess instead`。純名稱與 `+`／`-` 項目都算，範圍包括預設名稱、`web_enable`，以及 `web-search.json` 目前設定的每個名稱，不論是否停用。
 
-省略 `tools` 時，會提供五個預設執行工具與所有已啟用的網路工具。明確提供 `tools` 時，只啟用指名的網路工具；`[]` 不提供執行工具或網路工具。
+`webAccess: true` 時，rpc-subagents 以 `--extension` 載入已安裝的本機入口 `<agentDir>/npm/node_modules/pi-web-access/dist/index.js`，不下載或安裝套件。沿用既有設定與繼承的憑證；支援 `auto`、`dynamic`、`eager`、重新命名及停用工具。auto／dynamic 模式下，child 依 `web_enable` 的 prompt 指示啟用網路工具；eager 模式沒有 loader。`capabilities` 的 `active`／`reachable` 在啟用後更新。套件或入口缺失，或所有網路工具都停用時，任務明確失敗，不宣稱可用。`--tools` 只包含執行工具、parent，以及所有已啟用的網路工具與必要的 loader，parent 仍拒絕其他額外可呼叫工具。任務與排程的輸出都會列出 `webAccess`。
 
-啟用時只載入已安裝的本機 `pi-web-access` 入口，不下載、安裝套件或開啟其他 extension。沿用既有設定與繼承的憑證；支援 `auto`、`dynamic`、`eager`、重新命名及停用工具。若有可用的 `web_enable`，child 依其 prompt 指示啟用，且只能啟用被選取的功能工具；eager 模式不要求 loader。`capabilities.webTools` 列出解析後的網路工具，`active`／`reachable` 在啟用後更新。套件、入口、factory 缺失或全部工具停用時，任務明確失敗，不宣稱可用。`--tools` 只包含執行工具、parent，以及被選取的功能工具與必要的 loader，parent 仍拒絕其他額外可呼叫工具。
-
-這只是工具清單，不是沙箱。child 與主程序同權限，仍可能依 prompt 指示或其他路徑碰觸檔案。需要隔離時請自行限制工作目錄與指令。排程會保存解析後的執行工具與網路工具，觸發時沿用，不會重新解讀 `+`／`-` 表示式，包含 `[]`。
+這只是工具清單，不是沙箱。child 與主程序同權限，仍可能依 prompt 指示或其他路徑碰觸檔案。需要隔離時請自行限制工作目錄與指令。排程會保存解析後的執行工具與 `webAccess`，觸發時沿用，不會重新解讀 `+`／`-` 表示式，包含 `[]`。`webAccess: true` 的排程每次觸發時，依當下的 `web-search.json` 載入已啟用的網路工具。
 
 ### `safe-pi` 與 append-path
 
@@ -279,7 +273,7 @@ return await tools.rpc_subagents_schedule_cancel({ scheduleId, abortRunning: tru
 
 `pause` 不停止既有任務。`cancel` 不復活排程。`abortRunning: true` 只取消該排程自己的 active task IDs。在互動畫面的排程頁，`p` 暫停或恢復，`c` 只取消未來觸發，`a` 取消並中止既有任務。
 
-排程任務不支援 `session`：建立時在取得 owner 前即拒絕，還原持久化資料時也會 fail closed。排程保存解析後的執行與網路工具選取，觸發時沿用。
+排程任務不支援 `session`：建立時在取得 owner 前即拒絕，還原持久化資料時也會 fail closed。排程保存解析後的執行工具與 `webAccess`，觸發時沿用。
 
 重新載入後，過期的一次性排程標記為 `missed`。重複排程只安排嚴格晚於現在的觸發，不補跑離線期間的工作。同一排程若已有排隊或執行中的任務，略過當次觸發。
 
@@ -307,8 +301,9 @@ child 會自動載入你自己的 extension，所以主 pi 能用的 provider（
 - 不載入：專案範圍（cwd 的 `.pi/`）的 extension 與套件、被篩選或停用的 extension。
 - 一律排除 pi-extras 的 `rpc-subagents`、`annotation`、`ux`、`hooks`（依套件 `package.json` 的 `name` 為 `pi-extras` 加上 extension 子資料夾名稱判斷）。pi-extras 的其他 extension（例如 `ralph`、`resume-handoff`）照常載入。
 - 若 pi-extras 以 symlink、複本或其他套件名稱安裝，名稱比對不到，實際路徑落在本擴充功能目錄內的項目會被略過，並在 TUI 顯示一次通知，不會讓 child 啟動失敗；其他 pi-extras extension（含 `annotation`）此時會載入。即使本擴充功能仍被載入到 child，它偵測到 child 環境變數就什麼都不註冊，只有 child bridge 運作。
+- 一律排除 `pi-web-access`，不論來自個人設定或 `providerSources`，也不論指向套件根目錄、`dist`、單一檔案或 symlink（依實際路徑最近的 `package.json` 判斷套件）。只有 `webAccess: true` 的任務會由 rpc-subagents 自行載入已安裝的入口，見[指定子任務工具](#指定子任務工具)。
 
-另外，若 agent 目錄有 npm 安裝的 `npm/node_modules/pi-claude-bridge`，也會加入。child 仍使用 `--no-extensions --no-skills --no-prompt-templates`，上面的清單、child bridge，以及任務啟用網路能力時的受控 web wrapper 都以明確的 `--extension` 傳入。
+另外，若 agent 目錄有 npm 安裝的 `npm/node_modules/pi-claude-bridge`，也會加入。child 仍使用 `--no-extensions --no-skills --no-prompt-templates`，上面的清單、child bridge，以及 `webAccess: true` 時的 pi-web-access 入口都以明確的 `--extension` 傳入。
 
 若需要上面清單以外的 provider（例如只放在某個專案的 extension），參考本目錄的 `config.example.json` 建立 `<agentDir>/rpc-subagents/config.json`。在指定 canonical cwd 的 `providerSources` 加入本機路徑。相對路徑以 `config.json` 所在的 `<agentDir>/rpc-subagents/` 為基準。`providerSources` 是額外清單，與自動清單依實際路徑去重；擴充功能不安裝來源，也不修改使用者設定。若 `providerSources` 指向本擴充功能目錄本身，仍會報錯。`providerSources` 裡的路徑不存在時，任務不會啟動，錯誤訊息為 `Provider bootstrap source does not exist: <路徑> (from providerSources of <cwd> in <config.json 路徑>)`；請修正該路徑，或從該 cwd 的 `providerSources` 移除它。
 
