@@ -25,7 +25,7 @@ async function setup(t, overrides = {}) {
     if (session.kind === "resume") sessionId = JSON.parse((await readFile(sessionFile, "utf8")).split("\n")[0]).id;
     else ({ sessionId } = await writeChildSession(sessionFile, { cwd: spec.cwd, template }));
     sessions.set(taskId, { sessionFile, sessionId });
-    return { cliPath: "/installed/pi", args: [], cwd: spec.cwd, sessionFile, binding: { taskId, ownerId, nonce } };
+    return { cliPath: "/installed/pi", args: [], cwd: spec.cwd, sessionFile, binding: { taskId, ownerId, nonce }, webTools: [] };
   };
   const transportFactory = (options) => {
     const identity = sessions.get(options.binding.taskId);

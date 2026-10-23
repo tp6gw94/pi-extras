@@ -21,7 +21,7 @@ try {
         typebox: [join(dependencies, "typebox", "build", "index.d.mts")],
       },
     },
-    files: [join(root, "index.ts"), join(root, "ui.ts"), join(root, "child.ts"), join(root, "web.ts")],
+    files: [join(root, "index.ts"), join(root, "ui.ts"), join(root, "child.ts")],
   }));
   execFileSync(process.env.RPC_SUBAGENTS_TSC ?? "tsc", ["--project", configFile], { stdio: "inherit" });
 } finally { await rm(configFile, { force: true }); }

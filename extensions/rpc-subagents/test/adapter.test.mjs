@@ -61,11 +61,14 @@ test("adapter factory registers unique codemode tools with directly accessible s
   assert.equal(run.parameters.properties.session.maxLength, 4096);
   assert.equal(run.outputSchema.properties.sessionReusable.type, "boolean");
   for (const tool of registry.tools) {
-    assert.doesNotMatch(JSON.stringify(tool.parameters), /webAccess/, tool.name);
-    assert.doesNotMatch(JSON.stringify(tool.outputSchema), /webAccess/, tool.name);
+    assert.doesNotMatch(JSON.stringify(tool.outputSchema), /webTools/, tool.name);
     assert.doesNotMatch(tool.namespace.instructions, /webAccess/, tool.name);
   }
-  assert.equal(run.outputSchema.properties.capabilities.properties.webTools.maxItems, 16);
+  assert.equal(run.parameters.properties.webAccess.type, "boolean");
+  assert.equal(run.outputSchema.properties.webAccess.type, "boolean");
+  const schedule = registry.tools.find((tool) => tool.name === "rpc_subagents_schedule_create");
+  assert.equal(schedule.parameters.properties.task.properties.webAccess.type, "boolean");
+  assert.equal(schedule.outputSchema.properties.task.properties.webAccess.type, "boolean");
   assert.equal(run.outputSchema.properties.capabilities.properties.reachable.type, "array");
   assert.equal(run.outputSchema.properties.capabilities.properties.exposures.additionalProperties.anyOf.some((value) => value.const === "model-only"), true);
   assert.equal(run.outputSchema.properties.reports.items.properties.seq.type, "integer");

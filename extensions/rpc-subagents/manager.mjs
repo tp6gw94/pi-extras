@@ -97,7 +97,7 @@ export class FleetManager {
 
   publicTask(task) {
     const result = {
-      taskId: task.taskId, name: task.spec.name, model: task.spec.model, webAccess: task.spec.webAccess, webTools: [...task.spec.webTools], thinking: task.spec.thinking, timeoutMs: task.spec.timeoutMs, cwd: task.spec.cwd,
+      taskId: task.taskId, name: task.spec.name, model: task.spec.model, webAccess: task.spec.webAccess, thinking: task.spec.thinking, timeoutMs: task.spec.timeoutMs, cwd: task.spec.cwd,
       status: task.state.status, state: structuredClone(task.state), text: task.text, truncated: task.truncated,
       createdAt: task.createdAt, currentTools: [...task.currentTools.values()], eventFile: task.eventFile,
       ownerId: this.ownerId, ownerPid: process.pid,
@@ -268,13 +268,12 @@ export class FleetManager {
     if (prepared.binding && (prepared.binding.taskId !== task.binding.taskId || prepared.binding.ownerId !== task.binding.ownerId || prepared.binding.nonce !== task.binding.nonce)) {
       throw new Error("Prepared launch binding does not match the owned task");
     }
-    task.approvedWebTools = Array.isArray(prepared.webTools) ? prepared.webTools : [];
+    task.expectedWebTools = prepared.webTools;
     task.sessionFile = lease.sessionFile;
     if (Number.isFinite(prepared.commandTimeoutMs)) task.commandTimeoutMs = prepared.commandTimeoutMs;
     task.transport = this.transportFactory({ ...prepared,
       binding: prepared.binding ?? task.binding,
       tools: task.spec.tools,
-      webAccess: task.spec.webAccess,
       onRecord: (record) => this.record(task, record),
       onStderr: async (text) => { if (!task.finishing) await task.journal.append("stderr", { type: "stderr", text }); },
       onFailure: (error) => { if (!task.finishing) return this.stopTask(task, "failed", error.message); },
@@ -307,7 +306,7 @@ export class FleetManager {
     task.phase = "bootstrap";
     const inventory = await this.bootstrap(task);
     if (!this.alive(task)) return;
-    task.capabilities = verifyCapabilities(task.spec.tools, task.spec.webTools, inventory, task.approvedWebTools);
+    task.capabilities = verifyCapabilities(task.spec.tools, task.expectedWebTools, inventory);
     task.phase = "user";
     task.startedAt = this.now();
     const accepted = await task.transport.request("prompt", { message: task.spec.prompt });
@@ -404,7 +403,7 @@ export class FleetManager {
 
   async receiveInventory(task, inventory) {
     if (task.phase === "user" && task.spec.webAccess && task.capabilities) {
-      task.capabilities = verifyCapabilities(task.spec.tools, task.spec.webTools, inventory, task.capabilities.webTools);
+      task.capabilities = verifyCapabilities(task.spec.tools, task.expectedWebTools, inventory);
       task.inventory = inventory;
       await task.journal.snapshot(this.publicTask(task));
       this.notify();

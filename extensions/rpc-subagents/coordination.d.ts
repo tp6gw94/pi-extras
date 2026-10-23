@@ -18,7 +18,6 @@ export const COORDINATION_LIMITS: Readonly<{
   defaultAskTimeoutMs: 120000;
   maxIdentityChars: 160;
   maxSessionReferenceChars: 4096;
-  maxWebTools: 16;
   maxInventoryTools: 81;
   maxEnvelopeChars: 65536;
 }>;
@@ -26,7 +25,6 @@ export const COORDINATION_LIMITS: Readonly<{
 export type LaunchBinding = { taskId: string; ownerId: string; nonce: string };
 export type ToolExposure = "direct" | "model-only" | "codemode" | "deferred" | "hidden";
 export type ToolInventory = {
-  webTools?: string[];
   registered: string[];
   active: string[];
   declared: string[];
@@ -77,4 +75,4 @@ export function encodeCoordinationEnvelope(binding: LaunchBinding, message: Coor
 export function decodeCoordinationEnvelope(value: unknown, binding: LaunchBinding): CoordinationEnvelope | null;
 export function parseCoordinationRecord(record: unknown, binding: LaunchBinding): ParsedCoordinationRecord | null;
 export function validateToolInventory(value: unknown): ToolInventory;
-export function verifyCapabilities(requested: unknown, selectedWebTools: unknown, inventory: unknown, approvedWebTools?: string[]): Capabilities;
+export function verifyCapabilities(requested: unknown, expectedWebTools: unknown, inventory: unknown): Capabilities;

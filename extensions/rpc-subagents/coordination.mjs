@@ -21,7 +21,6 @@ export const COORDINATION_LIMITS = Object.freeze({
   defaultAskTimeoutMs: 120000,
   maxIdentityChars: 160,
   maxSessionReferenceChars: 4096,
-  maxWebTools: 16,
   maxInventoryTools: 81,
   maxEnvelopeChars: 65536,
 });
@@ -148,7 +147,7 @@ export function createCoordinationRequestId() {
 }
 
 export function validateToolInventory(value) {
-  exactKeys(value, ["registered", "active", "declared", "callable", "exposures", "webTools"], "inventory");
+  exactKeys(value, ["registered", "active", "declared", "callable", "exposures"], "inventory");
   const registered = names(value.registered, "inventory.registered", COORDINATION_LIMITS.maxInventoryTools);
   const active = names(value.active, "inventory.active", COORDINATION_LIMITS.maxInventoryTools);
   const declared = names(value.declared, "inventory.declared", COORDINATION_LIMITS.maxInventoryTools);
@@ -174,39 +173,29 @@ export function validateToolInventory(value) {
     return [name, exposure];
   });
 
-  const webTools = value.webTools === undefined ? undefined : names(value.webTools, "inventory.webTools", COORDINATION_LIMITS.maxWebTools);
-  if (webTools?.some((name) => !registeredSet.has(name))) throw new Error("Web inventory must be a subset of registered tools");
-  return { registered, active, declared, callable, exposures: Object.fromEntries(exposureEntries),
-    ...(webTools === undefined ? {} : { webTools }) };
+  return { registered, active, declared, callable, exposures: Object.fromEntries(exposureEntries) };
 }
 
-export function verifyCapabilities(requested, selectedWebTools, inventory, approvedWebTools) {
+export function verifyCapabilities(requested, expectedWebTools, inventory) {
   const tools = normalizeTools(requested);
-  const webTools = normalizeTools(selectedWebTools);
+  const webTools = normalizeTools(expectedWebTools);
   const normalized = validateToolInventory(inventory);
-  if (webTools.includes(WEB_LOADER_TOOL_NAME)) throw new Error(`${WEB_LOADER_TOOL_NAME} is activation machinery, not a selected web tool`);
-  const webAccess = webTools.length > 0;
   const reachable = [...new Set([...normalized.declared, ...normalized.callable])].sort();
   const reachableSet = new Set(reachable);
-  const reportedWebTools = normalized.webTools ?? [];
+  const webAccess = webTools.length > 0;
 
   if (!webAccess) {
-    if (reportedWebTools.length) throw new Error("Unexpected web capability when web access is disabled");
     if (normalized.registered.includes(WEB_LOADER_TOOL_NAME)) throw new Error("Unexpected web loader when web access is disabled");
   } else {
-    if (!Array.isArray(approvedWebTools)) throw new Error("Web access requires the approved resolved web tools");
-    const approvedTools = normalizeTools(approvedWebTools);
-    if (approvedTools.some((name) => !webTools.includes(name) && name !== WEB_LOADER_TOOL_NAME)) throw new Error("Approved web tools must extend the selected functional tools with the loader only");
-    if (webTools.some((name) => !approvedTools.includes(name))) throw new Error("Approved web tools must include every selected functional tool");
-    if (reportedWebTools.length !== approvedTools.length || reportedWebTools.some((name) => !approvedTools.includes(name))) throw new Error("Web tool family changed after bootstrap");
-    if (reportedWebTools.some((name) => normalized.exposures[name] !== "direct")) throw new Error("Web tools must retain direct exposure");
-    const reserved = new Set([...DEFAULT_EXECUTION_TOOLS, "grep", "find", "ls", ...tools, PARENT_TOOL_NAME, BOOTSTRAP_COMMAND_NAME, WEB_LOADER_TOOL_NAME]);
-    if (webTools.some((name) => reserved.has(name) || name.startsWith("rpc_subagents_"))) throw new Error("Web tool collision with requested or reserved tools");
-    if (!approvedTools.some((name) => reachableSet.has(name))) throw new Error("Web access has no reachable loader or eager tools");
+    const unregistered = webTools.filter((name) => !normalized.registered.includes(name));
+    if (unregistered.length) throw new Error(`Web tools must stay registered: ${unregistered.join(", ")}`);
+    const indirect = webTools.filter((name) => normalized.exposures[name] !== "direct");
+    if (indirect.length) throw new Error(`Web tools must retain direct exposure: ${indirect.join(", ")}`);
+    if (!webTools.some((name) => reachableSet.has(name))) throw new Error("Web access has no reachable loader or eager tools");
   }
 
   const requiredTools = new Set([...tools, PARENT_TOOL_NAME]);
-  const permittedTools = new Set([...requiredTools, ...(webAccess ? reportedWebTools : [])]);
+  const permittedTools = new Set([...requiredTools, ...webTools]);
   const missingTools = [...requiredTools].filter((name) => !reachableSet.has(name)).sort();
   const unexpectedTools = [...new Set([...reachable, ...(webAccess ? normalized.registered : [])])].filter((name) => !permittedTools.has(name)).sort();
   if (missingTools.length || unexpectedTools.length) throw new Error(`Capability mismatch: missing [${missingTools.join(", ")}]; unexpected [${unexpectedTools.join(", ")}]`);

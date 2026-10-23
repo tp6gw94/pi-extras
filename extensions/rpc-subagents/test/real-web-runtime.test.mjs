@@ -8,9 +8,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeTaskSpec } from "../domain.mjs";
-import { createTaskPreparer, resolveCliEntrypoint, resolveWebEntrypoint, CHILD_BINDING_ENV, WEB_SOURCE_ENV } from "../runtime.mjs";
+import { createTaskPreparer, resolveCliEntrypoint, resolveWebEntrypoint, CHILD_BINDING_ENV } from "../runtime.mjs";
 import { childEnvironment } from "../transport.mjs";
-import { WEB_APPROVED_ENV } from "../web-policy.mjs";
 import { decodeCoordinationEnvelope, verifyCapabilities, BOOTSTRAP_COMMAND_NAME, PARENT_TOOL_NAME } from "../coordination.mjs";
 
 const packageDir = process.env.RPC_SUBAGENTS_PI_PACKAGE;
@@ -21,13 +20,8 @@ const webInstalled = existsSync(join(agentDir, "npm", "node_modules", "pi-web-ac
 const skip = !packageDir ? "Set RPC_SUBAGENTS_PI_PACKAGE to the installed @earendil-works/pi-coding-agent package directory"
   : !webInstalled ? `Install pi-web-access under ${agentDir} to run the real Pi RPC web runtime check` : false;
 
-const executionTools = ["read", "write", "edit", "bash", "codemode"];
 const binding = { taskId: "real-web-task", ownerId: "real-web-owner", nonce: "real-web-nonce" };
-const webSearchConfig = {
-  toolActivation: "dynamic",
-  toolNames: { fetchContent: "get_page" },
-  tools: { sourceCheck: { enabled: false }, getSearchContent: { enabled: false } },
-};
+const searchOnlyConfig = { toolActivation: "dynamic", tools: { sourceCheck: { enabled: false }, getSearchContent: { enabled: false } } };
 
 function modelsConfig(port) {
   return {
@@ -121,7 +115,7 @@ function startRpc(args, cwd, env) {
     kill.unref?.();
     return new Promise((resolve) => child.once("close", () => { clearTimeout(kill); resolve(); }));
   };
-  return { child, records, waitFor, send, stop, diagnostics };
+  return { child, records, stderr, waitFor, send, stop, diagnostics };
 }
 
 async function scenario(t, { config, input, script, sessionFile }) {
@@ -137,7 +131,7 @@ async function scenario(t, { config, input, script, sessionFile }) {
   process.env.PI_CODING_AGENT_DIR = configDir;
   let prepared;
   try {
-    const spec = normalizeTaskSpec({ prompt: "Run the real web activation check", name: "real-web", cwd: root,
+    const spec = normalizeTaskSpec({ prompt: "Run the real web access check", name: "real-web", cwd: root,
       model: { provider: "mock", id: "mock-model" }, ...input });
     const prepare = createTaskPreparer({ extensionDir, agentDir, cliPath, config: { commandTimeoutMs: 30000 } });
     prepared = await prepare(spec, { directory: taskDirectory, ...binding, ...(sessionFile ? { session: { kind: "resume", sessionFile } } : {}) });
@@ -169,323 +163,143 @@ async function scenario(t, { config, input, script, sessionFile }) {
     rpc.send({ id: "run", type: "prompt", message: "Use web research for the answer" });
     await rpc.waitFor(() => rpc.records.some((record) => record.type === "agent_settled"), "agent_settled", 60000);
   };
-  return { prepared, provider, rpc, bootstrap, run, waitInventory, envelopes, toolNames };
+  const extensions = () => prepared.args.flatMap((value, index) => value === "--extension" ? [prepared.args[index + 1]] : []);
+  const allowlist = () => prepared.args[prepared.args.indexOf("--tools") + 1].split(",");
+  return { prepared, provider, rpc, bootstrap, run, waitInventory, envelopes, toolNames, extensions, allowlist };
 }
 
-function assertNoUnselected(inventory, unselected) {
-  for (const name of unselected) {
+function assertAbsent(inventory, names) {
+  for (const name of names) {
     assert.equal(inventory.registered.includes(name), false, `registered must exclude ${name}: ${JSON.stringify(inventory.registered)}`);
     assert.equal(inventory.declared.includes(name), false, `declared must exclude ${name}: ${JSON.stringify(inventory.declared)}`);
     assert.equal(inventory.callable.includes(name), false, `callable must exclude ${name}: ${JSON.stringify(inventory.callable)}`);
   }
 }
 
-test("real Pi RPC signed selection auto loads the package and enables only web_search through the adapted loader", { skip }, async (t) => {
-  const s = await scenario(t, { config: webSearchConfig, input: { tools: ["+web_search"] },
-    script: [{ tool: "web_enable" }, { tool: "get_page", args: { url: "http://127.0.0.1/" } }, { text: "done" }] });
-
-  const allowlist = s.prepared.args[s.prepared.args.indexOf("--tools") + 1].split(",");
-  assert.deepEqual(allowlist, [...executionTools, PARENT_TOOL_NAME, "web_search", "web_enable"]);
-  const extensions = s.prepared.args.flatMap((value, index) => value === "--extension" ? [s.prepared.args[index + 1]] : []);
-  assert.equal(extensions[0], "builtin:codemode");
-  assert.equal(extensions[1], join(extensionDir, "web.ts"));
-  assert.equal(extensions[2], join(extensionDir, "child.ts"));
-  assert.equal(s.prepared.env[WEB_SOURCE_ENV], resolveWebEntrypoint(agentDir));
-  assert.deepEqual(JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    { functional: [{ key: "webSearch", name: "web_search", label: "web search" }], family: ["web_search", "get_page"], loader: true });
-  assert.equal(s.prepared.env[CHILD_BINDING_ENV.taskId], binding.taskId);
-
-  s.rpc.send({ id: "state", type: "get_state" });
-  await s.rpc.waitFor(() => s.rpc.records.some((record) => record.type === "response" && record.id === "state"), "get_state response");
-  const state = s.rpc.records.find((record) => record.type === "response" && record.id === "state").data;
-  assert.equal(state.model.provider, "mock");
-  assert.equal(state.model.id, "mock-model");
-  assert.equal(state.sessionFile, s.prepared.sessionFile);
-
-  const initial = await s.bootstrap();
-  assert.deepEqual(initial.webTools, ["web_search", "web_enable"]);
-  verifyCapabilities(executionTools, ["web_search"], initial, ["web_search", "web_enable"]);
-  assert.equal(initial.registered.includes("web_search"), true);
-  assert.equal(initial.registered.includes("web_enable"), true);
-  assertNoUnselected(initial, ["source_check", "get_search_content", "fetch_content", "get_page"]);
-  assert.equal(initial.declared.includes("web_enable"), true, JSON.stringify(initial.declared));
-  assert.equal(initial.callable.includes("web_enable"), true);
-  assert.equal(initial.declared.includes("web_search"), false);
-  assert.equal(initial.callable.includes("web_search"), false);
-  assert.equal(initial.exposures[PARENT_TOOL_NAME], "model-only");
-
-  await s.run();
-  await s.waitInventory(2);
-
-  const loaderEnd = s.rpc.records.find((record) => record.type === "tool_execution_end" && record.toolName === "web_enable");
-  assert.equal(loaderEnd?.isError, false, JSON.stringify(loaderEnd));
-  assert.deepEqual(loaderEnd.result.details, { enabled: ["web_search"] });
-  assert.equal(loaderEnd.result.content[0].text, "Enabled: web_search.");
-
-  const activated = s.envelopes().at(-1).inventory;
-  assert.deepEqual(activated.webTools, ["web_search", "web_enable"]);
-  verifyCapabilities(executionTools, ["web_search"], activated, ["web_search", "web_enable"]);
-  assert.equal(activated.declared.includes("web_search"), true);
-  assert.equal(activated.callable.includes("web_search"), true);
-  assert.equal(activated.declared.includes("web_enable"), true);
-  for (const name of [...executionTools, PARENT_TOOL_NAME]) assert.equal(activated.declared.includes(name), true, JSON.stringify(activated.declared));
-  assertNoUnselected(activated, ["source_check", "get_search_content", "fetch_content", "get_page"]);
-
-  assert.equal(s.provider.requests.length, 3);
-  assert.deepEqual(s.toolNames(0), [...executionTools, PARENT_TOOL_NAME, "web_enable"].sort());
-  assert.equal(s.toolNames(1).includes("web_search"), true);
-  assert.equal(s.toolNames(1).includes("web_enable"), true);
-  assert.equal(s.toolNames(2).includes("web_search"), true);
-  assert.equal(s.toolNames(2).includes("get_page"), false);
-  for (const index of [0, 1, 2]) assertNoUnselected({ registered: s.toolNames(index), declared: s.toolNames(index), callable: s.toolNames(index) },
-    ["source_check", "get_search_content", "fetch_content", "get_page"]);
-
-  const rejected = s.rpc.records.find((record) => record.type === "tool_execution_end" && record.toolName === "get_page");
-  assert.equal(rejected?.isError, true, JSON.stringify(rejected));
-  assert.match(rejected.result.content[0].text, /Tool get_page not found/);
-  const toolResult = s.provider.requests[2].body.messages.find((message) => message.role === "tool" && JSON.stringify(message).includes("get_page"));
-  assert.match(JSON.stringify(toolResult), /Tool get_page not found/);
-
-  const finalText = s.rpc.records.filter((record) => record.type === "message_end" && record.message?.role === "assistant")
-    .flatMap((record) => record.message.content).find((block) => block.type === "text" && block.text === "done");
-  assert.equal(finalText?.text, "done");
-  t.diagnostic(JSON.stringify({ check: "signed-dynamic", argvTools: allowlist, approved: JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    webSource: s.prepared.env[WEB_SOURCE_ENV],
-    initial: { registered: initial.registered, active: initial.active, declared: initial.declared, callable: initial.callable, webTools: initial.webTools },
-    loader: { isError: loaderEnd.isError, text: loaderEnd.result.content[0].text, details: loaderEnd.result.details },
-    activated: { active: activated.active, declared: activated.declared, callable: activated.callable, webTools: activated.webTools },
-    providerTools: [s.toolNames(0), s.toolNames(1), s.toolNames(2)],
-    rejected: { isError: rejected.isError, text: rejected.result.content[0].text } }));
-});
-
-test("real Pi RPC replacement selection enables a renamed configured web tool and nothing else", { skip }, async (t) => {
-  const s = await scenario(t, { config: webSearchConfig, input: { tools: ["read", "bash", "get_page"] },
+test("real Pi RPC web access loads the enabled family and its loader in dynamic mode", { skip }, async (t) => {
+  const s = await scenario(t, { config: searchOnlyConfig, input: { tools: ["read"], webAccess: true },
     script: [{ tool: "web_enable" }, { text: "done" }] });
 
-  const allowlist = s.prepared.args[s.prepared.args.indexOf("--tools") + 1].split(",");
-  assert.deepEqual(allowlist, ["read", "bash", PARENT_TOOL_NAME, "get_page", "web_enable"]);
-  assert.deepEqual(JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    { functional: [{ key: "fetchContent", name: "get_page", label: "content fetching" }], family: ["web_search", "get_page"], loader: true });
+  assert.deepEqual(s.allowlist(), ["read", PARENT_TOOL_NAME, "web_search", "fetch_content", "web_enable"]);
+  assert.deepEqual(s.prepared.webTools, ["web_search", "fetch_content", "web_enable"]);
+  assert.deepEqual(s.extensions().filter((path) => path === resolveWebEntrypoint(agentDir)), [resolveWebEntrypoint(agentDir)]);
+  assert.equal(s.prepared.env[CHILD_BINDING_ENV.webTools], ["web_search", "fetch_content", "web_enable"].join(","));
+  assert.equal(s.prepared.env[CHILD_BINDING_ENV.taskId], binding.taskId);
 
   const initial = await s.bootstrap();
-  assert.deepEqual(initial.webTools, ["get_page", "web_enable"]);
-  verifyCapabilities(["read", "bash"], ["get_page"], initial, ["get_page", "web_enable"]);
-  assert.equal(initial.registered.includes("get_page"), true);
-  assertNoUnselected(initial, ["web_search", "source_check", "get_search_content", "fetch_content"]);
-  assert.equal(initial.declared.includes("get_page"), false);
-  assert.equal(initial.declared.includes("web_enable"), true);
+  verifyCapabilities(["read"], s.prepared.webTools, initial);
+  assert.equal(initial.registered.includes("web_search"), true);
+  assert.equal(initial.registered.includes("web_enable"), true);
+  assert.equal(initial.declared.includes("web_enable"), true, JSON.stringify(initial.declared));
+  assert.equal(initial.exposures[PARENT_TOOL_NAME], "model-only");
+  assertAbsent(initial, ["source_check", "get_search_content"]);
 
   await s.run();
   await s.waitInventory(2);
-
   const loaderEnd = s.rpc.records.find((record) => record.type === "tool_execution_end" && record.toolName === "web_enable");
   assert.equal(loaderEnd?.isError, false, JSON.stringify(loaderEnd));
-  assert.deepEqual(loaderEnd.result.details, { enabled: ["get_page"] });
-  assert.equal(loaderEnd.result.content[0].text, "Enabled: get_page.");
+  assert.deepEqual(loaderEnd.result.details, { enabled: ["web_search", "fetch_content"] });
 
   const activated = s.envelopes().at(-1).inventory;
-  assert.deepEqual(activated.webTools, ["get_page", "web_enable"]);
-  verifyCapabilities(["read", "bash"], ["get_page"], activated, ["get_page", "web_enable"]);
-  assert.equal(activated.declared.includes("get_page"), true);
-  assert.equal(activated.callable.includes("get_page"), true);
-  assert.equal(activated.declared.includes("read"), true);
-  assert.equal(activated.declared.includes("bash"), true);
-  assert.equal(activated.declared.includes(PARENT_TOOL_NAME), true);
-  assertNoUnselected(activated, ["web_search", "source_check", "get_search_content", "fetch_content"]);
+  verifyCapabilities(["read"], s.prepared.webTools, activated);
+  for (const name of ["web_search", "fetch_content", "web_enable", "read", PARENT_TOOL_NAME]) {
+    assert.equal(activated.declared.includes(name), true, `${name} missing after activation: ${JSON.stringify(activated.declared)}`);
+  }
+  assertAbsent(activated, ["source_check", "get_search_content"]);
 
-  assert.equal(s.provider.requests.length, 2);
-  assert.deepEqual(s.toolNames(0), ["read", "bash", PARENT_TOOL_NAME, "web_enable"].sort());
-  assert.equal(s.toolNames(1).includes("get_page"), true);
-  assert.equal(s.toolNames(1).includes("web_search"), false);
-  t.diagnostic(JSON.stringify({ check: "replace-renamed", argvTools: allowlist, approved: JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    initial: { registered: initial.registered, active: initial.active, declared: initial.declared, callable: initial.callable, webTools: initial.webTools },
-    loader: { isError: loaderEnd.isError, text: loaderEnd.result.content[0].text, details: loaderEnd.result.details },
-    activated: { active: activated.active, declared: activated.declared, callable: activated.callable, webTools: activated.webTools },
-    providerTools: [s.toolNames(0), s.toolNames(1)] }));
+  const lastTools = s.toolNames(s.provider.requests.length - 1);
+  for (const name of ["web_search", "fetch_content", "read", PARENT_TOOL_NAME]) assert.equal(lastTools.includes(name), true, JSON.stringify(lastTools));
+  assertAbsent({ registered: lastTools, declared: lastTools, callable: lastTools }, ["source_check", "get_search_content"]);
+  t.diagnostic(JSON.stringify({ check: "dynamic-family", argvTools: s.allowlist(),
+    initial: { registered: initial.registered, declared: initial.declared, webTools: s.prepared.webTools },
+    loader: { isError: loaderEnd.isError, details: loaderEnd.result.details },
+    activated: { declared: activated.declared }, providerTools: lastTools }));
 });
 
-test("real Pi RPC auto mode falls back to eager selected tools for a model without mid-conversation tool additions", { skip }, async (t) => {
-  const s = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" }, input: { tools: ["+web_search"] },
-    script: [{ text: "done" }] });
+test("real Pi RPC eager mode registers the enabled family without a loader", { skip }, async (t) => {
+  const s = await scenario(t, { config: { ...searchOnlyConfig, toolActivation: "eager" }, input: { tools: [], webAccess: true }, script: [{ text: "done" }] });
 
-  assert.equal(s.prepared.args[s.prepared.args.indexOf("--tools") + 1].split(",").includes("web_enable"), true);
-  assert.equal(s.prepared.args[s.prepared.args.indexOf("--tools") + 1].split(",").includes("web_search"), true);
-
+  assert.deepEqual(s.allowlist(), [PARENT_TOOL_NAME, "web_search", "fetch_content"]);
+  assert.deepEqual(s.prepared.webTools, ["web_search", "fetch_content"]);
   const initial = await s.bootstrap();
-  assert.deepEqual(initial.webTools, ["web_search", "web_enable"]);
-  verifyCapabilities(executionTools, ["web_search"], initial, ["web_search", "web_enable"]);
-  assert.equal(initial.declared.includes("web_search"), true, JSON.stringify(initial.declared));
-  assert.equal(initial.callable.includes("web_search"), true);
-  assert.equal(initial.registered.includes("web_enable"), true);
-  assert.equal(initial.declared.includes("web_enable"), false, JSON.stringify(initial.declared));
-  assertNoUnselected(initial, ["source_check", "get_search_content", "fetch_content", "get_page"]);
-
-  await s.run();
-  assert.equal(s.provider.requests.length, 1);
-  assert.equal(s.toolNames(0).includes("web_search"), true, JSON.stringify(s.toolNames(0)));
-  assert.equal(s.toolNames(0).includes("web_enable"), false);
-  assertNoUnselected({ registered: s.toolNames(0), declared: s.toolNames(0), callable: s.toolNames(0) },
-    ["source_check", "get_search_content", "fetch_content", "get_page"]);
-  t.diagnostic(JSON.stringify({ check: "auto-eager", argvTools: s.prepared.args[s.prepared.args.indexOf("--tools") + 1].split(","),
-    approved: JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    initial: { registered: initial.registered, active: initial.active, declared: initial.declared, callable: initial.callable, webTools: initial.webTools },
-    providerTools: [s.toolNames(0)] }));
-});
-
-test("real Pi RPC eager mode carries no loader and registers only the selected functional tool", { skip }, async (t) => {
-  const s = await scenario(t, { config: { ...webSearchConfig, toolActivation: "eager" }, input: { tools: ["+web_search"] },
-    script: [{ text: "done" }] });
-
-  const allowlist = s.prepared.args[s.prepared.args.indexOf("--tools") + 1].split(",");
-  assert.deepEqual(allowlist, [...executionTools, PARENT_TOOL_NAME, "web_search"]);
-  assert.deepEqual(JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    { functional: [{ key: "webSearch", name: "web_search", label: "web search" }], family: ["web_search", "get_page"], loader: false });
-
-  const initial = await s.bootstrap();
-  assert.deepEqual(initial.webTools, ["web_search"]);
-  verifyCapabilities(executionTools, ["web_search"], initial, ["web_search"]);
+  verifyCapabilities([], s.prepared.webTools, initial);
   assert.equal(initial.declared.includes("web_search"), true, JSON.stringify(initial.declared));
   assert.equal(initial.registered.includes("web_enable"), false, JSON.stringify(initial.registered));
-  assertNoUnselected(initial, ["web_enable", "source_check", "get_search_content", "fetch_content", "get_page"]);
-
+  assertAbsent(initial, ["web_enable", "source_check", "get_search_content"]);
   await s.run();
   assert.equal(s.provider.requests.length, 1);
   assert.equal(s.toolNames(0).includes("web_search"), true, JSON.stringify(s.toolNames(0)));
   assert.equal(s.toolNames(0).includes("web_enable"), false);
-  assert.equal(s.toolNames(0).includes("get_page"), false);
-  t.diagnostic(JSON.stringify({ check: "eager", argvTools: allowlist, approved: JSON.parse(s.prepared.env[WEB_APPROVED_ENV]),
-    initial: { registered: initial.registered, active: initial.active, declared: initial.declared, callable: initial.callable, webTools: initial.webTools },
-    providerTools: [s.toolNames(0)] }));
+  t.diagnostic(JSON.stringify({ check: "eager-family", argvTools: s.allowlist(),
+    initial: { declared: initial.declared }, providerTools: s.toolNames(0) }));
 });
 
-test("real Pi RPC continuation restores the new resolved subset after stock transcript selection", { skip }, async (t) => {
-  const first = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" }, input: { tools: ["get_page"] }, script: [{ text: "first" }] });
-  const firstInitial = await first.bootstrap();
-  assert.equal(firstInitial.declared.includes("get_page"), true, JSON.stringify(firstInitial.declared));
-  await first.run();
-  const sessionFile = first.prepared.sessionFile;
+test("real Pi RPC web access follows renamed and disabled names from the installed configuration", { skip }, async (t) => {
+  const config = { ...searchOnlyConfig, toolNames: { fetchContent: "get_page" } };
+  const s = await scenario(t, { config, input: { tools: ["read"], webAccess: true }, script: [{ tool: "web_enable" }, { text: "done" }] });
 
-  const second = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" }, input: { tools: ["+web_search"], session: sessionFile },
-    script: [{ tool: "web_enable" }, { text: "second" }], sessionFile });
+  assert.deepEqual(s.allowlist(), ["read", PARENT_TOOL_NAME, "web_search", "get_page", "web_enable"]);
+  assert.deepEqual(s.prepared.webTools, ["web_search", "get_page", "web_enable"]);
+  const initial = await s.bootstrap();
+  verifyCapabilities(["read"], s.prepared.webTools, initial);
+  assert.equal(initial.registered.includes("get_page"), true, JSON.stringify(initial.registered));
+  assertAbsent(initial, ["fetch_content", "source_check", "get_search_content"]);
+
+  await s.run();
+  await s.waitInventory(2);
+  const activated = s.envelopes().at(-1).inventory;
+  verifyCapabilities(["read"], s.prepared.webTools, activated);
+  assert.equal(activated.declared.includes("get_page"), true, JSON.stringify(activated.declared));
+  assertAbsent(activated, ["fetch_content", "source_check", "get_search_content"]);
+  t.diagnostic(JSON.stringify({ check: "renamed-family", argvTools: s.allowlist(), registered: initial.registered, declared: activated.declared }));
+});
+
+test("real Pi RPC none-to-web continuation reaches every enabled web tool", { skip }, async (t) => {
+  const first = await scenario(t, { config: { ...searchOnlyConfig, toolActivation: "auto" }, input: { tools: ["read"], webAccess: false }, script: [{ text: "first" }] });
+  await first.bootstrap();
+  await first.run();
+
+  const second = await scenario(t, { config: { ...searchOnlyConfig, toolActivation: "auto" }, input: { tools: ["read"], webAccess: true, session: first.prepared.sessionFile },
+    script: [{ tool: "web_enable" }, { text: "second" }], sessionFile: first.prepared.sessionFile });
+  assert.deepEqual(second.prepared.webTools, ["web_search", "fetch_content", "web_enable"]);
+  assert.equal(second.prepared.env[CHILD_BINDING_ENV.webTools], second.prepared.webTools.join(","));
   const before = await second.bootstrap();
-  assert.deepEqual(before.webTools, ["web_search", "web_enable"]);
-  verifyCapabilities(executionTools, ["web_search"], before, ["web_search", "web_enable"]);
-  assert.equal(before.registered.includes("web_search"), true);
-  assert.equal(before.registered.includes("get_page"), false, JSON.stringify(before.registered));
-  assert.equal(before.declared.includes("get_page"), false, JSON.stringify(before.declared));
-  assertNoUnselected(before, ["source_check", "get_search_content", "fetch_content", "get_page"]);
+  verifyCapabilities(["read"], second.prepared.webTools, before);
+  assert.equal(before.declared.includes("web_enable"), true, JSON.stringify(before.declared));
+  assertAbsent(before, ["source_check", "get_search_content"]);
 
   await second.run();
   await second.waitInventory(2);
   const loaderEnd = second.rpc.records.find((record) => record.type === "tool_execution_end" && record.toolName === "web_enable");
   assert.equal(loaderEnd?.isError, false, JSON.stringify(loaderEnd));
-  assert.deepEqual(loaderEnd.result.details, { enabled: ["web_search"] });
+  assert.deepEqual(loaderEnd.result.details, { enabled: ["web_search", "fetch_content"] });
   const activated = second.envelopes().at(-1).inventory;
-  assert.deepEqual(activated.webTools, ["web_search", "web_enable"]);
-  verifyCapabilities(executionTools, ["web_search"], activated, ["web_search", "web_enable"]);
-  assert.equal(activated.declared.includes("web_search"), true, JSON.stringify(activated.declared));
-  const lastTools = second.toolNames(second.provider.requests.length - 1);
-  assert.equal(lastTools.includes("web_search"), true, JSON.stringify(lastTools));
-  assert.equal(lastTools.includes("get_page"), false);
-  t.diagnostic(JSON.stringify({ check: "continuation", sessionFile,
-    first: { declared: firstInitial.declared, active: firstInitial.active },
-    before: { active: before.active, declared: before.declared, webTools: before.webTools },
-    loader: { isError: loaderEnd.isError, details: loaderEnd.result.details },
-    activated: { declared: activated.declared, active: activated.active, webTools: activated.webTools },
-    providerTools: second.provider.requests.map((_, index) => second.toolNames(index)) }));
-});
-
-test("real Pi RPC partial-overlap continuation reaches the added web function and the loader reveals both", { skip }, async (t) => {
-  const first = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" }, input: { tools: ["+web_search"] }, script: [{ text: "first" }] });
-  const firstInitial = await first.bootstrap();
-  assert.deepEqual(firstInitial.webTools, ["web_search", "web_enable"]);
-  assert.equal(firstInitial.declared.includes("web_search"), true, JSON.stringify(firstInitial.declared));
-  assert.equal(firstInitial.declared.includes("web_enable"), false, JSON.stringify(firstInitial.declared));
-  assert.equal(firstInitial.declared.includes("get_page"), false, JSON.stringify(firstInitial.declared));
-  await first.run();
-
-  const script = [{ text: "second" }];
-  const second = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" },
-    input: { tools: ["+web_search", "+get_page"], session: first.prepared.sessionFile },
-    script, sessionFile: first.prepared.sessionFile });
-  const before = await second.bootstrap();
-  assert.deepEqual(before.webTools, ["web_search", "get_page", "web_enable"]);
-  assert.equal(before.declared.includes("web_search"), true, JSON.stringify(before.declared));
-  assert.equal(before.declared.includes("web_enable") || before.declared.includes("get_page"), true,
-    `added get_page unreachable after partial-overlap continuation: ${JSON.stringify({ active: before.active, declared: before.declared, registered: before.registered })}`);
-  assertNoUnselected(before, ["source_check", "get_search_content", "fetch_content"]);
-
-  if (before.declared.includes("get_page")) {
-    await second.run();
-    const tools = second.toolNames(second.provider.requests.length - 1);
-    for (const name of ["web_search", "get_page", PARENT_TOOL_NAME]) assert.equal(tools.includes(name), true, `${name} missing: ${JSON.stringify(tools)}`);
-    assertNoUnselected({ registered: tools, declared: tools, callable: tools }, ["source_check", "get_search_content", "fetch_content"]);
-  } else {
-    script[0] = { tool: "web_enable" };
-    script.push({ text: "second" });
-    await second.run();
-    await second.waitInventory(2);
-    const loaderEnd = second.rpc.records.find((record) => record.type === "tool_execution_end" && record.toolName === "web_enable");
-    assert.equal(loaderEnd?.isError, false, JSON.stringify(loaderEnd));
-    assert.deepEqual(loaderEnd.result.details, { enabled: ["web_search", "get_page"] });
-    assert.equal(loaderEnd.result.content[0].text, "Enabled: web_search, get_page.");
-    const activated = second.envelopes().at(-1).inventory;
-    assert.deepEqual(activated.webTools, ["web_search", "get_page", "web_enable"]);
-    for (const name of ["web_search", "get_page", PARENT_TOOL_NAME, ...executionTools]) {
-      assert.equal(activated.declared.includes(name), true, `${name} missing after loader: ${JSON.stringify(activated.declared)}`);
-    }
-    assertNoUnselected(activated, ["source_check", "get_search_content", "fetch_content"]);
-    const lastTools = second.toolNames(second.provider.requests.length - 1);
-    for (const name of ["web_search", "get_page", PARENT_TOOL_NAME, ...executionTools]) {
-      assert.equal(lastTools.includes(name), true, `${name} missing from provider tools: ${JSON.stringify(lastTools)}`);
-    }
-    assertNoUnselected({ registered: lastTools, declared: lastTools, callable: lastTools }, ["source_check", "get_search_content", "fetch_content"]);
+  verifyCapabilities(["read"], second.prepared.webTools, activated);
+  for (const name of ["web_search", "fetch_content", "web_enable", "read", PARENT_TOOL_NAME]) {
+    assert.equal(activated.declared.includes(name), true, `${name} missing after activation: ${JSON.stringify(activated.declared)}`);
   }
-
-  t.diagnostic(JSON.stringify({ check: "partial-overlap", sessionFile: second.prepared.sessionFile,
-    first: { declared: firstInitial.declared, active: firstInitial.active },
-    before: { active: before.active, declared: before.declared, webTools: before.webTools },
-    providerTools: second.provider.requests.map((_, index) => second.toolNames(index)) }));
+  assertAbsent(activated, ["source_check", "get_search_content"]);
+  t.diagnostic(JSON.stringify({ check: "none-to-web", before: { active: before.active, declared: before.declared, webTools: second.prepared.webTools },
+    activated: { declared: activated.declared } }));
 });
 
-test("real Pi RPC none-to-web continuation reaches the selected subset", { skip }, async (t) => {
-  const first = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" }, input: { tools: [] }, script: [{ text: "first" }] });
-  await first.bootstrap();
+test("real Pi RPC continuing a web session with web access off loads no web tool", { skip }, async (t) => {
+  const first = await scenario(t, { config: searchOnlyConfig, input: { tools: ["read"], webAccess: true }, script: [{ text: "first" }] });
+  const before = await first.bootstrap();
+  verifyCapabilities(["read"], first.prepared.webTools, before);
   await first.run();
-  const second = await scenario(t, { config: { ...webSearchConfig, toolActivation: "auto" }, input: { tools: ["+web_search"], session: first.prepared.sessionFile },
-    script: [{ tool: "web_enable" }, { text: "second" }], sessionFile: first.prepared.sessionFile });
-  const before = await second.bootstrap();
-  assert.deepEqual(before.webTools, ["web_search", "web_enable"]);
-  verifyCapabilities(executionTools, ["web_search"], before, ["web_search", "web_enable"]);
-  assertNoUnselected(before, ["source_check", "get_search_content", "fetch_content", "get_page"]);
+
+  const second = await scenario(t, { config: searchOnlyConfig, input: { tools: ["read"], webAccess: false, session: first.prepared.sessionFile },
+    script: [{ text: "second" }], sessionFile: first.prepared.sessionFile });
+  assert.deepEqual(second.allowlist(), ["read", PARENT_TOOL_NAME]);
+  assert.deepEqual(second.prepared.webTools, []);
+  assert.equal(second.extensions().includes(resolveWebEntrypoint(agentDir)), false, second.prepared.args.join(" "));
+  assert.equal(second.prepared.env[CHILD_BINDING_ENV.webTools], undefined);
+  const continued = await second.bootstrap();
+  assert.deepEqual(verifyCapabilities(["read"], [], continued).reachable, ["read", PARENT_TOOL_NAME]);
+  assertAbsent(continued, ["web_search", "fetch_content", "web_enable"]);
   await second.run();
-  await second.waitInventory(2);
-  const activated = second.envelopes().at(-1).inventory;
-  assert.deepEqual(activated.webTools, ["web_search", "web_enable"]);
-  assert.equal(activated.declared.includes("web_search"), true, JSON.stringify(activated.declared));
-  assert.equal(second.prepared.args.includes(join(extensionDir, "web.ts")), true);
-  t.diagnostic(JSON.stringify({ check: "none-to-web", before: { active: before.active, declared: before.declared, webTools: before.webTools },
-    activated: { declared: activated.declared, webTools: activated.webTools } }));
-});
-
-test("real Pi RPC selected-only metadata avoids unselected web tool names", { skip }, async (t) => {
-  const stored = await scenario(t, { config: { toolActivation: "eager" }, input: { tools: ["+get_search_content"] }, script: [{ text: "done" }] });
-  const initial = await stored.bootstrap();
-  assert.deepEqual(initial.webTools, ["get_search_content"]);
-  verifyCapabilities(executionTools, ["get_search_content"], initial, ["get_search_content"]);
-  assertNoUnselected(initial, ["web_search", "source_check", "fetch_content", "web_enable"]);
-  await stored.run();
-  const body = JSON.stringify(stored.provider.requests[0].body);
-  for (const name of ["web_search", "source_check", "fetch_content"]) assert.equal(body.includes(name), false, `${name} leaked into ${body.slice(0, 1500)}`);
-
-  const fetching = await scenario(t, { config: { toolActivation: "eager" }, input: { tools: ["web_search", "fetch_content"] }, script: [{ text: "done" }] });
-  await fetching.bootstrap();
-  await fetching.run();
-  const definitions = fetching.provider.requests[0].body.tools;
-  const fetchDefinition = definitions.find((tool) => (tool.function?.name ?? tool.name) === "fetch_content");
-  assert.ok(fetchDefinition, JSON.stringify(definitions.map((tool) => tool.function?.name ?? tool.name)));
-  const fetchDescription = fetchDefinition.function?.description ?? fetchDefinition.description;
-  assert.equal(fetchDescription.includes("get_search_content"), false, fetchDescription);
-  assert.match(fetchDescription, /retrieval tool is not registered/);
-  t.diagnostic(JSON.stringify({ check: "selected-only-metadata", storedTools: stored.toolNames(0), fetchDescription }));
+  assert.doesNotMatch(second.rpc.stderr.join(""), /conflicts/);
+  t.diagnostic(JSON.stringify({ check: "web-to-off", sessionFile: second.prepared.sessionFile,
+    first: { declared: before.declared }, continued: { registered: continued.registered } }));
 });

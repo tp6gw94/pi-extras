@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeTaskSpec, normalizeTools, normalizeSessionReference, assertTransition, boundedText, textContent } from "../domain.mjs";
-import { parseToolExpression, resolveTaskCapabilities } from "../capability.mjs";
+import { resolveTaskCapabilities, resolveWebTools } from "../capability.mjs";
 import { readWebCatalog } from "../web-policy.mjs";
 import {
   normalizeCoordinationText, normalizeParentCall, normalizeParentAnswer, normalizePendingOptions,
@@ -11,9 +11,9 @@ import {
   parseCoordinationRecord, validateToolInventory, verifyCapabilities,
 } from "../coordination.mjs";
 
-process.env.PI_CODING_AGENT_DIR = join(tmpdir(), "rpc-subagents-domain-missing-config");
+const missingConfigDir = join(tmpdir(), "rpc-subagents-domain-missing-config");
+process.env.PI_CODING_AGENT_DIR = missingConfigDir;
 const defaultFamily = ["web_search", "source_check", "fetch_content", "get_search_content"];
-const defaultSlots = { web_search: "webSearch", source_check: "sourceCheck", fetch_content: "fetchContent", get_search_content: "getSearchContent" };
 
 const defaults = { cwd: "/project", model: { provider: "test", id: "model" } };
 const launch = { taskId: "task-1", ownerId: "owner-1", nonce: "launch-1" };
@@ -26,86 +26,73 @@ const inventory = (extra = {}) => ({
 });
 const ask = { kind: "ask", requestId: "ask-request-1", question: "May I continue?", expiresAt: 1700000001000 };
 
-test("legacy and persisted task specs gain the exact execution defaults without changing fresh/fork behavior", () => {
+test("task specs default to execution tools with web access off and stay idempotent", () => {
   assert.deepEqual(normalizeTaskSpec({ prompt: "Inspect" }, defaults), {
     prompt: "Inspect", name: "RPC task", cwd: "/project", model: { provider: "test", id: "model" },
-    webAccess: true, webTools: defaultFamily, webToolSlots: defaultSlots, thinking: "off", context: "fresh", tools: ["read", "write", "edit", "bash", "codemode"], async: false, timeoutMs: 1800000,
+    webAccess: false, thinking: "off", context: "fresh", tools: ["read", "write", "edit", "bash", "codemode"], async: false, timeoutMs: 1800000,
   });
   const persisted = { prompt: "Inspect", name: "Saved", cwd: "/project", model: { provider: "test", id: "model" },
     thinking: "high", context: "fork", async: true, timeoutMs: 1000 };
   const normalized = normalizeTaskSpec(persisted);
-  assert.deepEqual(normalized, { ...persisted, webAccess: true, webTools: defaultFamily, webToolSlots: defaultSlots, tools: ["read", "write", "edit", "bash", "codemode"] });
-  assert.deepEqual(normalizeTaskSpec(normalized), { ...persisted, webAccess: true, webTools: defaultFamily, webToolSlots: defaultSlots, tools: ["read", "write", "edit", "bash", "codemode"] });
+  assert.deepEqual(normalized, { ...persisted, webAccess: false, tools: ["read", "write", "edit", "bash", "codemode"] });
+  assert.deepEqual(normalizeTaskSpec(normalized), normalized);
   assert.equal(Object.hasOwn(persisted, "tools"), false);
 });
 
-test("signed adjustments fold onto the fixed execution defaults in order and partition web selections", () => {
+test("signed adjustments fold onto the fixed execution defaults in order and web access stays a boolean", () => {
   const inspect = (tools, extra = {}) => normalizeTaskSpec({ prompt: "Inspect", tools, ...extra }, defaults);
-  assert.deepEqual(inspect(["+bash", "-codemode", "+web_search"]).tools, ["read", "write", "edit", "bash"]);
-  assert.deepEqual(inspect(["+bash", "-codemode", "+web_search"]).webTools, ["web_search"]);
+  assert.deepEqual(inspect(["+bash", "-codemode"]).tools, ["read", "write", "edit", "bash"]);
   assert.deepEqual(inspect(["-read", "+read", "+read", "-absent"]).tools, ["write", "edit", "bash", "codemode", "read"]);
-  assert.deepEqual(inspect(["+fetch_content", "-fetch_content"]).webTools, []);
-  assert.equal(inspect(["+fetch_content", "-fetch_content"]).webAccess, false);
-  assert.deepEqual(inspect(["+fetch_content"]).webTools, ["fetch_content"]);
-  assert.deepEqual(inspect(["+fetch_content"]).tools, ["read", "write", "edit", "bash", "codemode"]);
-  assert.deepEqual(inspect(["read", "fetch_content"]).tools, ["read"]);
-  assert.deepEqual(inspect(["read", "fetch_content"]).webTools, ["fetch_content"]);
-  assert.equal(inspect(["read"]).webAccess, false);
-  assert.deepEqual(inspect(["read"], { webAccess: false }).webTools, []);
-  assert.deepEqual(inspect(["read"], { webAccess: true }).webTools, defaultFamily);
-  assert.deepEqual(inspect(undefined, { webAccess: false }).webTools, []);
-  assert.deepEqual(inspect([], { webAccess: true }).webTools, defaultFamily);
+  assert.deepEqual(inspect([]).tools, []);
   assert.deepEqual(inspect([], { webAccess: true }).tools, []);
-  assert.deepEqual(inspect(["+web_search", "+source_check", "+fetch_content", "+get_search_content"], { webAccess: true }).webTools, defaultFamily);
-  assert.throws(() => inspect(["+web_search", "+fetch_content"], { webAccess: true }), /contradicts/);
+  assert.deepEqual(inspect(["read"]).tools, ["read"]);
+  assert.equal(inspect(["read"]).webAccess, false);
+  assert.equal(inspect(undefined).webAccess, false);
+  assert.equal(inspect(undefined, { webAccess: true }).webAccess, true);
+  assert.equal(normalizeTaskSpec({ prompt: "Inspect", tools: ["read"], webAccess: false }, defaults).webAccess, false);
 });
 
-test("selection syntax rejects mixed, empty, wildcard, reserved, duplicate and contradictory inputs", () => {
+test("naming any web tool in tools is rejected in favour of webAccess before folding or mixed-form errors", () => {
   const inspect = (tools, extra = {}) => normalizeTaskSpec({ prompt: "Inspect", tools, ...extra }, defaults);
-  for (const tools of [["+read", "bash"], ["+read", "-"], ["+"], ["*"], ["read*"], ["+*"], ["read", "read"], ["rpc_subagents_parent"], ["+rpc_subagents_reply"], ["web_enable"], ["+web_enable"]]) {
-    assert.throws(() => inspect(tools), /tools|web_enable|duplicate|reserved|literal|wildcard/i, JSON.stringify(tools));
+  for (const name of defaultFamily) {
+    assert.throws(() => inspect([name]), new RegExp(`Web tool ${name} is not allowed in tools; use webAccess instead`), name);
+    assert.throws(() => inspect([`+${name}`]), /use webAccess/, `+${name}`);
+    assert.throws(() => inspect([`-${name}`]), /use webAccess/, `-${name}`);
+    assert.throws(() => inspect(["+read", name]), /use webAccess/, `mixed form with ${name}`);
   }
+  assert.throws(() => inspect(["web_enable"]), /Web tool web_enable is not allowed in tools; use webAccess instead/);
+  assert.throws(() => inspect(["+web_enable"]), /Web tool web_enable is not allowed/);
+  assert.throws(() => inspect(["+web_search", "-web_search"]), /Web tool web_search is not allowed/);
   assert.throws(() => inspect(["read"], { webAccess: "yes" }), /webAccess must be boolean/);
-  assert.throws(() => inspect(["read", "fetch_content"], { webAccess: false }), /contradicts/);
-  assert.throws(() => inspect(["read", "fetch_content"], { webAccess: true }), /contradicts/);
-  assert.throws(() => inspect(["fetch_content"], { webAccess: true }), /contradicts/);
-  assert.deepEqual(inspect(["read", "web_search", "source_check", "fetch_content", "get_search_content"], { webAccess: true }).webTools, defaultFamily);
-  const canonical = { prompt: "Inspect", tools: ["read"], webTools: ["web_search"], webAccess: true, cwd: "/project", model: { provider: "test", id: "model" } };
-  assert.deepEqual(normalizeTaskSpec(canonical), { ...canonical, webToolSlots: { web_search: "webSearch" }, thinking: "off", name: "RPC task", context: "fresh", async: false, timeoutMs: 1800000 });
-  assert.throws(() => normalizeTaskSpec({ ...canonical, webAccess: false }), /contradicts/);
-  assert.throws(() => normalizeTaskSpec({ ...canonical, tools: undefined }), /explicit tools/);
-  assert.throws(() => normalizeTaskSpec({ ...canonical, webTools: ["web_enable"], webAccess: true, tools: [] }), /machinery/);
+  for (const tools of [["+read", "bash"], ["+read", "-"], ["+"], ["*"], ["read*"], ["+*"], ["read", "read"], ["rpc_subagents_parent"], ["+rpc_subagents_reply"]]) {
+    assert.throws(() => inspect(tools), /tools|duplicate|reserved|literal|wildcard/i, JSON.stringify(tools));
+  }
 });
 
-test("catalogue renames select the current name and fail closed on renamed-away or disabled names", () => {
-  const catalog = readWebCatalog({ PI_CODING_AGENT_DIR: join(tmpdir(), "rpc-subagents-domain-missing-config") }, tmpdir());
-  const renamed = { ...catalog, slots: catalog.slots.map((slot) => slot.key === "fetchContent" ? { ...slot, name: "get_page" } : slot),
-    enabled: catalog.enabled.map((name) => name === "fetch_content" ? "get_page" : name),
-    reserved: new Set([...catalog.reserved, "get_page"]) };
-  assert.deepEqual(resolveTaskCapabilities({ tools: ["+get_page"] }, () => renamed).webTools, ["get_page"]);
-  assert.throws(() => resolveTaskCapabilities({ tools: ["+fetch_content"] }, () => renamed), /disabled or renamed/);
-  assert.deepEqual(resolveTaskCapabilities({ tools: ["+read", "-fetch_content"] }, () => renamed).webTools, []);
-  const disabled = { ...catalog, enabled: catalog.enabled.filter((name) => name !== "source_check") };
-  assert.throws(() => resolveTaskCapabilities({ tools: ["+source_check"] }, () => disabled), /disabled or renamed/);
-  assert.throws(() => resolveTaskCapabilities({ tools: ["+source_check"] }, () => ({ ...catalog, enabled: [] })), /disabled or renamed/);
-  assert.throws(() => resolveTaskCapabilities({ tools: undefined, webAccess: true }, () => ({ ...catalog, enabled: [] })), /all installed web tools are disabled/);
+test("only configured names are read from the web catalogue and every reserved name is rejected", () => {
+  const catalog = readWebCatalog({ PI_CODING_AGENT_DIR: missingConfigDir }, tmpdir());
+  assert.deepEqual(catalog.enabled, defaultFamily);
+  for (const name of defaultFamily) assert.equal(catalog.reserved.has(name), true);
+  const renamed = { mode: "dynamic", enabled: ["web_search", "get_page"], reserved: new Set([...catalog.reserved, "get_page"]) };
+  assert.throws(() => resolveTaskCapabilities({ tools: ["get_page"] }, () => renamed), /Web tool get_page is not allowed in tools; use webAccess instead/);
+  assert.throws(() => resolveTaskCapabilities({ tools: ["+get_page", "-read"] }, () => renamed), /use webAccess/);
   const never = () => { throw new Error("web configuration must not be read"); };
-  for (const input of [{ tools: [] }, { tools: [], webAccess: false }, { tools: ["read"] }, { tools: ["+bash", "-edit", "-codemode"] }]) {
-    const resolved = resolveTaskCapabilities(input, never);
-    assert.deepEqual(resolved.webTools, []);
-    assert.equal(resolved.webAccess, false);
+  assert.deepEqual(resolveTaskCapabilities({ tools: ["+bash", "-edit", "-codemode"] }, never), { tools: ["read", "write", "bash"], webAccess: false });
+  for (const input of [{ tools: [] }, { tools: [], webAccess: false }, { tools: ["read"] }, { tools: ["bash"] }]) {
+    assert.equal(resolveTaskCapabilities(input, never).webAccess, false);
   }
-  assert.throws(() => resolveTaskCapabilities({ tools: ["+get_page"] }, never), /must not be read/);
-  const bound = resolveTaskCapabilities({ tools: ["+get_page"] }, () => renamed);
-  assert.deepEqual(bound.webToolSlots, { get_page: "fetchContent" });
-  assert.deepEqual(resolveTaskCapabilities({ tools: ["read"], webTools: ["get_page"], webToolSlots: bound.webToolSlots }, () => renamed).webToolSlots, { get_page: "fetchContent" });
-  const reassigned = { ...renamed, slots: renamed.slots.map((slot) => slot.name === "get_page" ? { ...slot, key: "webSearch" } : slot) };
-  assert.throws(() => resolveTaskCapabilities({ tools: ["read"], webTools: ["get_page"], webToolSlots: bound.webToolSlots }, () => reassigned), /rename or reassignment/);
-  assert.throws(() => resolveTaskCapabilities({ tools: ["read"], webTools: ["get_page"], webToolSlots: { get_page: "fetchContent", extra: "webSearch" } }, () => renamed), /exactly match/);
-  const expression = parseToolExpression(["+read", "-bash"]);
-  assert.deepEqual(expression.ops.map((op) => [op.op, op.name]), [["add", "read"], ["remove", "bash"]]);
-  assert.equal(parseToolExpression(undefined).form, "omitted");
-  assert.deepEqual(parseToolExpression([]), { form: "replace", names: [] });
+  assert.throws(() => resolveTaskCapabilities({ tools: ["custom.inspect"] }, never), /must not be read/);
+  assert.throws(() => resolveTaskCapabilities({ tools: ["+custom.inspect"] }, never), /must not be read/);
+});
+
+test("web tools resolve to the enabled family plus the loader for the configured mode", () => {
+  const dynamic = { mode: "dynamic", enabled: defaultFamily, reserved: new Set() };
+  assert.deepEqual(resolveWebTools({ tools: [] }, dynamic), [...defaultFamily, "web_enable"]);
+  assert.deepEqual(resolveWebTools({ tools: ["read"] }, { ...dynamic, mode: "auto" }), [...defaultFamily, "web_enable"]);
+  assert.deepEqual(resolveWebTools({ tools: ["read"] }, { ...dynamic, mode: "eager" }), defaultFamily);
+  assert.deepEqual(resolveWebTools({ tools: ["read"] }, { mode: "eager", enabled: ["get_page"], reserved: new Set() }), ["get_page"]);
+  assert.throws(() => resolveWebTools({ tools: [] }, { ...dynamic, enabled: [] }), /all installed web tools are disabled/);
+  assert.throws(() => resolveWebTools({ tools: ["get_page"] }, { mode: "eager", enabled: ["get_page"], reserved: new Set(["get_page"]) }), /collides/);
 });
 
 test("custom execution tools replace defaults, preserve ordering and empty arrays, and are copied", () => {
@@ -138,7 +125,7 @@ test("resume preserves an exact identity or path and stays idempotent without sy
   const result = normalizeTaskSpec({ prompt: "Continue", session: "session-1", tools: [], async: true }, defaults);
   assert.deepEqual(result, {
     prompt: "Continue", name: "RPC task", cwd: "/project", model: { provider: "test", id: "model" },
-    webAccess: false, webTools: [], thinking: "off", session: "session-1", tools: [], async: true, timeoutMs: 1800000,
+    webAccess: false, thinking: "off", session: "session-1", tools: [], async: true, timeoutMs: 1800000,
   });
   assert.deepEqual(normalizeTaskSpec(result), result);
   assert.equal(Object.hasOwn(result, "context"), false);
@@ -165,7 +152,7 @@ test("session references are bounded positive literal identities or absolute jso
 test("existing normalized task fields, domain helpers and input errors remain observable", () => {
   assert.deepEqual(normalizeTaskSpec({ prompt: "Inspect", cwd: "child", thinking: "max", context: "fork", timeoutMs: 100, tools: ["read"] }, defaults), {
     prompt: "Inspect", name: "RPC task", cwd: "/project/child", model: { provider: "test", id: "model" },
-    webAccess: false, webTools: [], thinking: "max", context: "fork", tools: ["read"], async: false, timeoutMs: 100,
+    webAccess: false, thinking: "max", context: "fork", tools: ["read"], async: false, timeoutMs: 100,
   });
   for (const bad of [{ async: "true" }, { thinking: "unlimited" }, { timeoutMs: 99 }, { context: "resume" }, { prompt: "" }]) {
     assert.throws(() => normalizeTaskSpec({ prompt: "Inspect", ...bad }, defaults));
@@ -400,4 +387,32 @@ test("capability copies and exposure records do not inherit tool names as object
   assert.deepEqual(special.reachable, ["__proto__", "rpc_subagents_parent"]);
   assert.equal(Object.getPrototypeOf(special.exposures), Object.prototype);
   assert.equal(Object.hasOwn(special.exposures, "__proto__"), true);
+});
+
+test("web access verification requires every expected tool registered, directly exposed and partly reachable", () => {
+  const expected = ["web_search", "fetch_content", "web_enable"];
+  const webInventory = { registered: ["read", "web_search", "fetch_content", "web_enable", "rpc_subagents_parent"],
+    active: ["read", "web_enable", "rpc_subagents_parent"], declared: ["read", "web_enable", "rpc_subagents_parent"],
+    callable: ["read", "web_enable"],
+    exposures: { read: "direct", web_search: "direct", fetch_content: "direct", web_enable: "direct", rpc_subagents_parent: "model-only" } };
+  assert.deepEqual(verifyCapabilities(["read"], expected, webInventory).reachable, ["read", "rpc_subagents_parent", "web_enable"]);
+
+  const activated = { ...webInventory, active: [...webInventory.active, "web_search"],
+    declared: [...webInventory.declared, "web_search"], callable: [...webInventory.callable, "web_search"] };
+  assert.equal(verifyCapabilities(["read"], expected, activated).reachable.includes("web_search"), true);
+
+  assert.throws(() => verifyCapabilities(["read"], expected, { ...webInventory, registered: ["read", "web_enable", "rpc_subagents_parent"],
+    exposures: { read: "direct", web_enable: "direct", rpc_subagents_parent: "model-only" } }), /Web tools must stay registered: web_search, fetch_content/);
+  assert.throws(() => verifyCapabilities(["read"], expected, { ...webInventory, callable: [...webInventory.callable, "fetch_content"],
+    exposures: { ...webInventory.exposures, fetch_content: "codemode" } }), /Web tools must retain direct exposure: fetch_content/);
+  assert.throws(() => verifyCapabilities(["read"], expected, { ...webInventory, active: ["read", "rpc_subagents_parent"],
+    declared: ["read", "rpc_subagents_parent"], callable: ["read"] }), /no reachable loader or eager tools/);
+  assert.throws(() => verifyCapabilities(["read"], expected, { ...webInventory, registered: [...webInventory.registered, "unrelated"],
+    active: [...webInventory.active, "unrelated"], declared: [...webInventory.declared, "unrelated"],
+    callable: [...webInventory.callable, "unrelated"], exposures: { ...webInventory.exposures, unrelated: "direct" } }), /unexpected \[unrelated\]/);
+  assert.throws(() => verifyCapabilities(["read"], [], { ...webInventory, registered: ["read", ...expected, "rpc_subagents_parent"] }),
+    /Unexpected web loader when web access is disabled/);
+  assert.deepEqual(verifyCapabilities(["read"], [], { registered: ["read", "inactive", "rpc_subagents_parent"],
+    active: ["read", "rpc_subagents_parent"], declared: ["read", "rpc_subagents_parent"], callable: ["read"],
+    exposures: { read: "direct", inactive: "direct", rpc_subagents_parent: "model-only" } }).reachable, ["read", "rpc_subagents_parent"]);
 });
