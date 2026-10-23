@@ -3,14 +3,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BOOTSTRAP_COMMAND_NAME, DEFAULT_EXECUTION_TOOLS, PARENT_TOOL_NAME, WEB_LOADER_TOOL_NAME } from "./coordination.mjs";
 
-export const WEB_APPROVED_ENV = "RPC_SUBAGENTS_WEB_TOOLS";
-
-export const WEB_SLOTS = Object.freeze([
-  { key: "webSearch", defaultName: "web_search", capability: "search", label: "web search" },
-  { key: "sourceCheck", defaultName: "source_check", capability: "source-check", label: "source checking" },
-  { key: "fetchContent", defaultName: "fetch_content", capability: "fetch", label: "content fetching" },
-  { key: "getSearchContent", defaultName: "get_search_content", capability: "stored-content", label: "stored-result retrieval" },
+const webSlots = Object.freeze([
+  { key: "webSearch", defaultName: "web_search" },
+  { key: "sourceCheck", defaultName: "source_check" },
+  { key: "fetchContent", defaultName: "fetch_content" },
+  { key: "getSearchContent", defaultName: "get_search_content" },
 ]);
+
+export const WEB_DEFAULT_TOOL_NAMES = Object.freeze(webSlots.map((slot) => slot.defaultName));
 
 const toolNamePattern = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const reservedExecutionNames = new Set([...DEFAULT_EXECUTION_TOOLS, "grep", "find", "ls", PARENT_TOOL_NAME, BOOTSTRAP_COMMAND_NAME]);
@@ -45,7 +45,7 @@ export function readWebCatalog(env = process.env, home = homedir()) {
   if (config.toolNames !== undefined && (!config.toolNames || typeof config.toolNames !== "object" || Array.isArray(config.toolNames))) {
     throw new Error("Invalid pi-web-access toolNames");
   }
-  const slots = WEB_SLOTS.map((slot) => {
+  const slots = webSlots.map((slot) => {
     const raw = config.toolNames?.[slot.key] === undefined ? slot.defaultName : config.toolNames[slot.key];
     if (typeof raw !== "string" || !toolNamePattern.test(raw.trim())) throw new Error(`Invalid pi-web-access toolNames.${slot.key}`);
     return { ...slot, name: raw.trim() };
@@ -62,6 +62,6 @@ export function readWebCatalog(env = process.env, home = homedir()) {
     if (seen.has(slot.name)) throw new Error(`Duplicate installed web tool name ${slot.name} from pi-web-access configuration`);
     seen.add(slot.name);
   }
-  const reserved = new Set([...WEB_SLOTS.map((slot) => slot.defaultName), ...slots.map((slot) => slot.name), WEB_LOADER_TOOL_NAME]);
-  return Object.freeze({ mode, slots: enabledSlots, enabled: Object.freeze(enabledSlots.map((slot) => slot.name)), reserved });
+  const reserved = new Set([...WEB_DEFAULT_TOOL_NAMES, ...slots.map((slot) => slot.name), WEB_LOADER_TOOL_NAME]);
+  return Object.freeze({ mode, enabled: Object.freeze(enabledSlots.map((slot) => slot.name)), reserved });
 }

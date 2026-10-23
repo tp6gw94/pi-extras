@@ -3,10 +3,10 @@ import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-codi
 import type { TSchema } from "typebox";
 import type { AskClosedReason, LaunchBinding, NormalizedParentCall, ParentCallResult, ToolExposure, ToolInventory } from "./coordination.d.ts";
 import {
-  BOOTSTRAP_COMMAND_NAME, COORDINATION_LIMITS, PARENT_TOOL_NAME,
+  BOOTSTRAP_COMMAND_NAME, COORDINATION_LIMITS, PARENT_TOOL_NAME, WEB_LOADER_TOOL_NAME,
   createCoordinationRequestId, encodeCoordinationEnvelope, normalizeParentCall,
 } from "./coordination.mjs";
-import { CHILD_BINDING_ENV, WEB_INVENTORY_EVENT, WEB_SOURCE_ENV } from "./runtime.mjs";
+import { CHILD_BINDING_ENV } from "./runtime.mjs";
 
 const parentParameters = {
   type: "object",
@@ -22,7 +22,7 @@ const parentParameters = {
 
 const ASK_PLACEHOLDER = "Answer for the blocked child task";
 
-type ChildLaunch = { binding: LaunchBinding; asynchronous: boolean };
+type ChildLaunch = { binding: LaunchBinding; asynchronous: boolean; webTools: string[] };
 
 function identity(value: string | undefined): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= COORDINATION_LIMITS.maxIdentityChars && !value.includes("\0");
@@ -36,7 +36,8 @@ export function readLaunchBinding(env: Record<string, string | undefined>): Chil
   const ownerId = env[CHILD_BINDING_ENV.ownerId];
   const nonce = env[CHILD_BINDING_ENV.nonce];
   if (!identity(taskId) || !identity(ownerId) || !identity(nonce)) return undefined;
-  return { binding: { taskId, ownerId, nonce }, asynchronous: async === "1" };
+  const webTools = env[CHILD_BINDING_ENV.webTools];
+  return { binding: { taskId, ownerId, nonce }, asynchronous: async === "1", webTools: webTools === undefined ? [] : webTools.split(",") };
 }
 
 export function collectToolInventory(pi: ExtensionAPI): ToolInventory {
@@ -48,10 +49,7 @@ export function collectToolInventory(pi: ExtensionAPI): ToolInventory {
   }
   const active = [...pi.getActiveTools()];
   const activeSet = new Set(active);
-  const metadata: { webTools?: string[] } = {};
-  pi.events?.emit(WEB_INVENTORY_EVENT, metadata);
   return {
-    ...metadata,
     registered,
     active,
     declared: [...active],
@@ -121,7 +119,16 @@ export default function registerChildBridge(pi: ExtensionAPI, env: Record<string
     ctx.ui.notify(encodeCoordinationEnvelope(launch.binding, { kind: "inventory", inventory }));
     lastInventory = serialized;
   };
-  if (env[WEB_SOURCE_ENV]) {
+  if (launch.webTools.length > 0) {
+    const enforceReachable = () => {
+      const expected = launch.webTools.filter((name) => name !== WEB_LOADER_TOOL_NAME);
+      const active = new Set(pi.getActiveTools());
+      if (expected.every((name) => active.has(name))) return;
+      const add = launch.webTools.includes(WEB_LOADER_TOOL_NAME) ? [WEB_LOADER_TOOL_NAME] : expected;
+      pi.setActiveTools([...new Set([...active, ...add])]);
+    };
+    pi.on("session_start", enforceReachable);
+    pi.on("session_tree", enforceReachable);
     const refresh = (_event: unknown, ctx: Pick<ExtensionToolContext, "ui">) => {
       if (lastInventory !== undefined) emitInventory(ctx);
     };

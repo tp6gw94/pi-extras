@@ -38,7 +38,7 @@ async function setup(t, options = {}) {
       if (session.kind === "resume") sessionId = JSON.parse((await readFile(sessionFile, "utf8")).split("\n")[0]).id;
       else ({ sessionId } = await writeChildSession(sessionFile, { cwd: task.cwd, template }));
       sessions.set(taskId, { sessionFile, sessionId });
-      return { cliPath: "/pi", cwd: task.cwd, args: [], sessionFile, binding: { taskId, ownerId, nonce } };
+      return { cliPath: "/pi", cwd: task.cwd, args: [], sessionFile, binding: { taskId, ownerId, nonce }, webTools: [] };
     },
     transportFactory: (options) => {
       const identity = sessions.get(options.binding.taskId);

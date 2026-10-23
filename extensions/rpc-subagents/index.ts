@@ -28,13 +28,12 @@ const PendingOutput = Type.Object({
 });
 const ToolExposureOutput = Type.Union(["direct", "model-only", "codemode", "deferred", "hidden"].map((value) => Type.Literal(value)));
 const CapabilitiesOutput = Type.Object({
-  webTools: Type.Optional(Type.Array(Type.String(), { maxItems: COORDINATION_LIMITS.maxWebTools })),
   registered: Type.Array(Type.String()), active: Type.Array(Type.String()), declared: Type.Array(Type.String()),
   callable: Type.Array(Type.String()), exposures: Type.Record(Type.String(), ToolExposureOutput),
   requested: Type.Array(Type.String()), reachable: Type.Array(Type.String()),
 });
 const TaskOutput = Type.Object({
-  webTools: Type.Optional(Type.Array(Type.String(), { maxItems: COORDINATION_LIMITS.maxWebTools })),
+  webAccess: Type.Optional(Type.Boolean()),
   taskId: Type.String(), name: Type.String(), model: Model, thinking: Type.Optional(Thinking), timeoutMs: Type.Optional(Type.Integer()), cwd: Type.String(), status: TaskStatus,
   state: Type.Object({ status: TaskStatus }, { additionalProperties: true }),
   text: Type.String(), truncated: Type.Boolean(),
@@ -51,7 +50,8 @@ const TaskProperties = {
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
   model: Type.Optional(Model), thinking: Type.Optional(Thinking),
   cwd: Type.Optional(Type.String()), context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")])),
-  tools: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: COORDINATION_LIMITS.maxToolNameChars }), { maxItems: COORDINATION_LIMITS.maxTools, description: "Execution tools plus optional installed web tools. Plain names replace the default read/write/edit/bash/codemode list; +name/-name entries adjust that default in order and never mix with plain names. Naming a web tool such as fetch_content loads web support for that tool only; web_enable is machinery and is rejected. Omitting tools selects the default execution tools and all enabled web tools. Providing tools explicitly enables only named web tools. [] means no execution or web tools." })),
+  tools: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: COORDINATION_LIMITS.maxToolNameChars }), { maxItems: COORDINATION_LIMITS.maxTools, description: "Execution tools only. Plain names replace the default read/write/edit/bash/codemode list; +name/-name entries adjust that default in order and never mix with plain names. Naming a web tool here is rejected with an error that points at webAccess; webAccess, not tools, turns web support on or off. Omitting tools selects the default execution tools; [] means no execution tools." })),
+  webAccess: Type.Optional(Type.Boolean({ description: "Load the installed pi-web-access extension and expose every enabled web tool to the child. Omitted means false, and the child never loads pi-web-access. Web access is not a sandbox." })),
   session: Type.Optional(Type.String({ minLength: 1, maxLength: COORDINATION_LIMITS.maxSessionReferenceChars })),
   async: Type.Optional(Type.Boolean()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 86400000 })),
 };
@@ -69,7 +69,7 @@ const SteerParams = Type.Object({ taskId: Type.String(), message: Type.String({ 
 const SteerOutput = Type.Object({ taskId: Type.String(), disposition: Type.Union([Type.Literal("handled"), Type.Literal("queued")]) });
 const ScheduleOutput = Type.Object({
   scheduleId: Type.String(), name: Type.String(), cwd: Type.String(),
-  task: Type.Object({ ...TaskProperties, webTools: Type.Optional(Type.Array(Type.String(), { maxItems: COORDINATION_LIMITS.maxWebTools })), prompt: Type.String(), name: Type.String(), model: Model, cwd: Type.String() }),
+  task: Type.Object({ ...TaskProperties, prompt: Type.String(), name: Type.String(), model: Model, cwd: Type.String() }),
   trigger: Type.Union([
     Type.Object({ type: Type.Literal("at"), at: Type.Number() }),
     Type.Object({ type: Type.Literal("interval"), intervalMs: Type.Number(), anchor: Type.Number() }),
@@ -302,7 +302,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     });
   }
 
-  register("rpc_subagents_run", "RPC task", "Run an independent real Pi RPC subprocess. Default sync waits for settled; async=true detaches after acceptance and wakes the parent once when the task finishes unless a tool result already returned its terminal status. Specify model.provider/id or inherit the current model explicitly. Optional tools replaces the default child execution list with plain names or adjusts it with +name/-name entries, and naming an installed web tool loads web support for that tool only, with no sandbox guarantee. Optional session continues a managed completed session and is mutually exclusive with context. Fork captures the current branch now. No worktree isolation.", RunParams, TaskOutput,
+  register("rpc_subagents_run", "RPC task", "Run an independent real Pi RPC subprocess. Default sync waits for settled; async=true detaches after acceptance and wakes the parent once when the task finishes unless a tool result already returned its terminal status. Specify model.provider/id or inherit the current model explicitly. Optional tools replaces the default child execution list with plain names or adjusts it with +name/-name entries and never names a web tool. Optional webAccess loads every enabled web tool from the installed pi-web-access, with no sandbox guarantee. Optional session continues a managed completed session and is mutually exclusive with context. Fork captures the current branch now. No worktree isolation.", RunParams, TaskOutput,
     async (input, signal, ctx) => {
       const captured = capture(input, ctx);
       captured.spec.cwd = await canonicalCwd(captured.spec.cwd);
@@ -331,7 +331,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
   register("rpc_subagents_view", "RPC viewer", "Open an on-demand read-only Herdr viewer of the same task event log. Requires HERDR_ENV=1 and an explicit caller pane or this process's HERDR_PANE_ID. Never starts another Pi. Returns a standalone viewer command if unavailable.",
     Type.Object({ taskId: Type.String(), callerPaneId: Type.Optional(Type.String()), direction: Type.Optional(Type.Union([Type.Literal("right"), Type.Literal("down")])) }), ViewOutput,
     async ({ taskId, callerPaneId, direction }) => (await app()).view(taskId, callerPaneId, direction));
-  register("rpc_subagents_schedule_create", "Create RPC schedule", "Persist one local task schedule for its cwd. One trigger only: zoned ISO or +duration at, interval every, or five-field cron with explicit IANA timezone. Fork snapshot is captured once now, not at fire time. Resolved execution tools and web tools persist and are reused at every fire. No offline runs or catch-up.",
+  register("rpc_subagents_schedule_create", "Create RPC schedule", "Persist one local task schedule for its cwd. One trigger only: zoned ISO or +duration at, interval every, or five-field cron with explicit IANA timezone. Fork snapshot is captured once now, not at fire time. Resolved execution tools and webAccess persist and are reused at every fire. No offline runs or catch-up.",
     Type.Object({ name: Type.Optional(Type.String({ maxLength: 160 })), task: RunParams, trigger: Type.Union([
       Type.Object({ type: Type.Literal("at"), at: Type.String() }, { additionalProperties: false }),
       Type.Object({ type: Type.Literal("interval"), every: Type.String() }, { additionalProperties: false }),

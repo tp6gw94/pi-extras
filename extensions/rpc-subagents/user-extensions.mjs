@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 export const EXCLUDED_EXTENSION_IDS = Object.freeze(["pi-extras/rpc-subagents", "pi-extras/annotation", "pi-extras/ux", "pi-extras/hooks"]);
 
@@ -9,6 +9,17 @@ function packageName(root) {
     return typeof manifest.name === "string" ? manifest.name : undefined;
   } catch {
     return undefined;
+  }
+}
+
+export function owningPackageName(path) {
+  let current = path;
+  while (true) {
+    const name = packageName(current);
+    if (name !== undefined) return name;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
   }
 }
 

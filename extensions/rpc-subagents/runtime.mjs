@@ -4,10 +4,10 @@ import { join, resolve, dirname, relative, isAbsolute } from "node:path";
 import { readJSON } from "./store.mjs";
 import { writeChildSession } from "./snapshot.mjs";
 import { boundedInteger, normalizeTools } from "./domain.mjs";
-import { readWebCatalog, WEB_APPROVED_ENV } from "./web-policy.mjs";
-import { resolveWebLaunch } from "./capability.mjs";
+import { readWebCatalog } from "./web-policy.mjs";
+import { resolveWebTools } from "./capability.mjs";
 import { PARENT_TOOL_NAME } from "./coordination.mjs";
-import { guardAutoExtensions } from "./user-extensions.mjs";
+import { guardAutoExtensions, owningPackageName } from "./user-extensions.mjs";
 
 export function resolveCliEntrypoint(packageDir, argvEntry = process.argv[1]) {
   const root = realpathSync(packageDir);
@@ -53,7 +53,7 @@ export function providerExtensionPaths({ extensionDir, configDir = extensionDir,
     if (path === realpathSync(extensionDir)) throw new Error("RPC subagents cannot bootstrap itself in a child");
     return path;
   });
-  return [...new Set([...auto.kept, ...paths])];
+  return [...new Set([...auto.kept, ...paths])].filter((path) => owningPackageName(path) !== "pi-web-access");
 }
 
 export async function canonicalCwd(cwd) {
@@ -64,6 +64,7 @@ export async function canonicalCwd(cwd) {
 
 export const CHILD_BINDING_ENV = Object.freeze({
   flag: "RPC_SUBAGENTS_CHILD",
+  webTools: "RPC_SUBAGENTS_WEB_TOOLS",
   taskId: "RPC_SUBAGENTS_TASK_ID",
   ownerId: "RPC_SUBAGENTS_OWNER_ID",
   nonce: "RPC_SUBAGENTS_NONCE",
@@ -93,9 +94,6 @@ function resolveSessionFile(spec, session, directory) {
   if (!existsSync(file) || !statSync(file).isFile()) throw new Error(`Owned resume session file is unavailable: ${file}`);
   return file;
 }
-
-export const WEB_SOURCE_ENV = "RPC_SUBAGENTS_WEB_SOURCE";
-export const WEB_INVENTORY_EVENT = "rpc-subagents:web-inventory:v1";
 
 export function resolveWebEntrypoint(agentDir) {
   try {
@@ -130,38 +128,28 @@ export function createTaskPreparer({ extensionDir, configDir = extensionDir, con
     const binding = resolveLaunchBinding({ taskId, ownerId, nonce });
     const tools = normalizeTools(spec.tools);
     const sessionFile = resolveSessionFile(spec, session, directory);
+    const webTools = spec.webAccess ? resolveWebTools(spec, readWebCatalog()) : [];
+    const webSource = spec.webAccess ? resolveWebEntrypoint(agentDir) : undefined;
     if (spec.session === undefined) {
       await writeChildSession(sessionFile, { cwd: spec.cwd, template: spec.context === "fork" ? template : undefined });
     }
-    if (!Array.isArray(spec.webTools)) throw new Error("Task specification is missing resolved web tools");
-    const launch = spec.webTools.length === 0
-      ? undefined
-      : resolveWebLaunch({ tools, webTools: spec.webTools, webToolSlots: spec.webToolSlots }, readWebCatalog());
-    const webSource = launch ? resolveWebEntrypoint(agentDir) : undefined;
     const args = ["--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
       "--provider", spec.model.provider, "--model", spec.model.id, "--thinking", spec.thinking,
       "--session", sessionFile, "--session-dir", dirname(sessionFile), "--name", spec.name,
-      "--tools", [...tools, PARENT_TOOL_NAME, ...(launch ? launch.approved : [])].join(",")];
+      "--tools", [...tools, PARENT_TOOL_NAME, ...webTools].join(",")];
     if (tools.includes("codemode")) args.push("--extension", "builtin:codemode");
-    if (webSource) args.push("--extension", join(extensionDir, "web.ts"));
+    if (webSource) args.push("--extension", webSource);
     args.push("--extension", bridgeExtension);
     for (const path of providers) args.push("--extension", path);
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith("RPC_SUBAGENTS_")) delete env[key];
-    if (webSource) {
-      env[WEB_SOURCE_ENV] = webSource;
-      env[WEB_APPROVED_ENV] = JSON.stringify({
-        functional: launch.functional,
-        family: launch.family,
-        loader: launch.loader,
-      });
-    }
+    if (webSource) env[CHILD_BINDING_ENV.webTools] = webTools.join(",");
     if (binding) {
       env[CHILD_BINDING_ENV.taskId] = binding.taskId;
       env[CHILD_BINDING_ENV.ownerId] = binding.ownerId;
       env[CHILD_BINDING_ENV.nonce] = binding.nonce;
       env[CHILD_BINDING_ENV.async] = spec.async ? "1" : "0";
     }
-    return { cliPath, cwd: spec.cwd, sessionFile, args, env, binding, webTools: launch ? launch.approved : [], commandTimeoutMs: config.commandTimeoutMs };
+    return { cliPath, cwd: spec.cwd, sessionFile, args, env, binding, webTools, commandTimeoutMs: config.commandTimeoutMs };
   };
 }

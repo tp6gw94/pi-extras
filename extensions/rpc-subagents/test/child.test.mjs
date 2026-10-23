@@ -25,14 +25,22 @@ const toolInventory = [
 const activeTools = ["read", "bash", "codemode", PARENT_TOOL_NAME];
 
 function fakePi() {
-  const state = { tools: new Map(), commands: new Map(), events: [], allTools: toolInventory, active: activeTools };
+  const state = { tools: new Map(), commands: new Map(), events: [], handlers: new Map(), allTools: toolInventory, active: activeTools };
   return {
     state,
     registerTool(definition) { state.tools.set(definition.name, definition); },
     registerCommand(name, definition) { state.commands.set(name, definition); },
-    on(event) { state.events.push(event); return () => {}; },
+    on(event, handler) {
+      state.events.push(event);
+      const list = state.handlers.get(event) ?? [];
+      list.push(handler);
+      state.handlers.set(event, list);
+      return () => {};
+    },
+    async fire(event, ctx) { for (const handler of state.handlers.get(event) ?? []) await handler({}, ctx); },
     getAllTools() { return state.allTools; },
     getActiveTools() { return state.active; },
+    setActiveTools(names) { state.active = names; },
   };
 }
 
@@ -79,7 +87,7 @@ test("the bridge registers only under a complete explicit child launch binding",
   assert.ok(bound.state.commands.has(BOOTSTRAP_COMMAND_NAME));
   assert.deepEqual(bound.state.events, []);
 
-  assert.deepEqual(readLaunchBinding(launchEnv()), { binding, asynchronous: true });
+  assert.deepEqual(readLaunchBinding(launchEnv()), { binding, asynchronous: true, webTools: [] });
   assert.equal(readLaunchBinding(launchEnv({ [CHILD_BINDING_ENV.async]: "0" })).asynchronous, false);
   assert.equal(readLaunchBinding({}), undefined);
   assert.equal(readLaunchBinding(launchEnv({ [CHILD_BINDING_ENV.nonce]: "" })), undefined);
@@ -100,7 +108,52 @@ test("the bootstrap command emits a verifiable inventory without a model call or
   assert.equal(collectToolInventory(pi).exposures.codemode, "model-only");
   assert.deepEqual(verifyCapabilities(["read", "bash", "codemode"], [], envelope.inventory).reachable, ["bash", "codemode", "read", PARENT_TOOL_NAME]);
   assert.throws(() => verifyCapabilities(["read", "bash"], [], envelope.inventory), /unexpected \[codemode\]/);
+  assert.equal(Object.hasOwn(envelope.inventory, "webTools"), false);
   assert.deepEqual(pi.state.events, []);
+});
+
+test("web access opts the bridge into inventory refresh after bootstrap and only on change", async () => {
+  const ctx = fakeContext();
+  const plain = bridge();
+  await plain.state.commands.get(BOOTSTRAP_COMMAND_NAME).handler("", ctx);
+  await plain.fire("tool_result", ctx);
+  assert.deepEqual(plain.state.events, []);
+  assert.equal(ctx.notifications.length, 1);
+
+  const webPi = bridge(launchEnv({ [CHILD_BINDING_ENV.webTools]: "web_search,web_enable" }));
+  assert.deepEqual(webPi.state.events, ["session_start", "session_tree", "tool_result", "before_agent_start"]);
+  assert.deepEqual(readLaunchBinding(launchEnv({ [CHILD_BINDING_ENV.webTools]: "web_search,web_enable" })).webTools, ["web_search", "web_enable"]);
+  assert.deepEqual(readLaunchBinding(launchEnv()).webTools, []);
+  const webCtx = fakeContext();
+  await webPi.fire("tool_result", webCtx);
+  await webPi.fire("before_agent_start", webCtx);
+  assert.deepEqual(webCtx.notifications, []);
+  await webPi.state.commands.get(BOOTSTRAP_COMMAND_NAME).handler("", webCtx);
+  assert.equal(webCtx.notifications.length, 1);
+  await webPi.fire("before_agent_start", webCtx);
+  assert.equal(webCtx.notifications.length, 1);
+  webPi.state.allTools = [...toolInventory, { name: "web_search", exposure: "direct" }];
+  webPi.state.active = [...activeTools, "web_search"];
+  await webPi.fire("tool_result", webCtx);
+  assert.equal(webCtx.notifications.length, 2);
+  const refreshed = decodeCoordinationEnvelope(webCtx.notifications[1], binding).inventory;
+  assert.equal(refreshed.registered.includes("web_search"), true);
+  assert.equal(Object.hasOwn(refreshed, "webTools"), false);
+  await webPi.fire("tool_result", webCtx);
+  assert.equal(webCtx.notifications.length, 2);
+});
+
+test("web session handlers restore a reachable loader or the functional tools", async () => {
+  const dynamic = bridge(launchEnv({ [CHILD_BINDING_ENV.webTools]: "web_search,web_enable" }));
+  await dynamic.fire("session_start", fakeContext());
+  assert.deepEqual(dynamic.state.active, [...activeTools, "web_enable"]);
+  dynamic.state.active = [...activeTools, "web_search"];
+  await dynamic.fire("session_tree", fakeContext());
+  assert.deepEqual(dynamic.state.active, [...activeTools, "web_search"]);
+
+  const eager = bridge(launchEnv({ [CHILD_BINDING_ENV.webTools]: "web_search,web_tools" }));
+  await eager.fire("session_tree", fakeContext());
+  assert.deepEqual(eager.state.active, [...activeTools, "web_search", "web_tools"]);
 });
 
 test("report emits one report envelope and returns after emission", async () => {

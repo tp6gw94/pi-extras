@@ -29,7 +29,7 @@ async function setup(t, overrides = {}) {
     if (session.kind === "resume") sessionId = JSON.parse((await readFile(sessionFile, "utf8")).split("\n")[0]).id;
     else ({ sessionId } = await writeChildSession(sessionFile, { cwd: spec.cwd, template }));
     sessions.set(taskId, { sessionFile, sessionId });
-    return { cliPath: "/installed/pi", args: [], cwd: spec.cwd, sessionFile, binding: { taskId, ownerId, nonce } };
+    return { cliPath: "/installed/pi", args: [], cwd: spec.cwd, sessionFile, binding: { taskId, ownerId, nonce }, webTools: [] };
   };
   const { prepare: providedPrepare, fakeOptions, transportOptions, ...managerOptions } = overrides;
   const prepare = providedPrepare ? (spec, context) => providedPrepare(spec, context, basePrepare) : basePrepare;
@@ -477,13 +477,13 @@ test("pending limit bounds pending requests as well as reports", async (t) => {
 });
 
 test("controlled web activation refreshes the public and persisted capability snapshot", async (t) => {
+  const expectedWebTools = ["fetch_content", "web_enable"];
   const registered = ["read", "fetch_content", "web_enable", "rpc_subagents_parent"];
   const active = ["read", "web_enable", "rpc_subagents_parent"];
   const inventory = { registered, active, declared: active, callable: ["read", "web_enable"],
-    exposures: { read: "direct", fetch_content: "direct", web_enable: "direct", rpc_subagents_parent: "model-only" },
-    webTools: ["fetch_content", "web_enable"] };
-  const { fleet, children } = await setup(t, { prepare: async (spec, context, base) => ({ ...(await base(spec, context)), webTools: ["fetch_content", "web_enable"] }), fakeOptions: { inventory } });
-  const accepted = await fleet.run(taskSpec({ tools: ["read"], webTools: ["fetch_content"], webAccess: true }));
+    exposures: { read: "direct", fetch_content: "direct", web_enable: "direct", rpc_subagents_parent: "model-only" } };
+  const { fleet, children } = await setup(t, { prepare: async (spec, context, base) => ({ ...(await base(spec, context)), webTools: expectedWebTools }), fakeOptions: { inventory } });
+  const accepted = await fleet.run(taskSpec({ tools: ["read"], webAccess: true }));
   await running(fleet, accepted.taskId);
   assert.equal((await fleet.status(accepted.taskId)).capabilities.reachable.includes("fetch_content"), false);
   const enabled = { ...inventory, active: registered, declared: registered, callable: ["read", "fetch_content", "web_enable"] };
@@ -493,28 +493,33 @@ test("controlled web activation refreshes the public and persisted capability sn
   const result = await fleet.wait(accepted.taskId);
   assert.equal(result.status, "completed");
   assert.equal(result.webAccess, true);
-  assert.deepEqual(result.webTools, ["fetch_content"]);
+  assert.equal(Object.hasOwn(result, "webTools"), false);
   assert.ok(result.capabilities.reachable.includes("fetch_content"));
-  assert.deepEqual((await fleet.result(accepted.taskId)).capabilities.webTools, ["fetch_content", "web_enable"]);
+  assert.deepEqual((await fleet.result(accepted.taskId)).capabilities.reachable, ["fetch_content", "read", "rpc_subagents_parent", "web_enable"]);
 });
 
-test("web refresh rejects a substituted family or an unrelated reachable tool", async (t) => {
-  const inventory = { registered: ["read", "fetch_content", "rpc_subagents_parent"],
-    active: ["read", "fetch_content", "rpc_subagents_parent"], declared: ["read", "fetch_content", "rpc_subagents_parent"],
-    callable: ["read", "fetch_content"], exposures: { read: "direct", fetch_content: "direct", rpc_subagents_parent: "model-only" },
-    webTools: ["fetch_content"] };
-  for (const familyChanged of [false, true]) {
-    const { fleet, children } = await setup(t, { prepare: async (spec, context, base) => ({ ...(await base(spec, context)), webTools: ["fetch_content"] }), fakeOptions: { inventory } });
-    const accepted = await fleet.run(taskSpec({ tools: ["read"], webTools: ["fetch_content"], webAccess: true }));
+test("web refresh rejects a missing expected tool, an unrelated reachable tool and a changed exposure", async (t) => {
+  const expectedWebTools = ["fetch_content", "web_enable"];
+  const inventory = { registered: ["read", "fetch_content", "web_enable", "rpc_subagents_parent"],
+    active: ["read", "web_enable", "rpc_subagents_parent"], declared: ["read", "web_enable", "rpc_subagents_parent"],
+    callable: ["read", "web_enable"],
+    exposures: { read: "direct", fetch_content: "direct", web_enable: "direct", rpc_subagents_parent: "model-only" } };
+  const cases = [
+    [{ ...inventory, registered: ["read", "web_enable", "rpc_subagents_parent"],
+      exposures: { read: "direct", web_enable: "direct", rpc_subagents_parent: "model-only" } }, /Web tools must stay registered: fetch_content/],
+    [{ ...inventory, registered: [...inventory.registered, "unrelated"], active: [...inventory.active, "unrelated"],
+      declared: [...inventory.declared, "unrelated"], callable: [...inventory.callable, "unrelated"],
+      exposures: { ...inventory.exposures, unrelated: "direct" } }, /unexpected \[unrelated\]/],
+    [{ ...inventory, exposures: { ...inventory.exposures, fetch_content: "model-only" } }, /Web tools must retain direct exposure: fetch_content/],
+  ];
+  for (const [updated, error] of cases) {
+    const { fleet, children } = await setup(t, { prepare: async (spec, context, base) => ({ ...(await base(spec, context)), webTools: expectedWebTools }), fakeOptions: { inventory } });
+    const accepted = await fleet.run(taskSpec({ tools: ["read"], webAccess: true }));
     await running(fleet, accepted.taskId);
-    const updated = { ...inventory, registered: [...inventory.registered, "unrelated"],
-      active: [...inventory.active, "unrelated"], declared: [...inventory.declared, "unrelated"],
-      callable: [...inventory.callable, "unrelated"], exposures: { ...inventory.exposures, unrelated: "direct" },
-      webTools: familyChanged ? [...inventory.webTools, "unrelated"] : inventory.webTools };
     children[0].notifyInventory(updated);
     const result = await fleet.wait(accepted.taskId);
     assert.equal(result.status, "failed");
-    assert.match(result.error, familyChanged ? /family changed/ : /unexpected \[unrelated\]/);
+    assert.match(result.error, error);
   }
 });
 

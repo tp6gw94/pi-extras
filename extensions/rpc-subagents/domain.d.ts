@@ -10,8 +10,6 @@ export type TaskSpec = {
   model: ModelSelection;
   thinking: ThinkingLevel;
   tools: string[];
-  webTools: string[];
-  webToolSlots?: Record<string, string>;
   webAccess: boolean;
   async: boolean;
   timeoutMs: number;
@@ -47,7 +45,6 @@ export type TaskResult = {
   model: ModelSelection;
   thinking?: ThinkingLevel;
   webAccess?: boolean;
-  webTools?: string[];
   timeoutMs?: number;
   cwd: string;
   status: TaskState["status"];
