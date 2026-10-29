@@ -194,7 +194,9 @@ class InlineSkillsEditor extends CustomEditor {
 		const lines = this.getLines();
 		const cursor = this.getCursor();
 		const text = lines.join("\n");
-		if (/^\s*[/!]/.test(text)) {
+		const leadingToken = text.trimStart().split(/\s/, 1)[0];
+		const startsCommand = leadingToken.startsWith("!") || /^\/[^/]*$/.test(leadingToken);
+		if (startsCommand) {
 			const nativeSkillName = /^\/skill:([^ \t\r\n]+) /.exec(text)?.[1];
 			if (!nativeSkillName || !this.catalog().has(nativeSkillName)) return null;
 		}
