@@ -240,6 +240,33 @@ const leadingEditor = leadingApp.editor;
 leadingEditor.setText("/how");
 check("leading slash stays native", !leadingEditor.render(120).some((line) => line.includes("how fixture")));
 
+const leadingPathApp = harness(commands);
+const leadingPathEditor = leadingPathApp.editor;
+leadingPathEditor.handleInput("\x1b[200~/var/folders/T/rex-clipboard-X.png\x1b[201~");
+leadingPathEditor.handleInput(" why /how");
+const leadingPathPopup = leadingPathEditor.render(120).some((line) => line.includes("how fixture"));
+check("draft starting with absolute path offers inline suggestions", leadingPathPopup);
+if (leadingPathPopup) {
+	leadingPathEditor.handleInput("\t");
+	leadingPathEditor.handleInput("\r");
+	const leadingPathResult = await leadingPathApp.runInput(leadingPathApp.submits.at(-1));
+	check(
+		"draft starting with absolute path attaches selected skill",
+		leadingPathResult.action === "transform" && leadingPathResult.text.includes(HOW_PATH),
+		JSON.stringify(leadingPathResult),
+	);
+}
+
+const leadingCommandApp = harness(commands);
+const leadingCommandEditor = leadingCommandApp.editor;
+leadingCommandEditor.setText("/reload /ho");
+check("leading command name keeps inline suggestions off", !leadingCommandEditor.render(120).some((line) => line.includes("how fixture")));
+
+const leadingBangApp = harness(commands);
+const leadingBangEditor = leadingBangApp.editor;
+leadingBangEditor.setText("!ls /ho");
+check("leading bang keeps inline suggestions off", !leadingBangEditor.render(120).some((line) => line.includes("how fixture")));
+
 const leadingNativeApp = harness(commands);
 const leadingNativeEditor = leadingNativeApp.editor;
 leadingNativeEditor.setText("/skill:how use /wh");
