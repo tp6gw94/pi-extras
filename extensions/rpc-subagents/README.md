@@ -2,7 +2,7 @@
 
 這份指南供已使用 Pi、想管理子代理任務的使用者閱讀。此擴充功能在主 Pi 程序內管理獨立的 `pi --mode rpc` 子程序，沒有 SDK 執行或備援。
 
-已實測同步與背景任務、codemode chain 與平行、一般 fork、排程觸發與中止，以及同行程 fleet UI。Herdr 可開啟執行中任務的唯讀 viewer，重播並追蹤同一份 RPC 事件，第二次開啟會重用 pane 且不搶焦點。本文件不重複列出可能過期的測試總數。
+已實測同步與背景任務、codemode chain 與平行、一般 fork、排程觸發與中止，以及同行程 fleet UI。Herdr 與 Rex 可開啟執行中任務的唯讀 viewer，重播並追蹤同一份 RPC 事件，第二次開啟會重用 pane 且不搶焦點。本文件不重複列出可能過期的測試總數。
 
 ## 載入擴充功能
 
@@ -279,11 +279,13 @@ return await tools.rpc_subagents_schedule_cancel({ scheduleId, abortRunning: tru
 
 ## 開啟唯讀檢視器
 
-在 Herdr 中執行 `/rpc-subagents-view <task-id>`，或在任務清單按 `v`。檢視器以獨立 Node 程序重播並追蹤該任務的 `events.jsonl`，不重新執行模型。
+在 Herdr 或 Rex 中執行 `/rpc-subagents-view <task-id>`，或在任務清單按 `v`。檢視器以獨立 Node 程序重播並追蹤該任務的 `events.jsonl`，不重新執行模型。
 
 Herdr opener 要求 `HERDR_ENV=1`。它保存呼叫者的 `HERDR_PANE_ID`，只在身分未改變時使用已查驗的 `pane split --current ... --no-focus`。不省略 target，不追隨 UI 焦點，也不關閉其他 pane。已建立且仍存在的 pane 才能重用。
 
 自動右側或下方分割讀取 `pane layout --pane <saved-id>` 回應中的 `result.layout.panes[]`，以 `pane_id` 找到呼叫者並使用 `rect.width`／`rect.height`；亦相容舊的 geometry 格式。此形狀與 opener 已在 Herdr 0.9.3 實測，首次回傳 `opened`，再次開啟同一任務回傳相同 pane ID 與 `reused: true`。若自動判斷失敗，可明確選擇方向，仍不得指定另一個未查驗的 caller。
+
+Rex opener 在 `HERDR_ENV` 不是 `1` 且有 `REX_SESSION` 時啟用，同時在 Herdr 裡就優先用 Herdr。它以呼叫者的 `REX_BLOCK`（或明確的 `callerPaneId` block ID）為錨點，執行 `rex split -s <session> -b <block> --focus=false --keep-open --shell=none -- node viewer.mjs --events <file>`，不追隨 UI 焦點。未指定方向時，依 `rex block call ... size` 的 `columns`／`rows` 選擇右側或下方。viewer 結束後 pane 仍保留最後輸出；只要 `rex block inspect` 還找得到該 block，再次開啟就重用它，使用者關掉後才另開新 pane。
 
 ```js
 return await tools.rpc_subagents_view({ taskId: "<task-id>", direction: "right" });

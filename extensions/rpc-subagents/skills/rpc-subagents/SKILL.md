@@ -1,6 +1,6 @@
 ---
 name: rpc-subagents
-description: Operate rpc-subagents child tasks through codemode. Use for background tasks, parallel reviews, dependent synchronous chains, pending child dialogs, child asks or reports, native steering, local schedules, cancellation, or same-log Herdr viewers.
+description: Operate rpc-subagents child tasks through codemode. Use for background tasks, parallel reviews, dependent synchronous chains, pending child dialogs, child asks or reports, native steering, local schedules, cancellation, or same-log Herdr or Rex viewers.
 ---
 
 # Operate RPC subagents
