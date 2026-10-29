@@ -116,7 +116,7 @@ test("output command toggles installed TUI preview, resets on session start, and
     resolveCliEntrypoint: () => "/pi/cli", createTaskPreparer: () => () => {},
     FleetManager: class { subscribe() { return () => {}; } list() { return []; } async shutdown() {} },
     ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: async (cwd) => cwd, projectKey: () => "project",
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: async (cwd) => cwd, projectKey: () => "project",
     installFleetWidget: () => { expanded = false; return { toggle() { expanded = !expanded; } }; },
   });
   const command = registry.commandHandlers.get("rpc-subagents-output");
@@ -172,7 +172,7 @@ test("schedule_list on a new cwd reads an unchanged snapshot without constructin
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: class { subscribe() { return () => {}; } list() { return []; } },
     ScheduleManager: class { constructor() { throw new Error("Read-only list tried to create an owner"); } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules });
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules });
   const tool = registry.tools.find((tool) => tool.name === "rpc_subagents_schedule_list");
   assert.equal(tool.annotations.readOnlyHint, true);
   const result = await tool.execute("list", { cwd: directory }, undefined, undefined, { cwd: directory });
@@ -197,7 +197,7 @@ test("schedule_create rejects session continuation before acquiring a schedule o
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: class { subscribe() { return () => {}; } list() { return []; } },
     ScheduleManager: class { constructor() { throw new Error("Schedule owner was created before the session rejection"); } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules });
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules });
   const tool = registry.tools.find((tool) => tool.name === "rpc_subagents_schedule_create");
   await assert.rejects(tool.execute("create", { task: { prompt: "resume", session: "/tmp/owned.jsonl" }, trigger: { type: "at", at: "+10m" } }, undefined, undefined, { cwd: directory }),
     /Schedules cannot continue an existing session/);
@@ -220,7 +220,7 @@ test("pending child asks wake the parent exactly once, forward explicit replies,
   const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules },
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules },
     { sendMessage: (message, options) => { attempts++; if (failNext) throw new Error("session is closing"); messages.push({ message, options }); } });
   const ctx = { mode: "print", hasUI: true, cwd: directory, ui: { notify: (message, type) => notices.push([message, type]) } };
   await registry.handlers.get("session_start")({ type: "session_start" }, ctx);
@@ -300,7 +300,7 @@ test("async run tasks wake the parent once when they finish, while sync and sche
   const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules, normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }) },
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules, normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }) },
     { sendMessage: (message, options) => messages.push({ message, options }) });
   const ctx = { mode: "print", hasUI: false, cwd: directory, model: { provider: "test", id: "model" } };
   await registry.handlers.get("session_start")({ type: "session_start" }, ctx);
@@ -357,7 +357,7 @@ function loadSurvivalFixture(overrides = {}) {
       async shutdown(options) { this.shutdowns.push(options); }
       list() { return []; }
     },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: async (cwd) => cwd, projectKey: (cwd) => cwd,
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: async (cwd) => cwd, projectKey: (cwd) => cwd,
     Error, normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }),
     installFleetWidget: (ctx) => { ctx.widgets.push(["install", "rpc-subagents"]); return { toggle() {} }; },
     ...overrides,
@@ -722,7 +722,7 @@ async function loadWakeFixture(t) {
   const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules, normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }) },
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules, normalizeTaskSpec: (input) => ({ ...input, context: "fresh" }) },
     { sendMessage: (message, options) => messages.push({ message, options }) });
   const ctx = { mode: "print", hasUI: false, cwd: directory, model: { provider: "test", id: "model" } };
   await registry.handlers.get("session_start")({ type: "session_start" }, ctx);
@@ -899,7 +899,7 @@ test("wake bookkeeping follows currently pending request keys on a retained task
   const registry = load({}, { dirname: () => directory, loadLocalConfig: async () => ({}), prepareStorage: async () => ({ dataRoot: join(directory, "data"), configFile: join(directory, "config.json"), configDir: directory, migrated: {} }), getPackageDir: () => directory, getAgentDir: () => directory,
     resolveCliEntrypoint: () => "/pi", createTaskPreparer: () => () => { throw new Error("No task preparation allowed"); },
     FleetManager: FakeFleet, ScheduleManager: class { subscribe() { return () => {}; } async start() {} async shutdown() {} list() { return []; } },
-    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules },
+    HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey, readSchedules },
     { sendMessage: (message) => messages.push(message) });
   const ctx = { mode: "print", hasUI: true, cwd: directory, ui: { notify: () => {} } };
   await registry.handlers.get("session_start")({ type: "session_start" }, ctx);

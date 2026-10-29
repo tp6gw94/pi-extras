@@ -39,7 +39,7 @@ function load({ extensionDir, agentDir = extensionDir, calls, fleetOptions, sche
     createTaskPreparer: track("createTaskPreparer", () => async () => ({})),
     FleetManager: class { constructor(options) { fleetOptions.push(options); } subscribe() { return () => {}; } list() { return []; } shutdown() { return Promise.resolve(); } },
     ScheduleManager: class { constructor(options) { scheduleOptions.push(options); } subscribe() { return () => {}; } async start() {} list() { return []; } },
-    readSchedules: track("readSchedules", () => []), HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), canonicalCwd: realpath, projectKey,
+    readSchedules: track("readSchedules", () => []), HerdrOpener: class {}, createHerdrCliAdapter: () => ({}), RexOpener: class {}, createRexCliAdapter: () => ({}), canonicalCwd: realpath, projectKey,
     installFleetWidget: () => {}, showFleetScreen: async () => {},
     setTimeout: () => { throw new Error("Factory started a timer"); }, setInterval: () => { throw new Error("Factory started a timer"); } });
   factory({ registerTool: (tool) => tools.push(tool), registerCommand: (name) => commands.push(name), on: (name, handler) => { events.push(name); handlers.set(name, handler); } });

@@ -193,7 +193,7 @@ export async function showFleetScreen(ctx: ExtensionContext, model: FleetUIModel
               lines.push((i === index ? theme.fg("accent", "> ") : "  ") + text);
             }
           }
-          lines.push(theme.fg("muted", tab === "task" ? "Tab switch  ↑↓ select or scroll  Enter details  c cancel  v Herdr  r respond  Esc back" : "Tab switch  ↑↓ select or scroll  Enter details  p pause/resume  c cancel  a cancel and abort tasks  Esc back"));
+          lines.push(theme.fg("muted", tab === "task" ? "Tab switch  ↑↓ select or scroll  Enter details  c cancel  v viewer  r respond  Esc back" : "Tab switch  ↑↓ select or scroll  Enter details  p pause/resume  c cancel  a cancel and abort tasks  Esc back"));
           return lines.map((line) => truncateToWidth(line, usable));
         },
         invalidate() {},

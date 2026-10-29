@@ -39,7 +39,7 @@ export class LFDecoder {
 export function childEnvironment(source = process.env) {
   const env = { ...source, RPC_SUBAGENTS_CHILD: "1" };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("HERDR_") || key.startsWith("PI_SUBAGENTS_") || key.startsWith("SUBAGENT_")) delete env[key];
+    if (key.startsWith("HERDR_") || key === "REX_SESSION" || key === "REX_BLOCK" || key.startsWith("PI_SUBAGENTS_") || key.startsWith("SUBAGENT_")) delete env[key];
   }
   return env;
 }
