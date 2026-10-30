@@ -16,7 +16,7 @@ export function viewerCommand({ nodePath = process.execPath, viewerPath, eventFi
 export function splitDirection(geometry) {
   const width = Number(geometry?.width);
   const height = Number(geometry?.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Herdr caller pane geometry is unavailable");
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Caller pane geometry is unavailable");
   return width >= height * 3 ? "right" : "down";
 }
 

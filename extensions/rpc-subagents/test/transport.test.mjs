@@ -71,8 +71,8 @@ test("command timeout and cancellation have finite deadlines with queue clearing
   assert.deepEqual(signals, process.platform === "win32" ? ["SIGTERM", "SIGKILL"] : ["SIGTERM", "SIGKILL", "SIGKILL"]);
 });
 
-test("child environment drops parent Herdr pane and subagent identities", () => {
-  assert.deepEqual(childEnvironment({ PATH: "/bin", HERDR_ENV: "1", HERDR_PANE_ID: "parent", HERDR_SOCKET_PATH: "/socket", PI_SUBAGENTS_RUN_ID: "parent-run", SUBAGENT_TASK: "old" }), { PATH: "/bin", RPC_SUBAGENTS_CHILD: "1" });
+test("child environment drops parent Herdr and Rex pane and subagent identities", () => {
+  assert.deepEqual(childEnvironment({ PATH: "/bin", HERDR_ENV: "1", HERDR_PANE_ID: "parent", HERDR_SOCKET_PATH: "/socket", REX_SESSION: "session:parent", REX_BLOCK: "block:parent", PI_SUBAGENTS_RUN_ID: "parent-run", SUBAGENT_TASK: "old" }), { PATH: "/bin", RPC_SUBAGENTS_CHILD: "1" });
 });
 
 test("transport rejects oversized, malformed, and incomplete stdout records", async () => {

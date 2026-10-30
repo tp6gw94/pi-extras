@@ -107,7 +107,7 @@ Describe `rpc_subagents_view`, then open the requested task's read-only viewer.
 return await tools.rpc_subagents_view({ taskId: "<task-id>", direction: "right" });
 ```
 
-In Herdr, use `/rpc-subagents-view <task-id>` or press `v` in the task list. The viewer replays and follows the task's existing `events.jsonl`. It does not run another model. Herdr opening requires `HERDR_ENV=1` and a verified caller pane. Use the current process's `HERDR_PANE_ID` unless an explicit verified caller is required.
+In Herdr or Rex, use `/rpc-subagents-view <task-id>` or press `v` in the task list. The viewer replays and follows the task's existing `events.jsonl`. It does not run another model. Herdr is used when `HERDR_ENV=1`; otherwise Rex is used when `REX_SESSION` is set. The caller pane defaults to the current process's `HERDR_PANE_ID` or `REX_BLOCK`; pass `callerPaneId` only when an explicit caller is required.
 
 Inspect the returned `status`. For `opened`, retain `paneId` and `reused`. For `unavailable`, report `error` and offer the returned quoted standalone `command`. Use that command in a normal terminal to read the same log. Closing the viewer leaves the task running.
 

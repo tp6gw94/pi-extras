@@ -13,6 +13,7 @@ import { canonicalCwd, CHILD_BINDING_ENV, createTaskPreparer, loadLocalConfig, r
 import { userExtensionPaths } from "./user-extensions.mjs";
 import { prepareStorage } from "./storage.mjs";
 import { HerdrOpener, createHerdrCliAdapter, viewerCommand } from "./herdr.mjs";
+import { RexOpener, createRexCliAdapter } from "./rex.mjs";
 import { installFleetWidget, showFleetScreen, type FleetUIModel, type FleetWidgetController } from "./ui.ts";
 import { safeText } from "./viewer.mjs";
 import type { TaskSpec, TaskResult, ScheduleRecord, TaskState } from "./domain.d.ts";
@@ -196,7 +197,9 @@ async function initialize(h: FleetHost, extensionDir: string) {
   };
   const watchCompletion = (taskId: string) => { completions.set(taskId, undefined); captureCompletions(); };
   subscriptions.push(fleet.subscribe(notify), fleet.subscribe(() => notifyCoordination(true)), fleet.subscribe(captureCompletions));
-  const opener = new HerdrOpener({ viewerPath: join(extensionDir, "viewer.mjs"), adapter: createHerdrCliAdapter() });
+  const viewerPath = join(extensionDir, "viewer.mjs");
+  const herdr = new HerdrOpener({ viewerPath, adapter: createHerdrCliAdapter() });
+  const rex = new RexOpener({ viewerPath, adapter: createRexCliAdapter() });
   const model: FleetUIModel = {
     tasks: () => fleet.list(), schedules: () => [...schedules.values()].flatMap((manager) => manager.list()),
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -223,9 +226,11 @@ async function initialize(h: FleetHost, extensionDir: string) {
   }
   async function view(taskId: string, callerPaneId?: string, direction?: "right" | "down") {
     const task = await fleet.status(taskId);
-    const command = viewerCommand({ viewerPath: join(extensionDir, "viewer.mjs"), eventFile: task.eventFile });
+    const command = viewerCommand({ viewerPath, eventFile: task.eventFile });
     try {
-      const result = await opener.open(task, { callerPaneId: callerPaneId ?? process.env.HERDR_PANE_ID, direction });
+      const result = process.env.HERDR_ENV !== "1" && process.env.REX_SESSION
+        ? await rex.open(task, { callerPaneId: callerPaneId ?? process.env.REX_BLOCK, direction })
+        : await herdr.open(task, { callerPaneId: callerPaneId ?? process.env.HERDR_PANE_ID, direction });
       return { ...result, status: "opened" as const };
     } catch (error) {
       return { taskId, status: "unavailable" as const, command, error: error instanceof Error ? error.message : String(error) };
@@ -328,7 +333,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     async ({ taskId, requestId, ...answer }) => (await app()).fleet.reply(taskId, requestId, answer));
   register("rpc_subagents_steer", "Steer RPC task", "Send a native RPC steer to an accepted live task that is streaming. The handled/queued receipt only means the child accepted the message, not that it consumed it, and steering cannot unblock a waiting ask. This is not a follow-up prompt and has no retry.", SteerParams, SteerOutput,
     async ({ taskId, message }) => (await app()).fleet.steer(taskId, message));
-  register("rpc_subagents_view", "RPC viewer", "Open an on-demand read-only Herdr viewer of the same task event log. Requires HERDR_ENV=1 and an explicit caller pane or this process's HERDR_PANE_ID. Never starts another Pi. Returns a standalone viewer command if unavailable.",
+  register("rpc_subagents_view", "RPC viewer", "Open an on-demand read-only Herdr or Rex viewer pane of the same task event log. Uses Herdr when HERDR_ENV=1, otherwise Rex when REX_SESSION is set. callerPaneId defaults to this process's HERDR_PANE_ID or REX_BLOCK. Never starts another Pi. Returns a standalone viewer command if unavailable.",
     Type.Object({ taskId: Type.String(), callerPaneId: Type.Optional(Type.String()), direction: Type.Optional(Type.Union([Type.Literal("right"), Type.Literal("down")])) }), ViewOutput,
     async ({ taskId, callerPaneId, direction }) => (await app()).view(taskId, callerPaneId, direction));
   register("rpc_subagents_schedule_create", "Create RPC schedule", "Persist one local task schedule for its cwd. One trigger only: zoned ISO or +duration at, interval every, or five-field cron with explicit IANA timezone. Fork snapshot is captured once now, not at fire time. Resolved execution tools and webAccess persist and are reused at every fire. No offline runs or catch-up.",
@@ -410,7 +415,7 @@ export default function rpcSubagents(pi: ExtensionAPI) {
       await showFleetScreen(ctx, current.model, {
         cancelTask: (id) => current.fleet.cancel(id), respond: (id, dialogId, answer) => current.fleet.respond(id, dialogId, answer),
         reply: (id, requestId, answer) => current.fleet.reply(id, requestId, answer),
-        viewTask: async (task: TaskResult) => { const result = await current.view(task.taskId); ctx.ui.notify(safeText(result.status === "opened" ? `Opened viewer ${result.paneId}` : `Could not open Herdr. ${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning"); },
+        viewTask: async (task: TaskResult) => { const result = await current.view(task.taskId); ctx.ui.notify(safeText(result.status === "opened" ? `Opened viewer ${result.paneId}` : `Could not open viewer. ${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning"); },
         pauseSchedule: (id) => scheduleOwner(id).pause(id), resumeSchedule: (id) => scheduleOwner(id).resume(id),
         cancelSchedule: (id, abortRunning) => scheduleOwner(id).cancel(id, { abortRunning }),
       });
@@ -425,14 +430,14 @@ export default function rpcSubagents(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("rpc-subagents-view", {
-    description: "Open a read-only Herdr viewer for an RPC task",
+    description: "Open a read-only Herdr or Rex viewer for an RPC task",
     handler: async (args, ctx) => {
       const current = await app();
       const requested = args.trim();
       const matches = current.fleet.list().filter((task: TaskResult) => task.taskId.startsWith(requested));
       const id = matches.length === 1 ? matches[0].taskId : requested;
       const result = await current.view(id);
-      if (ctx.hasUI) ctx.ui.notify(safeText(result.status === "opened" ? `Opened viewer ${result.paneId}` : `Could not open Herdr. ${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning");
+      if (ctx.hasUI) ctx.ui.notify(safeText(result.status === "opened" ? `Opened viewer ${result.paneId}` : `Could not open viewer. ${result.error}\n${result.command}`), result.status === "opened" ? "info" : "warning");
     },
   });
 }
