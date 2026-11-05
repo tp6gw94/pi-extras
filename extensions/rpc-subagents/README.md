@@ -295,6 +295,8 @@ return await tools.rpc_subagents_view({ taskId: "<task-id>", direction: "right" 
 
 opener 不可用時，回傳 `status: "unavailable"`、原因與已 quote 的獨立 viewer 指令。在一般終端執行該指令即可看同一份記錄。關閉 viewer 不會取消任務。較早超過 1 MiB 的記錄會顯示略過提示。viewer 會移除 terminal escape、控制字元及跨 delta 分段的 escape sequence；大型結果或記錄額度耗盡仍有小型終端標記，尾段略過大型終端事件時也會讀取 state.json 確認完成後結束。
 
+輸出到終端時，viewer 以顏色區分區塊；寫入檔案或管線時輸出同樣排版的純文字。工具呼叫以 `▸ <tool>` 開頭，bash 顯示 `$ 指令`、read／write 顯示路徑、edit 顯示 `-`／`+` diff，其他工具列出參數；輸出前加 `│` 邊線，累積型進度只印新增部分，結束時標示 `✓`／`✗` 與超過一秒的耗時。思考內容以 `┊` 標示，子代理回報顯示為 `↑ Report`。`setStatus`、`setWidget` 等狀態更新與協調用的通知不顯示；需要回應的對話框以 `?` 標示。最終結果與最後一段回覆相同時，只顯示 `── Result · <status> ──` 標題。
+
 ## 加入額外 provider bootstrap
 
 這些 bootstrap 來源必須能在不等待啟動期使用者對話的情況下完成 `session_start`。
