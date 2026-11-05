@@ -9,7 +9,7 @@ import { TerminalSanitizer, replayAndFollow } from "../viewer.mjs";
 import { HerdrOpener, viewerCommand, splitDirection, shellQuote, currentPaneSplitArguments, createHerdrCliAdapter, layoutGeometry } from "../herdr.mjs";
 import { eventually } from "./fake-rpc.mjs";
 
-const line = (source, event) => JSON.stringify({ version: 1, seq: 1, at: 0, taskId: "task", source, event }) + "\n";
+const line = (source, event, at = 0) => JSON.stringify({ version: 1, seq: 1, at, taskId: "task", source, event }) + "\n";
 
 function stubHerdrExec(errors = {}) {
   const env = { HERDR_ENV: "1", HERDR_PANE_ID: "caller" };
@@ -53,9 +53,35 @@ test("viewer replays and follows the exact log, showing task/model/tools/text/re
     line("rpc", { type: "tool_execution_end", toolCallId: "call", toolName: "read", result: { content: [{ type: "text", text: "output" }] }, isError: false }) +
     line("fleet", { type: "task_result", task: { status: "completed", text: "final\x1b]52;c;clipboard\x07answer", state: { status: "completed" } } }));
   await following;
-  assert.match(output, /Task task  review/); assert.match(output, /Model test\/model/);
-  assert.match(output, /Hello world\u2028繁體/); assert.match(output, /Tool read call/); assert.match(output, /Tool done read/);
-  assert.match(output, /Result completed\nfinalanswer/); assert.equal(output.includes("\x1b"), false); assert.equal(output.includes("clipboard"), false);
+  assert.match(output, /^review\ntask · test\/model$/m);
+  assert.match(output, /Hello world\u2028繁體/); assert.match(output, /▸ read\n  file\n│ output\n✓ read\n/);
+  assert.match(output, /Result · completed ──\nfinalanswer/); assert.equal(output.includes("\x1b"), false); assert.equal(output.includes("clipboard"), false);
+});
+
+test("viewer drops status noise, streams tool output once, and colors only when asked", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "rpc-subagents-viewer-pretty-")); t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "events.jsonl");
+  const delta = (type, contentIndex, text) => line("rpc", { type: "message_update", assistantMessageEvent: { type, contentIndex, delta: text } });
+  const progress = (text) => line("rpc", { type: "tool_execution_update", toolCallId: "call", toolName: "bash", partialResult: { content: [{ type: "text", text }] } });
+  await writeFile(file, line("rpc", { type: "message_start", message: { role: "assistant" } }) +
+    delta("thinking_delta", 0, "Plan\n\n") + line("rpc", { type: "extension_ui_request", method: "setStatus", statusKey: "tps", statusText: "noise" }) +
+    delta("thinking_delta", 0, "step") + delta("thinking_end", 0) + delta("text_start", 1) + delta("text_delta", 1, "Running") + delta("text_delta", 1, " tests") +
+    line("rpc", { type: "message_end", message: { role: "assistant" } }) +
+    line("rpc", { type: "extension_ui_request", method: "notify", message: "rpc-subagents-coordination:{}" }) +
+    line("rpc", { type: "extension_ui_request", method: "notify", message: "Rate limited", notifyType: "warning" }) +
+    line("rpc", { type: "tool_execution_start", toolCallId: "call", toolName: "bash", args: { command: "npm test\nnpm run lint", timeout: 60 } }, 1000) +
+    progress("one\n") + progress("one\ntwo\n") +
+    line("rpc", { type: "tool_execution_end", toolCallId: "call", toolName: "bash", result: { content: [{ type: "text", text: "one\ntwo\nthree" }] }, isError: true }, 3500) +
+    line("rpc", { type: "tool_execution_start", toolCallId: "edit", toolName: "edit", args: { path: "a.js", edits: [{ oldText: "old", newText: "new" }] } }) +
+    line("fleet", { type: "coordination_report", report: { message: "halfway" } }) +
+    line("fleet", { type: "task_result", task: { status: "completed", text: "Running tests", state: { status: "completed" } } }));
+  let plain = "";
+  await replayAndFollow(file, { write: async (text) => { plain += text; } });
+  assert.equal(plain, "┊ Plan\n┊ \n┊ step\n\nRunning tests\n\n! Rate limited\n\n▸ bash\n  $ npm test\n    npm run lint\n│ one\n│ two\n│ three\n✗ bash failed · 2.5s\n\n▸ edit\n  a.js\n  - old\n  + new\n\n↑ Report\n  halfway\n\n── Result · completed ──\n");
+  let colored = "";
+  await replayAndFollow(file, { color: true, write: async (text) => { colored += text; } });
+  assert.equal(colored.replace(/\x1b\[[\d;]+m/g, ""), plain);
+  assert.notEqual(colored, plain);
 });
 
 test("viewer bounds replay and reports omitted history while decoding partial live JSONL chunks", async (t) => {
@@ -67,7 +93,7 @@ test("viewer bounds replay and reports omitted history while decoding partial li
   let output = "";
   const controller = new AbortController();
   const tail = replayAndFollow(file, { pollMs: 5, signal: controller.signal, maxReplayBytes: Buffer.byteLength(pending) + 1, write: async (text) => { output += text; } });
-  await eventually(() => output.includes("waiting_input"));
+  await eventually(() => output.includes("● waiting input"));
   assert.match(output, /Skipped the first/); assert.equal(output.includes("omitted old text"), false);
   const next = line("stderr", { type: "stderr", text: "chunked 繁體" }); const bytes = Buffer.from(next);
   await appendFile(file, bytes.subarray(0, bytes.length - 4));
@@ -133,7 +159,7 @@ test("viewer EOF uses terminal snapshot when tail replay skips a giant legacy te
   let output = "";
   await replayAndFollow(file, { pollMs: 5, write: async (text) => { output += text; } });
   assert.match(output, /Skipped the first/);
-  assert.match(output, /Result failed\nsaved final answer/);
+  assert.match(output, /Result · failed ──\nsaved final answer/);
 });
 
 test("viewer sees the bounded terminal marker even when its oversized task_result was skipped", { timeout: 2000 }, async (t) => {
@@ -142,7 +168,7 @@ test("viewer sees the bounded terminal marker even when its oversized task_resul
   await writeFile(file, line("fleet", { type: "task_result", task: { status: "failed", state: { status: "failed" }, error: "繁體".repeat(300000) } }) + line("fleet", { type: "task_terminal", status: "failed" }));
   let output = "";
   await replayAndFollow(file, { write: async (text) => { output += text; } });
-  assert.match(output, /Result failed/);
+  assert.match(output, /Result · failed/);
 });
 
 test("verified Herdr current-pane split refuses changed caller identity and never follows UI focus", async () => {
