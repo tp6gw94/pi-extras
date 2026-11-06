@@ -1,4 +1,5 @@
 import type { Api, Model, TranscriptContext, AssistantMessage, Provider, StreamOptions } from "@earendil-works/pi-ai";
+import type { TurnEndEvent } from "@earendil-works/pi-coding-agent";
 
 type Quota = { resetAt?: number; receivedAt: number };
 type Wire = Record<string, unknown>;
@@ -18,6 +19,20 @@ function epoch(value: unknown): number | undefined {
 	return seconds * 1000;
 }
 
+function unifiedQuota(headers: Headers, now: number): Quota | undefined {
+	const windows = ["", "-5h", "-7d"];
+	const denied = windows.filter(window => {
+		const status = headers.get(`anthropic-ratelimit-unified${window}-status`) ?? "";
+		return ["rejected", "rate_limited"].includes(status);
+	});
+	if (denied.length === 0) return;
+
+	const resetHeaders = denied.map(window => headers.get(`anthropic-ratelimit-unified${window}-reset`));
+	const resets = resetHeaders.map(epoch).filter((value): value is number => value !== undefined);
+	const resetAt = resets.length > 0 ? Math.max(...resets) : undefined;
+	return { resetAt, receivedAt: now };
+}
+
 const parsers: Record<string, (body: Wire, headers: Headers, now: number) => Quota | undefined> = {
 	"openai-codex": (body, headers, now) => {
 		const error = object(body.error ?? object(body.response).error ?? body);
@@ -34,17 +49,7 @@ const parsers: Record<string, (body: Wire, headers: Headers, now: number) => Quo
 	},
 	anthropic: (body, headers, now) => {
 		if (object(body.error).type !== "rate_limit_error") return;
-		const windows = ["", "-5h", "-7d"];
-		const denied = windows.filter(window => {
-			const status = headers.get(`anthropic-ratelimit-unified${window}-status`) ?? "";
-			return ["rejected", "rate_limited"].includes(status);
-		});
-		if (denied.length === 0) return;
-
-		const resetHeaders = denied.map(window => headers.get(`anthropic-ratelimit-unified${window}-reset`));
-		const resets = resetHeaders.map(epoch).filter((value): value is number => value !== undefined);
-		const resetAt = resets.length > 0 ? Math.max(...resets) : undefined;
-		return { resetAt, receivedAt: now };
+		return unifiedQuota(headers, now);
 	},
 	"opencode-go": (body, headers, now) => {
 		if (object(body.error).type !== "GoUsageLimitError") return;
@@ -62,6 +67,18 @@ const parsers: Record<string, (body: Wire, headers: Headers, now: number) => Quo
 
 export class QuotaCapture {
 	readonly evidence = new WeakMap<AssistantMessage, Quota>();
+	private bridgeQuota?: Quota;
+
+	observeBridge(headers: Record<string, string>): void {
+		this.bridgeQuota = unifiedQuota(new Headers(headers), Date.now());
+	}
+
+	bindBridge(message: TurnEndEvent["message"]): void {
+		const quota = this.bridgeQuota;
+		this.bridgeQuota = undefined;
+		if (message.role !== "assistant" || message.provider !== "claude-bridge") return;
+		if (message.stopReason === "error" && quota) this.evidence.set(message, quota);
+	}
 
 	decorate(provider: Provider): Provider {
 		const parser = parsers[provider.id];

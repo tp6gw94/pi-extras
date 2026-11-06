@@ -14,7 +14,11 @@ export default function quotaResume(pi: ExtensionAPI): void {
 		pi.registerProvider(capture.decorate(provider));
 	}
 	pi.on("session_start", (event, ctx) => recovery.open(ctx, event.reason === "fork"));
-	pi.on("turn_end", event => recovery.turn(event));
+	pi.on("after_provider_response", event => capture.observeBridge(event.headers));
+	pi.on("turn_end", event => {
+		capture.bindBridge(event.message);
+		recovery.turn(event);
+	});
 	pi.on("agent_settled", (event, ctx) => recovery.settled(event.aborted, ctx));
 	pi.on("session_compact", event => {
 		if (event.reason === "manual") recovery.compacted();

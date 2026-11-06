@@ -12,7 +12,8 @@ Continue the unfinished task.
 
 ## 支援範圍
 
-- Claude 直連訂閱使用 `anthropic`。擴充功能辨識 `rate_limit_error`，並要求 unified 訂閱配額標頭回報 `rejected` 或 `rate_limited`。不支援 Claude CLI bridge。
+- Claude 直連訂閱使用 `anthropic`。擴充功能辨識 `rate_limit_error`，並要求 unified 訂閱配額標頭回報 `rejected` 或 `rate_limited`。
+- [pi-claude-bridge](https://www.npmjs.com/package/pi-claude-bridge) 使用 `claude-bridge`。bridge 會把 Claude Code 的 `rate_limit_event` 轉成 unified 配額標頭，經由 `after_provider_response` 回報。只有在同一輪回報過 `rejected` 或 `rate_limited` 的 `claude-bridge` 失敗回合，才會被判定為配額耗盡，重設時間取自這些標頭。
 - OpenCode Go 使用 `opencode-go`。擴充功能辨識 `GoUsageLimitError`，並讀取 `Retry-After`。
 - OpenAI Codex 使用 `openai-codex`。擴充功能辨識 HTTP 錯誤和原始串流事件中的 `usage_limit_reached`，並讀取明確的重設時間或剩餘秒數。
 

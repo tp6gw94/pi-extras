@@ -30,7 +30,15 @@ function harness(t, entries = []) {
     emit("agent_settled", { aborted: false });
     return message;
   }
-  return { fail, emit, entries, sent, notices, ctx, providers, commands, escape: () => terminal("\u001b"), busy: value => busy = value };
+  function bridgeTurn({ headers, stop = "error" }) {
+    ctx.model = { ...model, id: "claude-opus-5-5", provider: "claude-bridge", api: "claude-bridge" };
+    if (headers) emit("after_provider_response", { status: 200, headers });
+    const message = { role: "assistant", content: [], api: "claude-bridge", provider: "claude-bridge", model: "claude-opus-5-5", stopReason: stop, timestamp: Date.now() };
+    const origin = `origin-${entries.length}`;
+    entries.push({ type: "message", id: origin, message });
+    emit("turn_end", { message, messageEntryId: origin });
+  }
+  return { fail, bridgeTurn, emit, entries, sent, notices, ctx, providers, commands, escape: () => terminal("\u001b"), busy: value => busy = value };
 }
 
 test("native Go error dispatches exact English once after consume and repeated settlement", async t => {
@@ -157,4 +165,25 @@ test("Claude rejected subscription headers schedule",  async t => {
   await h.fail({ provider: "anthropic", type: "rate_limit_error", headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) } });
   t.mock.timers.tick(10000);
   assert.deepEqual(h.sent, ["Continue the unfinished task."]);
+});
+
+test("Claude bridge rejection reported through provider response schedules", async t => {
+  const h = harness(t);
+  h.bridgeTurn({ headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) } });
+  h.emit("agent_settled", { aborted: false });
+  assert.equal(h.entries.at(-1).data.state, "pending");
+  t.mock.timers.tick(10000);
+  assert.deepEqual(h.sent, ["Continue the unfinished task."]);
+});
+
+test("Claude bridge errors without a rejection in the same turn do not schedule", async t => {
+  const h = harness(t);
+  h.bridgeTurn({});
+  h.bridgeTurn({ headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) }, stop: "toolUse" });
+  h.bridgeTurn({});
+  h.bridgeTurn({ headers: { "anthropic-ratelimit-unified-status": "allowed_warning", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) } });
+  h.emit("agent_settled", { aborted: false });
+  t.mock.timers.tick(20000);
+  assert.deepEqual(h.sent, []);
+  assert.equal(h.entries.some(entry => entry.data), false);
 });

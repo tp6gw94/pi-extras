@@ -12,7 +12,8 @@ The original prompt and completed tool results stay in the conversation. The ext
 
 ## Supported providers
 
-- Direct Claude subscriptions use `anthropic`. The extension recognizes `rate_limit_error` only when the unified subscription quota headers report `rejected` or `rate_limited`. Claude CLI bridges are not supported.
+- Direct Claude subscriptions use `anthropic`. The extension recognizes `rate_limit_error` only when the unified subscription quota headers report `rejected` or `rate_limited`.
+- [pi-claude-bridge](https://www.npmjs.com/package/pi-claude-bridge) uses `claude-bridge`. The bridge reports Claude Code's `rate_limit_event` as unified quota headers through `after_provider_response`. The extension recognizes a failed `claude-bridge` turn only when that turn reported `rejected` or `rate_limited`, and reads the reset time from those headers.
 - OpenCode Go uses `opencode-go`. The extension recognizes `GoUsageLimitError` and reads `Retry-After`.
 - OpenAI Codex uses `openai-codex`. The extension recognizes `usage_limit_reached` in HTTP errors and raw stream events. It reads an explicit reset time or the remaining seconds.
 
