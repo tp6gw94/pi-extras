@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import extension from "../index.ts";
 
-function harness(t, entries = []) {
+async function harness(t, entries = []) {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1800000000000 });
   const handlers = new Map();
   const providers = new Map();
@@ -11,7 +11,7 @@ function harness(t, entries = []) {
   let terminal, busy = false;
   const model = { id: "fixture", provider: "opencode-go", api: "openai-completions", baseUrl: "http://localhost/v1", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const ctx = { mode: "tui", model, ui: { notify: text => notices.push(text), setStatus() {}, onTerminalInput: handler => { terminal = handler; return () => terminal = undefined; } }, sessionManager: { getSessionId: () => "session", getBranch: () => entries }, isIdle: () => !busy, hasPendingMessages: () => false };
-  extension({ registerProvider: p => providers.set(p.id, p), on: (name, fn) => handlers.set(name, fn), registerCommand: (name, command) => commands.set(name, command), appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), sendUserMessage: text => { assert.equal(entries.at(-1).data.state, "consumed"); sent.push(text); } });
+  await extension({ registerProvider: p => providers.set(p.id, p), on: (name, fn) => handlers.set(name, fn), registerCommand: (name, command) => commands.set(name, command), appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), sendUserMessage: text => { assert.equal(entries.at(-1).data.state, "consumed"); sent.push(text); } });
   const emit = (name, event = {}) => handlers.get(name)?.(event, ctx);
   emit("session_start", { reason: "startup" });
   t.after(() => emit("session_shutdown", { reason: "quit" }));
@@ -42,7 +42,7 @@ function harness(t, entries = []) {
 }
 
 test("native Go error dispatches exact English once after consume and repeated settlement", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail();
   assert.equal(h.entries.at(-1).data.state, "pending");
   t.mock.timers.tick(9999);
@@ -55,7 +55,7 @@ test("native Go error dispatches exact English once after consume and repeated s
 
 for (const kind of ["input", "before_agent_start", "user_bash", "session_before_switch", "session_before_fork", "session_before_tree", "escape", "command", "abort", "model"]) {
   test(`${kind} cancels waiting recovery`, async t => {
-    const h = harness(t);
+    const h = await harness(t);
     await h.fail();
     if (kind === "escape") assert.equal(h.escape(), undefined);
     else if (kind === "command") await h.commands.get("quota-resume").handler("cancel", h.ctx);
@@ -69,7 +69,7 @@ for (const kind of ["input", "before_agent_start", "user_bash", "session_before_
 }
 
 for (const reset of [null, "0", "invalid"]) test(`unusable reset ${reset} visibly declines without looping`, async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail({ reset });
   t.mock.timers.tick(100000);
   assert.deepEqual(h.sent, []);
@@ -78,7 +78,7 @@ for (const reset of [null, "0", "invalid"]) test(`unusable reset ${reset} visibl
 });
 
 test("new stale Codex server reset is visible and never dispatches", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail({ provider: "openai-codex", type: "usage_limit_reached", reset: String((Date.now() - 1000) / 1000) });
   t.mock.timers.tick(100000);
   assert.deepEqual(h.sent, []);
@@ -86,7 +86,7 @@ test("new stale Codex server reset is visible and never dispatches", async t => 
 });
 
 test("Claude missing reset is visible while ordinary API rate limits remain excluded", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail({ provider: "anthropic", type: "rate_limit_error", headers: { "anthropic-ratelimit-unified-status": "rate_limited" } });
   assert.match(h.notices.at(-1), /will not resume automatically/);
   await h.fail({ provider: "anthropic", type: "rate_limit_error", headers: { "anthropic-ratelimit-tokens-reset": "2099-01-01T00:00:00Z" } });
@@ -96,7 +96,7 @@ test("Claude missing reset is visible while ordinary API rate limits remain excl
 });
 
 test("overdue reopen dispatches once, consumed reopen never dispatches again", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail();
   h.emit("session_shutdown", { reason: "reload" });
   t.mock.timers.tick(20000);
@@ -110,7 +110,7 @@ test("overdue reopen dispatches once, consumed reopen never dispatches again", a
 });
 
 test("busy expiration waits for settled and long timers are chunked", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail({ reset: "3000000" });
   t.mock.timers.tick(2147483647);
   assert.deepEqual(h.sent, []);
@@ -124,7 +124,7 @@ test("busy expiration waits for settled and long timers are chunked", async t =>
 });
 
 for (const event of ["session_compact", "session_compact_failed"]) test(`${event} resumes overdue recovery without agent_settled`, async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail();
   h.busy(true);
   t.mock.timers.tick(10000);
@@ -138,7 +138,7 @@ for (const event of ["session_compact", "session_compact_failed"]) test(`${event
 });
 
 test("cancellation invalidates deferred manual compaction completion", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail();
   h.busy(true);
   t.mock.timers.tick(10000);
@@ -152,7 +152,7 @@ test("cancellation invalidates deferred manual compaction completion", async t =
 });
 
 test("success replacement and unrelated quota kinds do not schedule", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail({ stop: "stop" });
   await h.fail({ type: "insufficient_quota" });
   t.mock.timers.tick(20000);
@@ -161,14 +161,14 @@ test("success replacement and unrelated quota kinds do not schedule", async t =>
 });
 
 test("Claude rejected subscription headers schedule",  async t => {
-  const h = harness(t);
+  const h = await harness(t);
   await h.fail({ provider: "anthropic", type: "rate_limit_error", headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) } });
   t.mock.timers.tick(10000);
   assert.deepEqual(h.sent, ["Continue the unfinished task."]);
 });
 
 test("Claude bridge rejection reported through provider response schedules", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   h.bridgeTurn({ headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) } });
   h.emit("agent_settled", { aborted: false });
   assert.equal(h.entries.at(-1).data.state, "pending");
@@ -177,7 +177,7 @@ test("Claude bridge rejection reported through provider response schedules", asy
 });
 
 test("Claude bridge errors without a rejection in the same turn do not schedule", async t => {
-  const h = harness(t);
+  const h = await harness(t);
   h.bridgeTurn({});
   h.bridgeTurn({ headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String((Date.now() + 10000) / 1000) }, stop: "toolUse" });
   h.bridgeTurn({});
