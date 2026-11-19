@@ -1,15 +1,20 @@
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRuntime, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { QuotaCapture } from "./capture.ts";
 import { RecoveryActor } from "./recovery.ts";
 
 const supportedProviderIds = new Set(["anthropic", "openai-codex", "opencode-go"]);
 
-export default function quotaResume(pi: ExtensionAPI): void {
+export default async function quotaResume(pi: ExtensionAPI): Promise<void> {
 	if (process.env.RPC_SUBAGENTS_CHILD) return;
 	const capture = new QuotaCapture();
 	const recovery = new RecoveryActor(pi, capture);
-	for (const provider of builtinProviders()) {
+	const catalog = await ModelRuntime.create({
+		credentials: new InMemoryCredentialStore(),
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
+	for (const provider of catalog.getProviders()) {
 		if (!supportedProviderIds.has(provider.id)) continue;
 		pi.registerProvider(capture.decorate(provider));
 	}
