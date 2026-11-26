@@ -1,10 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { childTurn, launchTab } from "./native.ts";
 import { annotationsText, type Annotation } from "./quote.ts";
-import { openReview, publishJson } from "./review.ts";
+import { openReview, publishJson, ReviewError } from "./review.ts";
 import { type AnnotateServer, type SessionBinding, preferredPort, SessionSwitchedError, startAnnotateServer } from "./server.ts";
 import { buildSnapshot } from "./snapshot.ts";
 
@@ -41,6 +42,7 @@ export interface AnnotationDeps {
 	env?: NodeJS.ProcessEnv;
 	longPollMs?: number;
 	refreshDelayMs?: number;
+	sendReceiptTimeoutMs?: number;
 	annotationDir?: string;
 }
 
@@ -114,19 +116,22 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 		return server;
 	};
 
-	let nativeSource: {
+	type NativeSource = {
 		sessionId: string;
 		controller: AbortController;
 		owner?: ReturnType<typeof openReview>;
 		launching?: Promise<void>;
-	} | undefined;
+	};
+	type MainDispatch = { source: NativeSource; text: string; accept?: () => void };
+	const mainDispatch = new AsyncLocalStorage<MainDispatch>();
+	let nativeSource: NativeSource | undefined;
 	pi.registerCommand("annotate-herdr", {
 		description: "Review this conversation in a local Herdr tab",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (env.SSH_CONNECTION || env.SSH_TTY) return ctx.ui.notify("Herdr review requires a local Pi session.", "error");
 			const sessionId = ctx.sessionManager.getSessionId();
-			const source = nativeSource ??= { sessionId, controller: new AbortController() };
+			const source: NativeSource = nativeSource ??= { sessionId, controller: new AbortController() };
 			if (source.sessionId !== sessionId) throw new SessionSwitchedError();
 			const signal = source.controller.signal;
 			source.launching ??= (async () => {
@@ -150,6 +155,37 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 				source.owner ??= openReview(dir, {
 					items: () => buildSnapshot(ctx.sessionManager.getBranch()).items,
 					prepareDelivery: (items) => prepareEditorAppend(ctx, items),
+					prepareSend: (text) => {
+						if (signal.aborted || running()?.sessionId !== sessionId || ctx.sessionManager.getSessionId() !== sessionId) throw new ReviewError("Source session changed.");
+						if (!ctx.isIdle() || ctx.hasPendingMessages()) throw new ReviewError("Main Pi is busy.");
+						return receiptSignal => {
+							const dispatch: MainDispatch = { source, text };
+							let cleanup!: () => void;
+							const accepted = new Promise<void>((resolve, reject) => {
+								const abort = () => {
+									cleanup();
+									reject(receiptSignal.reason);
+								};
+								cleanup = () => {
+									delete dispatch.accept;
+									receiptSignal.removeEventListener("abort", abort);
+								};
+								receiptSignal.addEventListener("abort", abort, { once: true });
+								dispatch.accept = () => {
+									cleanup();
+									resolve();
+								};
+							});
+							try {
+								mainDispatch.run(dispatch, () => pi.sendUserMessage(text, { expandPromptTemplates: false }));
+							} catch (error) {
+								cleanup();
+								throw error;
+							}
+							return accepted;
+						};
+					},
+					sendReceiptTimeoutMs: deps.sendReceiptTimeoutMs,
 					model: () => ctx.model,
 					run: (...args) => childTurn(ctx, ...args),
 					reportPersistenceError: (message) => {
@@ -159,7 +195,7 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 					},
 				});
 				const connectionFile = join(dir, "connection.json");
-				publishJson(connectionFile, { sessionId, port: server.port, token: server.enableReview(sessionId, source.owner.request) });
+				publishJson(connectionFile, { sessionId, port: server.port, token: server.enableReview(sessionId, source.owner.handle) });
 				const tabFile = join(dir, "tab.json");
 				let tab: string | undefined;
 				try {
@@ -179,7 +215,19 @@ export default function annotation(pi: ExtensionAPI, deps: AnnotationDeps = {}):
 		},
 	});
 
-	pi.on("message_end", (_event, ctx) => {
+	pi.on("message_end", (event, ctx) => {
+		const dispatch = mainDispatch.getStore();
+		if (dispatch?.accept && dispatch.source === nativeSource && event.message.role === "user" && ctx.sessionManager.getSessionId() === dispatch.source.sessionId) {
+			const accept = dispatch.accept;
+			const content = event.message.content;
+			let text: string | undefined;
+			if (typeof content === "string") text = content;
+			else if (content.length === 1 && content[0]?.type === "text") text = content[0].text;
+			if (text === dispatch.text) {
+				delete dispatch.accept;
+				accept();
+			}
+		}
 		refreshSoon(ctx);
 	});
 	pi.on("session_tree", (_event, ctx) => {

@@ -1,8 +1,9 @@
 export class ApiError extends Error {
-	constructor(message, status = 0) {
+	constructor(message, status = 0, pendingSendRequestId) {
 		super(message);
 		this.name = "ApiError";
 		this.status = status;
+		this.pendingSendRequestId = pendingSendRequestId;
 	}
 }
 
@@ -41,7 +42,7 @@ export async function request(connection, route, options = {}, fetchImpl = fetch
 		const message = body && typeof body.error === "string" && body.error !== ""
 			? body.error
 			: `The Pi annotation server returned HTTP ${response.status}.`;
-		throw new ApiError(message, response.status);
+		throw new ApiError(message, response.status, body?.pendingSendRequestId);
 	}
 	if (!body || typeof body !== "object" || Array.isArray(body)) {
 		throw new ApiError("The Pi annotation server returned an invalid response.", response.status);

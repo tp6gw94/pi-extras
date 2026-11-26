@@ -129,7 +129,7 @@ export class TranscriptKeyboard {
 		const start = Math.min(left.start, right.start);
 		const end = Math.max(left.end, right.end);
 		const quote = left.item.text.slice(start, end);
-		return quote.trim() ? { itemId: left.item.id, start, end, quote } : null;
+		return quote.trim() ? { itemId: left.item.id, start, end, quote, sourceText: quote } : null;
 	}
 
 	move(key, pageRows) {

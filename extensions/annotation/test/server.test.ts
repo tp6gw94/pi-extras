@@ -259,6 +259,20 @@ describe("review capability", () => {
 		assert.equal((await rejected.review({ headers: { origin: "http://evil.example" } })).status, 403);
 	});
 
+	it("returns 500 when a review session check throws after admission", async () => {
+		let acceptedChecks = Infinity;
+		const { review } = await start({ isCurrent: () => {
+			if (acceptedChecks-- === 0) throw new Error("source unavailable");
+			return true;
+		} });
+		for (const init of [undefined, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }]) {
+			acceptedChecks = 1;
+			assert.equal((await review(init)).status, 500);
+		}
+		acceptedChecks = Infinity;
+		assert.equal((await review()).status, 200);
+	});
+
 	it("drops to 410 when the session is no longer current", async () => {
 		let current = true;
 		const { api, review, reviewToken } = await start({ isCurrent: () => current });

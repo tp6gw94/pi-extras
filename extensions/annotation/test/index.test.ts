@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -80,6 +81,8 @@ async function setup(options: {
 	editor?: string;
 	sessionId?: string;
 	annotationDir?: string;
+	sendReceiptTimeoutMs?: number;
+	beforeSend?: () => void;
 	branch?: unknown[];
 	exec?: (...args: any[]) => any;
 	newSession?: ExtensionCommandContext["newSession"];
@@ -87,7 +90,8 @@ async function setup(options: {
 	const commands = new Map<string, Handler>();
 	const listeners = new Map<string, Listener[]>();
 	const notices: string[] = [];
-	const userMessages: unknown[] = [];
+	const userMessages: { message: unknown; delivery: unknown }[] = [];
+	let emitDispatched: (event: unknown) => Promise<void>;
 	const tabs: TabProps[] = [];
 	const execCalls: string[][] = [];
 	let editorText = options.editor ?? "";
@@ -113,12 +117,19 @@ async function setup(options: {
 		exec,
 		on: (event: string, handler: Listener) => listeners.set(event, [...(listeners.get(event) ?? []), handler]),
 		sendUserMessage: (message: unknown, delivery: unknown) => {
+			options.beforeSend?.();
+			emitDispatched = AsyncResource.bind(async (event: unknown) => {
+				await Promise.resolve();
+				for (const listener of listeners.get("message_end") ?? []) await listener(event, ctx);
+			});
 			userMessages.push({ message, delivery });
 		},
 	};
 	const ctx = {
 		newSession: options.newSession ?? (async () => ({ cancelled: false })),
 		hasUI: options.hasUI ?? true,
+		isIdle: () => true,
+		hasPendingMessages: () => false,
 		cwd: "/work/project",
 		model: { provider: "fixture", id: "local" },
 		sessionManager: {
@@ -156,7 +167,7 @@ async function setup(options: {
 	const created = options.annotationDir === undefined;
 	const annotationDir = options.annotationDir ?? mkdtempSync(join(tmpdir(), "native-annotation-"));
 	if (created) cleanups.push(() => rmSync(annotationDir, { recursive: true, force: true }));
-	annotation(pi as never, { env, refreshDelayMs: 0, longPollMs: 3000, annotationDir });
+	annotation(pi as never, { env, refreshDelayMs: 0, longPollMs: 3000, annotationDir, sendReceiptTimeoutMs: options.sendReceiptTimeoutMs });
 	const emit = async (event: string) => {
 		for (const listener of listeners.get(event) ?? []) await listener({ type: event }, ctx);
 		await delay(20);
@@ -175,6 +186,7 @@ async function setup(options: {
 		listeners,
 		notices,
 		userMessages,
+		emitDispatched: (event: unknown) => emitDispatched(event),
 		tabs,
 		execCalls,
 		annotationDir,
@@ -303,13 +315,291 @@ describe("native command surface", () => {
 });
 
 describe("native review protocol", () => {
-	async function reviewSession(root: string) {
-		const t = await setup({ annotationDir: join(root, "annotation") });
+	async function reviewSession(root: string, options: Parameters<typeof setup>[0] = {}) {
+		const t = await setup({ ...options, annotationDir: join(root, "annotation") });
 		await t.launch();
 		const conn = t.connection();
 		const request = (body?: unknown) => call(conn.port, conn.sessionId, body === undefined ? "GET" : "POST", "review", conn.token, body);
 		return { t, conn, request, staged: join(dirname(conn.file), "notes.json.tmp") };
 	}
+
+	it("batches one source message, waits for its user event, and replays its receipt after reopening", async () => {
+		const root = tempRoot("native-annotation-send-");
+		const branch = [msg("u1", "user", "Please **explain** the cache")];
+		const { t, request } = await reviewSession(root, { branch });
+		t.ctx.ui.setEditorText("unfinished editor draft");
+		const anchor = { itemId: "u1", start: 0, end: 18, quote: "Please explain", sourceText: "Please **explain**" };
+		const saved = await request({ action: "save", anchor, text: "why?" });
+		assert.equal(saved.status, 200);
+		const { noteId: id, notes } = JSON.parse(saved.body);
+		assert.deepEqual(notes[0].anchor, anchor);
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [id], noteVersions: [notes[0].version], text: "also this" };
+		t.ctx.isIdle = () => false;
+		assert.match((await request(payload)).body, /busy/i);
+		assert.deepEqual(t.userMessages, []);
+		t.ctx.isIdle = () => true;
+		const sent = request(payload);
+		for (let i = 0; i < 100 && !t.userMessages.length; i++) await delay(5);
+		const message = "> Please explain\n\nwhy?\n\nalso this";
+		assert.deepEqual(t.userMessages, [{ message, delivery: { expandPromptTemplates: false } }]);
+		const listener = t.listeners.get("message_end")![0]!;
+		await listener({ message: { role: "user", content: message } }, { sessionManager: { getSessionId: () => "other" } });
+		await listener({ message: { role: "user", content: "different" } }, t.ctx);
+		assert.equal(JSON.parse((await request()).body).notes[0].status, "pending");
+		assert.match((await request({ action: "check-send", requestId: payload.requestId })).body, /still in progress/i);
+		assert.match((await request(payload)).body, /still in progress/i);
+		for (const outcome of ["sent", "not-sent"]) {
+			const refused = await request({ action: "resolve-send", requestId: payload.requestId, outcome });
+			assert.equal(refused.status, 409);
+			assert.match(refused.body, /still in progress/i);
+		}
+		await t.emitDispatched({ message: { role: "user", content: [{ type: "text", text: message }] } });
+		const ack = JSON.parse((await sent).body);
+		assert.equal(ack.sentRequestId, payload.requestId);
+		assert.equal(ack.notes[0].status, "sent");
+		assert.equal(t.editor(), "unfinished editor draft");
+		await t.shutdown();
+		const reopened = await reviewSession(root, { branch });
+		assert.deepEqual(JSON.parse((await reopened.request(payload)).body), ack);
+		assert.equal((await reopened.request({ ...payload, text: "different" })).status, 409);
+		assert.match((await reopened.request({ ...payload, noteVersions: ["another version"] })).body, /already used/i);
+		assert.deepEqual(reopened.t.userMessages, []);
+	});
+
+	for (const outcome of ["sent", "not-sent"] as const) {
+		it(`resolves a persisted unknown receipt as ${outcome} without sending again`, async () => {
+			const root = tempRoot("native-annotation-resolution-");
+			const first = await reviewSession(root, { sendReceiptTimeoutMs: 5 });
+			const save = { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "why?" };
+			const { noteId, notes: [note] } = JSON.parse((await first.request(save)).body);
+			const send = { action: "send", requestId: randomUUID(), noteIds: [noteId], noteVersions: [note.version], text: "" };
+			const resolve = { action: "resolve-send", requestId: send.requestId, outcome };
+			const check = { action: "check-send", requestId: send.requestId };
+			const unknown = await first.request(send);
+			assert.equal(unknown.status, 409);
+			assert.match(unknown.body, /receipt unknown/i);
+			assert.deepEqual(await first.request(check), unknown);
+			assert.match((await first.request({ action: "delete", noteId })).body, /receipt unknown/i);
+			await first.t.shutdown();
+			const second = await reviewSession(root);
+			assert.equal((await second.request({ ...resolve, outcome: undefined })).status, 409);
+			const resolved = await second.request(resolve);
+			assert.equal(resolved.status, 200);
+			const ack = JSON.parse(resolved.body);
+			assert.equal(ack[outcome === "sent" ? "sentRequestId" : "resolvedRequestId"], send.requestId);
+			assert.equal(ack.notes[0].status, outcome === "sent" ? "sent" : "pending");
+			await second.t.shutdown();
+			const third = await reviewSession(root);
+			assert.deepEqual(JSON.parse((await third.request(resolve)).body), ack);
+			const replay = await third.request(send);
+			if (outcome === "sent") {
+				assert.deepEqual(JSON.parse(replay.body), ack);
+				assert.deepEqual(await third.request(check), replay);
+			} else {
+				assert.equal(replay.status, 409);
+				assert.match(replay.body, /was not sent/i);
+				assert.deepEqual(await third.request(check), replay);
+				const edit = { ...save, noteId, expectedText: save.text, text: "updated" };
+				assert.equal((await third.request(edit)).status, 200);
+			}
+			assert.deepEqual(third.t.userMessages, []);
+		});
+	}
+
+	it("blocks a new free-text send after restart until the prior receipt is reconciled", async () => {
+		const root = tempRoot("native-annotation-free-text-lock-");
+		const first = await reviewSession(root, { sendReceiptTimeoutMs: 5 });
+		const send = { action: "send", requestId: randomUUID(), noteIds: [], noteVersions: [], text: "Send this once" };
+		assert.match((await first.request(send)).body, /receipt unknown/i);
+		assert.deepEqual(first.t.userMessages.map(({ message }) => message), [send.text]);
+		await first.t.shutdown();
+
+		const second = await reviewSession(root, { sendReceiptTimeoutMs: 1000 });
+		const duplicate = { ...send, requestId: randomUUID() };
+		const conflict = await second.request(duplicate);
+		assert.equal(conflict.status, 409);
+		assert.equal(JSON.parse(conflict.body).pendingSendRequestId, send.requestId);
+		const absent = await second.request({ action: "check-send", requestId: duplicate.requestId });
+		assert.equal(absent.status, 409);
+		assert.equal(JSON.parse(absent.body).pendingSendRequestId, send.requestId);
+		assert.deepEqual(second.t.userMessages, []);
+
+		const resolved = await second.request({ action: "resolve-send", requestId: send.requestId, outcome: "sent" });
+		assert.equal(JSON.parse(resolved.body).sentRequestId, send.requestId);
+		await second.t.shutdown();
+		const third = await reviewSession(root, { sendReceiptTimeoutMs: 1000 });
+		const delayed = await third.request(duplicate);
+		assert.equal(delayed.status, 409);
+		assert.match(delayed.body, /was not sent/i);
+		assert.deepEqual(third.t.userMessages, []);
+		const newSend = { ...duplicate, requestId: randomUUID() };
+		const next = third.request(newSend);
+		for (let i = 0; i < 100 && !third.t.userMessages.length; i++) await delay(5);
+		assert.deepEqual(third.t.userMessages.map(({ message }) => message), [send.text]);
+		await third.t.emitDispatched({ message: { role: "user", content: send.text } });
+		assert.equal(JSON.parse((await next).body).sentRequestId, newSend.requestId);
+	});
+
+	it("keeps a timed-out receipt unknown for identical independent text and confirms the actual dispatch", async () => {
+		const root = tempRoot("native-annotation-late-");
+		const { t, request } = await reviewSession(root, { sendReceiptTimeoutMs: 5 });
+		const save = { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "why?" };
+		const { noteId, notes: [note] } = JSON.parse((await request(save)).body);
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [noteId], noteVersions: [note.version], text: "late acceptance" };
+		assert.match((await request(payload)).body, /receipt unknown/i);
+		const event = { message: { role: "user", content: "> explain\n\nwhy?\n\nlate acceptance" } };
+		await t.listeners.get("message_end")![0]!(event, t.ctx);
+		assert.match((await request(payload)).body, /receipt unknown/i);
+		assert.equal(JSON.parse((await request()).body).notes[0].status, "pending");
+		await t.emitDispatched(event);
+		const replay = await request(payload);
+		assert.equal(replay.status, 200);
+		assert.equal(JSON.parse(replay.body).sentRequestId, payload.requestId);
+		assert.equal(JSON.parse(replay.body).notes[0].status, "sent");
+		assert.equal(t.userMessages.length, 1);
+	});
+
+	it("rejects a not-sent resolution while a late source event is still possible", async () => {
+		const root = tempRoot("native-annotation-live-uncertainty-");
+		const { t, request } = await reviewSession(root, { sendReceiptTimeoutMs: 5 });
+		const save = { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "why?" };
+		const { noteId, notes: [note] } = JSON.parse((await request(save)).body);
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [noteId], noteVersions: [note.version], text: "" };
+		const check = { action: "check-send", requestId: payload.requestId };
+		const unknown = await request(payload);
+		assert.equal(unknown.status, 409);
+		assert.match(unknown.body, /may still deliver/i);
+		assert.deepEqual(await request(check), unknown);
+		assert.deepEqual(await request({ ...check, action: "resolve-send", outcome: "not-sent" }), unknown);
+		assert.match((await request({ ...payload, requestId: randomUUID() })).body, /receipt unknown/i);
+		await t.emitDispatched({ message: { role: "user", content: t.userMessages[0]!.message } });
+		const acknowledged = await request(check);
+		assert.equal(acknowledged.status, 200);
+		assert.equal(JSON.parse(acknowledged.body).sentRequestId, payload.requestId);
+		assert.equal(JSON.parse(acknowledged.body).notes[0].status, "sent");
+		assert.match((await request({ ...payload, requestId: randomUUID() })).body, /only current pending notes/i);
+		assert.equal(t.userMessages.length, 1);
+	});
+
+	it("allows confirming a live timed-out send after seeing it in Main Pi", async () => {
+		const root = tempRoot("native-annotation-manual-sent-");
+		const { t, request } = await reviewSession(root, { sendReceiptTimeoutMs: 5 });
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [], noteVersions: [], text: "Observed in Main Pi" };
+		assert.match((await request(payload)).body, /may still deliver/i);
+		const resolved = await request({ action: "resolve-send", requestId: payload.requestId, outcome: "sent" });
+		assert.equal(resolved.status, 200);
+		assert.equal(JSON.parse(resolved.body).sentRequestId, payload.requestId);
+		assert.deepEqual(await request(payload), resolved);
+		assert.equal(t.userMessages.length, 1);
+	});
+
+	it("retries saving a known receipt without dispatching or allowing abandonment", async () => {
+		const root = tempRoot("native-annotation-receipt-write-");
+		const { t, request, staged } = await reviewSession(root);
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [], noteVersions: [], text: "accepted" };
+		const sent = request(payload);
+		for (let i = 0; i < 100 && !t.userMessages.length; i++) await delay(5);
+		assert.equal(t.userMessages.length, 1);
+		mkdirSync(staged);
+		await t.emitDispatched({ message: { role: "user", content: payload.text } });
+		const failed = await sent;
+		assert.equal(failed.status, 409);
+		assert.match(failed.body, /accepted the message, but the receipt could not be saved/i);
+		rmSync(staged, { recursive: true });
+		assert.equal((await request({ action: "resolve-send", requestId: payload.requestId, outcome: "not-sent" })).status, 409);
+		const replay = await request({ action: "check-send", requestId: payload.requestId });
+		assert.equal(replay.status, 200);
+		assert.equal(JSON.parse(replay.body).sentRequestId, payload.requestId);
+		assert.equal(t.userMessages.length, 1);
+	});
+
+	it("releases notes after a synchronous dispatch failure without allowing the old request to send", async () => {
+		const root = tempRoot("native-annotation-dispatch-failure-");
+		let fail = true;
+		const { t, request } = await reviewSession(root, { beforeSend: () => { if (fail) throw new Error("Dispatch refused"); } });
+		const save = { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "why?" };
+		const { noteId, notes: [note] } = JSON.parse((await request(save)).body);
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [noteId], noteVersions: [note.version], text: "" };
+		assert.match((await request(payload)).body, /was not sent/i);
+		fail = false;
+		assert.match((await request(payload)).body, /was not sent/i);
+		assert.deepEqual(t.userMessages, []);
+		assert.equal((await request({ ...save, noteId, expectedText: save.text, text: "edit now" })).status, 200);
+	});
+
+	for (const changed of ["text", "quote", "range"] as const) {
+		it(`rejects sending a note whose ${changed} changed in another review view without reserving it`, async () => {
+			const { t, request } = await reviewSession(tempRoot("native-annotation-stale-send-"), { sendReceiptTimeoutMs: 5 });
+			const anchor = { itemId: "u1", start: 0, end: 7, quote: "explain" };
+			const save = { action: "save", anchor, text: "seen comment" };
+			const { noteId, notes: [observed] } = JSON.parse((await request(save)).body);
+			const send = { action: "send", requestId: randomUUID(), noteIds: [noteId], noteVersions: [observed.version], text: "main draft" };
+			const edit = { ...save, noteId, expectedText: save.text };
+			if (changed === "text") edit.text = "new comment";
+			if (changed === "quote") edit.anchor = { ...anchor, quote: "different quote" };
+			if (changed === "range") {
+				t.setBranch([msg("u1", "user", "explain again: explain")]);
+				edit.anchor = { ...anchor, start: 15, end: 22 };
+			}
+			const edited = await request(edit);
+			assert.equal(edited.status, 200);
+
+			const rejected = await request(send);
+			assert.deepEqual(t.userMessages, []);
+			assert.equal(rejected.status, 409);
+			assert.match(rejected.body, /changed.*before sending/i);
+			assert.match((await request({ action: "check-send", requestId: send.requestId })).body, /was not sent/i);
+			assert.deepEqual(JSON.parse((await request()).body).notes, JSON.parse(edited.body).notes);
+		});
+	}
+
+	it("checks a persisted legacy send by ID without dispatching", async () => {
+		const root = tempRoot("native-annotation-legacy-send-");
+		const first = await reviewSession(root);
+		const { noteId } = JSON.parse((await first.request({ action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "why?" })).body);
+		const requestId = randomUUID();
+		const noteIds = [noteId];
+		const text = "old draft";
+		const digest = createHash("sha256").update(JSON.stringify([noteIds, text])).digest("hex");
+		const file = join(dirname(first.conn.file), "notes.json");
+		await first.t.shutdown();
+		const notes = JSON.parse(readFileSync(file, "utf8"));
+		writeFileSync(file, JSON.stringify([...notes, { id: requestId, status: "receipt", confirmed: false, digest, noteIds }]));
+
+		const { t, request } = await reviewSession(root);
+		const checked = await request({ action: "check-send", requestId });
+		assert.equal(checked.status, 409);
+		assert.match(checked.body, /receipt unknown/i);
+		assert.equal((await request({ action: "send", requestId, noteIds, text })).status, 409);
+		assert.equal((await request({ action: "resolve-send", requestId, outcome: "not-sent" })).status, 200);
+		assert.match((await request({ action: "check-send", requestId })).body, /was not sent/i);
+		assert.deepEqual(t.userMessages, []);
+	});
+
+	it("rejects rewritten source anchors including legacy notes and sends a matching legacy quote", async () => {
+		const { t, request } = await reviewSession(tempRoot("native-annotation-rewritten-"));
+		const legacy = { itemId: "u1", start: 0, end: 7, quote: "explain" };
+		const save = async (anchor: typeof legacy & { sourceText?: string }) => {
+			const { noteId, notes } = JSON.parse((await request({ action: "save", anchor, text: "why?" })).body);
+			return notes.find((note: { id: string }) => note.id === noteId);
+		};
+		const stale = await save({ ...legacy, sourceText: "explain" });
+		const supported = await save(legacy);
+		t.setBranch([msg("u1", "user", "rewrite the cache")]);
+		const payload = { action: "send", requestId: randomUUID(), noteIds: [stale.id, supported.id], noteVersions: [stale.version, supported.version], text: "" };
+		const rejected = await request(payload);
+		assert.equal(rejected.status, 409);
+		assert.match(rejected.body, /only current pending notes/i);
+		assert.deepEqual(t.userMessages, []);
+		const legacyOnly = { ...payload, noteIds: [supported.id], noteVersions: [supported.version] };
+		assert.equal((await request(legacyOnly)).status, 409);
+		assert.deepEqual(t.userMessages, []);
+		t.setBranch([msg("u1", "user", "explain the cache")]);
+		const sent = request(legacyOnly);
+		for (let i = 0; i < 100 && !t.userMessages.length; i++) await delay(5);
+		await t.emitDispatched({ message: { role: "user", content: "> explain\n\nwhy?" } });
+		assert.deepEqual(JSON.parse((await sent).body).notes.map(({ id, status }: { id: string; status: string }) => [id, status]), [[stale.id, "pending"], [supported.id, "sent"]]);
+	});
 
 	it("rejects stale and unguarded updates without replacing a newer pending note", async () => {
 		const root = tempRoot("native-annotation-save-");
@@ -330,7 +620,10 @@ describe("native review protocol", () => {
 		assert.deepEqual(JSON.parse((await request()).body).notes, JSON.parse(accepted.body).notes);
 		const next = await request({ ...edit, expectedText: "second", text: "third" });
 		assert.equal(next.status, 200);
-		assert.deepEqual(JSON.parse(next.body), { notes: [{ id: noteId, status: "pending", anchor: original.anchor, text: "third" }], noteId });
+		const { notes: [{ version, ...note }], noteId: savedId } = JSON.parse(next.body);
+		assert.equal(savedId, noteId);
+		assert.notEqual(version, JSON.parse(accepted.body).notes[0].version);
+		assert.deepEqual(note, { id: noteId, status: "pending", anchor: original.anchor, text: "third" });
 	});
 
 	it("acknowledges a create replay after reconnect without rewriting, duplicating, or restoring a deleted note", async () => {
@@ -342,14 +635,15 @@ describe("native review protocol", () => {
 		assert.equal((await first.request({ ...create, createId: "../not-a-uuid" })).status, 409);
 		assert.equal((await first.request(create)).status, 200);
 		const edit = { action: "save", noteId: createId, expectedText: "first", anchor, text: "updated" };
-		assert.equal((await first.request(edit)).status, 200);
+		const edited = await first.request(edit);
+		assert.equal(edited.status, 200);
 		await first.t.shutdown();
 		const reopened = await reviewSession(root);
 		const branch = reopened.t.branch();
 		mkdirSync(reopened.staged);
 		const replay = await reopened.request(create);
 		assert.equal(replay.status, 200);
-		assert.deepEqual(JSON.parse(replay.body), { notes: [{ id: createId, status: "pending", anchor, text: "updated" }], noteId: createId });
+		assert.deepEqual(JSON.parse(replay.body), JSON.parse(edited.body));
 		reopened.t.setBranch([]);
 		const offBranch = await reopened.request(create);
 		assert.equal(offBranch.status, 200);
@@ -392,7 +686,7 @@ describe("native review protocol", () => {
 		assert.equal(failed.status, 409);
 		assert.equal(t.editor(), "draft");
 		assert.match(failed.body, /could not save/i);
-		assert.deepEqual(JSON.parse((await call(conn.port, conn.sessionId, "GET", "review", conn.token)).body).notes, JSON.parse(readFileSync(notesFile, "utf8")));
+		assert.deepEqual(JSON.parse((await call(conn.port, conn.sessionId, "GET", "review", conn.token)).body).notes.map(({ version: _version, ...note }: { version?: string }) => note), JSON.parse(readFileSync(notesFile, "utf8")));
 		rmSync(`${notesFile}.tmp`, { recursive: true });
 		const setEditorText = t.ctx.ui.setEditorText;
 		t.ctx.ui.setEditorText = (text) => {
@@ -443,7 +737,7 @@ describe("native review protocol", () => {
 		const next = second.connection();
 		const review = await call(next.port, next.sessionId, "GET", "review", next.token);
 		assert.equal(review.status, 200);
-		assert.deepEqual(JSON.parse(review.body).notes, [{ id: JSON.parse(saved.body).noteId, status: "pending", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "keep me" }]);
+		assert.deepEqual(JSON.parse(review.body).notes, JSON.parse(saved.body).notes);
 	});
 });
 

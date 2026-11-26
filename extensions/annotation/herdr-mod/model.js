@@ -1,5 +1,5 @@
 const ITEM_KINDS = new Set(["user", "assistant", "tool"]);
-const NOTE_STATUSES = new Set(["pending", "appended", "thread"]);
+const NOTE_STATUSES = new Set(["pending", "sent", "appended", "thread"]);
 const TURN_STATUSES = new Set(["running", "completed", "failed", "interrupted"]);
 
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -24,11 +24,12 @@ function isAnchor(value) {
 		&& typeof value.itemId === "string" && value.itemId !== ""
 		&& Number.isInteger(value.start) && Number.isInteger(value.end)
 		&& value.start >= 0 && value.end > value.start
-		&& typeof value.quote === "string" && value.quote.trim() !== "";
+		&& typeof value.quote === "string" && value.quote.trim() !== ""
+		&& (value.sourceText === undefined || typeof value.sourceText === "string" && value.sourceText.length === value.end - value.start);
 }
 
 function copyAnchor(anchor) {
-	return { itemId: anchor.itemId, start: anchor.start, end: anchor.end, quote: anchor.quote };
+	return { itemId: anchor.itemId, start: anchor.start, end: anchor.end, quote: anchor.quote, ...(anchor.sourceText === undefined ? {} : { sourceText: anchor.sourceText }) };
 }
 
 function isItem(value) {
@@ -88,15 +89,18 @@ function copyTurn(turn) {
 }
 
 function isNote(value) {
-	if (!isObject(value) || typeof value.id !== "string" || value.id === "" || typeof value.text !== "string" || !isAnchor(value.anchor)) return false;
+	if (!isObject(value) || typeof value.id !== "string" || value.id === "" || typeof value.text !== "string") return false;
+	if (value.anchor !== null && !isAnchor(value.anchor)) return false;
 	if (!NOTE_STATUSES.has(value.status)) return false;
+	if (value.status === "pending") return typeof value.version === "string";
 	if (value.status !== "thread") return true;
 	if (!Array.isArray(value.turns) || !value.turns.every(isTurn)) return false;
 	return uniqueIds(value.turns.map((turn) => turn.id));
 }
 
 function copyNote(note) {
-	const base = { id: note.id, anchor: copyAnchor(note.anchor), text: note.text };
+	const base = { id: note.id, anchor: note.anchor === null ? null : copyAnchor(note.anchor), text: note.text };
+	if (note.status === "pending") return { ...base, status: "pending", version: note.version };
 	if (note.status !== "thread") return { ...base, status: note.status };
 	return { ...base, status: "thread", turns: note.turns.map(copyTurn) };
 }
@@ -110,8 +114,12 @@ export function parseReview(value) {
 export function branchNotes(notes, items) {
 	const order = new Map(items.map((item, index) => [item.id, index]));
 	return notes
-		.filter((note) => order.has(note.anchor.itemId))
+		.filter((note) => note.anchor === null || order.has(note.anchor.itemId))
 		.sort((left, right) => {
+			if (left.anchor === null || right.anchor === null) {
+				if (left.anchor === null && right.anchor === null) return 0;
+				return left.anchor === null ? 1 : -1;
+			}
 			const itemOrder = order.get(left.anchor.itemId) - order.get(right.anchor.itemId);
 			return itemOrder || left.anchor.start - right.anchor.start || left.anchor.end - right.anchor.end;
 		});
@@ -119,15 +127,33 @@ export function branchNotes(notes, items) {
 
 export function offBranchCount(notes, items) {
 	const ids = new Set(items.map((item) => item.id));
-	return notes.filter((note) => !ids.has(note.anchor.itemId)).length;
+	return notes.filter((note) => note.anchor !== null && !ids.has(note.anchor.itemId)).length;
+}
+
+export function panelNotes(notes, items, panel) {
+	const visible = branchNotes(notes, items);
+	return panel === "background"
+		? visible.filter((note) => note.status === "thread")
+		: visible.filter((note) => note.status !== "thread");
 }
 
 export function deliverableNotes(notes, items) {
-	return branchNotes(notes, items).filter((note) => note.status === "pending");
+	const textById = new Map(items.map((item) => [item.id, item.text]));
+	return branchNotes(notes, items).filter((note) => {
+		const anchor = note.anchor;
+		if (note.status !== "pending") return false;
+		if (!anchor) return true;
+		const text = textById.get(anchor.itemId);
+		return anchor.end <= text.length && text.slice(anchor.start, anchor.end) === (anchor.sourceText ?? anchor.quote);
+	});
 }
 
 export function hasRunningTurn(note) {
 	return note.status === "thread" && note.turns.some((turn) => turn.status === "running");
+}
+
+export function completedTurns(note) {
+	return note.status === "thread" ? note.turns.filter((turn) => turn.status === "completed").length : 0;
 }
 
 export function notePhase(note) {
@@ -138,11 +164,11 @@ export function notePhase(note) {
 }
 
 export function saveRequest(anchor, text, { noteId, expectedText, createId }) {
-	if (text.trim() === "" || !isAnchor(anchor)) return null;
+	if (text.trim() === "" || (!(noteId && anchor === null) && !isAnchor(anchor))) return null;
 	return {
 		action: "save",
 		...(noteId ? { noteId, expectedText } : { createId }),
-		anchor: copyAnchor(anchor),
+		anchor: anchor === null ? null : copyAnchor(anchor),
 		text,
 	};
 }
@@ -152,13 +178,27 @@ export function deliverRequest(noteIds) {
 	return ids.length === 0 ? null : { action: "deliver", noteIds: ids };
 }
 
+export function sendRequest(versions, text, requestId) {
+	if (versions.size === 0 && text.trim() === "") return null;
+	return { action: "send", requestId, noteIds: [...versions.keys()], noteVersions: [...versions.values()], text };
+}
+
 export function startRequest(noteId) {
 	return { action: "start", noteId };
+}
+
+export function startCreateRequest(createId, text) {
+	if (text.trim() === "") return null;
+	return { action: "start", createId, text };
 }
 
 export function replyRequest(noteId, text, requestId) {
 	if (text.trim() === "") return null;
 	return { action: "reply", noteId, text, requestId };
+}
+
+export function copyRequest(noteId, createId) {
+	return { action: "copy", noteId, createId };
 }
 
 export function deleteRequest(noteId) {
@@ -169,12 +209,32 @@ export function composerDraftKey(sessionId) {
 	return `pi-annotate.composer:${sessionId}`;
 }
 
+export function mainDraftKey(sessionId) {
+	return `pi-annotate.main:${sessionId}`;
+}
+
 export function replyDraftKey(sessionId, noteId) {
 	return `pi-annotate.reply:${sessionId}:${noteId}`;
 }
 
 export function replyAttemptKey(sessionId, noteId) {
 	return `${replyDraftKey(sessionId, noteId)}:attempt`;
+}
+
+export function startAttemptKey(sessionId) {
+	return `pi-annotate.start:${sessionId}`;
+}
+
+export function sendAttemptKey(sessionId) {
+	return `pi-annotate.send:${sessionId}`;
+}
+
+export function copyAttemptKey(sessionId, noteId) {
+	return `pi-annotate.copy:${sessionId}:${noteId}`;
+}
+
+export function isUuid(value) {
+	return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export function parseReplyAttempt(raw, noteId) {
@@ -185,14 +245,43 @@ export function parseReplyAttempt(raw, noteId) {
 		return null;
 	}
 	if (!isObject(body) || body.action !== "reply" || body.noteId !== noteId || typeof body.text !== "string") return null;
-	if (typeof body.requestId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(body.requestId)) return null;
+	if (!isUuid(body.requestId)) return null;
 	return replyRequest(noteId, body.text, body.requestId);
+}
+
+export function parseStartAttempt(raw) {
+	let body;
+	try {
+		body = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (!isObject(body) || typeof body.text !== "string") return null;
+	if (!isUuid(body.createId)) return null;
+	return startCreateRequest(body.createId, body.text);
+}
+
+export function parseSendAttempt(raw) {
+	let body;
+	try {
+		body = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (!isObject(body) || !isUuid(body.requestId)) return null;
+	if (body.action === "check-send") return { action: body.action, requestId: body.requestId };
+	if (body.action !== "send" || typeof body.text !== "string") return null;
+	if (!Array.isArray(body.noteIds) || !body.noteIds.every((id) => typeof id === "string")) return null;
+	if (new Set(body.noteIds).size !== body.noteIds.length) return null;
+	if (body.noteIds.length === 0 && body.text.trim() === "") return null;
+	if (body.noteVersions !== undefined && (!Array.isArray(body.noteVersions) || body.noteVersions.length !== body.noteIds.length || !body.noteVersions.every((version) => typeof version === "string"))) return null;
+	return body;
 }
 
 export function encodeComposerDraft(draft) {
 	return JSON.stringify({
 		noteId: draft.noteId ?? null,
-		anchor: copyAnchor(draft.anchor),
+		anchor: draft.anchor === null ? null : copyAnchor(draft.anchor),
 		text: draft.text,
 		...(draft.noteId ? { expectedText: draft.expectedText } : { createId: draft.createId, createText: draft.createText }),
 	});
@@ -206,11 +295,12 @@ export function parseComposerDraft(raw) {
 	} catch {
 		return null;
 	}
-	if (!isObject(value) || !isAnchor(value.anchor) || typeof value.text !== "string") return null;
+	if (!isObject(value) || typeof value.text !== "string") return null;
+	if (!(value.noteId && value.anchor === null) && !isAnchor(value.anchor)) return null;
 	if (value.noteId !== null && value.noteId !== undefined && (typeof value.noteId !== "string" || value.noteId === "")) return null;
 	return {
 		noteId: value.noteId ?? null,
-		anchor: copyAnchor(value.anchor),
+		anchor: value.anchor === null ? null : copyAnchor(value.anchor),
 		text: value.text,
 		...(value.noteId
 			? { expectedText: typeof value.expectedText === "string" ? value.expectedText : undefined }

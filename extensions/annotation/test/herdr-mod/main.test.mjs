@@ -12,8 +12,8 @@ const source = (await readFile(new URL("../../herdr-mod/main.js", import.meta.ur
 	.replace(/^import (\{[^}]+\}) from ("[^"]+");/gm, "const $1 = modules[$2];")
 	.replace("export default class", "class");
 const sessionId = "source";
-const anchor = { itemId: "item", start: 0, end: 5, quote: "Quote" };
-const pending = (id, text) => ({ id, status: "pending", anchor, text });
+const anchor = { itemId: "item", start: 0, end: 5, quote: "Quote", sourceText: "Quote" };
+const pending = (id, text) => ({ id, status: "pending", anchor, text, version: `version of ${text}` });
 const thread = { id: "thread", status: "thread", anchor, text: "Existing comment", turns: [] };
 const response = (body, status = 200) => ({ ok: status === 200, status, text: async () => JSON.stringify(body) });
 
@@ -48,6 +48,7 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 	let eventIndex = 0;
 	const posts = [];
 	const inputs = new Map();
+	const controls = [];
 	const overlays = new Map();
 	let overlayId = 0;
 	let currentProps = { sessionId, connectionFile: "connection.json" };
@@ -73,7 +74,7 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 			release() {},
 		}),
 		spawn(run) { void run(cx); return { cancel() {} }; },
-		sleep: () => idle,
+		sleep: (ms) => ms === 0 ? setImmediate() : idle,
 		timer: { every(_interval, run) {
 			pollReview = () => run(cx);
 			return { cancel() {} };
@@ -117,16 +118,16 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 			TextView: { markdown: (id, text) => element(id).child(text) },
 			Textarea: { new: () => element() },
 			Scrollbar: { vertical: () => element() },
-			v_virtual_list: (id, count, _height, _key, render) => element(id).children(render({ start: 0, end: count })),
-			VirtualListScrollHandle: { new: () => ({
+			ScrollHandle: { new: () => ({
 				offset: () => ({ y: scrollTop }), viewport_size: () => ({ height: 132 }),
-				scroll_to_item(row) { scrollTop = row * keyboard.ROW_HEIGHT; }, release() {},
+				scroll_to_item(row) { scrollTop = row; }, release() {},
 			}) },
 			TextareaState: { new({ placeholder, value = "" }) {
 				const handlers = {};
 				let selection;
 				const state = { on: (name, handler) => { handlers[name] = handler; }, value: () => value,
 					selected_range: () => selection ?? { start: value.length, end: value.length },
+					set_selected_range(range) { selection = range; },
 					set_value(text) { value = text; if (setValueEmitsChange) handlers.change({}, cx); },
 					focus() {
 						focus(placeholder, () => handlers.blur?.({}, cx));
@@ -135,7 +136,7 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 					blur() { if (focusedInput === placeholder) focus(undefined); },
 					release() {} };
 				const edit = (text) => { value = text; handlers.change({}, cx); };
-				inputs.set(placeholder, { edit, value: state.value, submit(event, insertedText = "", range) {
+				const control = { edit, value: state.value, select(range) { selection = range; }, submit(event, insertedText = "", range) {
 					if (insertedText) {
 						const { start, end } = range ?? state.selected_range();
 						const caret = start + insertedText.length;
@@ -144,7 +145,9 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 					}
 					handlers.submit(event, cx);
 					selection = undefined;
-				} });
+				} };
+				inputs.set(placeholder, control);
+				controls.push({ placeholder, control });
 				return state;
 			} },
 		},
@@ -190,7 +193,7 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 	};
 	const popup = () => [...overlays.values()].at(-1);
 	const commentInput = () => inputs.get("Write a comment on the selected text");
-	const replyInput = () => inputs.get("Reply to the background Pi thread");
+	const replyInput = (index = -1) => controls.filter(({ placeholder }) => placeholder === "Reply to the background Pi thread").at(index).control;
 	await setImmediate();
 	return {
 		click, drafts, posts, node, text: () => tree().filter((child) => typeof child === "string").join("\n"),
@@ -205,6 +208,7 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 		key: (keystroke, event = {}) => node("pi-transcript").handlers.on_key_down({ keystroke, ...event }, cx),
 		selectTab: (id) => { activeTab = id; },
 		commentInput, replyInput,
+		mainInput: () => inputs.get("Write to main Pi, or add context to the pending comments"),
 		editComment: (text) => commentInput().edit(text),
 		editReply: (text) => replyInput().edit(text),
 		event: (update) => updates[eventIndex++].resolve(response(update)),
@@ -251,7 +255,7 @@ test("Vim motion and Visual selection open a local draft with the exact transcri
 	app.editComment("Please clarify");
 	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
 	const start = text.indexOf("😀");
-	assert.deepEqual(draft.anchor, { itemId: "second", start, end: start + 3, quote: "😀丙" });
+	assert.deepEqual(draft.anchor, { itemId: "second", start, end: start + 3, quote: "😀丙", sourceText: "😀丙" });
 	assert.equal(draft.text, "Please clarify");
 	assert.equal(app.posts.length, 0);
 	app.click("pi-cancel-comment");
@@ -284,7 +288,7 @@ test("live transcript updates preserve Visual anchors on append and exit on rewr
 	await setImmediate();
 	app.key("c");
 	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
-	assert.deepEqual(draft?.anchor, { itemId: "second", start: 0, end: 2, quote: "a " });
+	assert.deepEqual(draft?.anchor, { itemId: "second", start: 0, end: 2, quote: "a ", sourceText: "a " });
 	app.click("pi-cancel-comment");
 	app.key("j");
 	app.key("v");
@@ -306,7 +310,7 @@ test("Visual selects combined glyphs without splitting their UTF-16 ranges", asy
 	app.key("l");
 	app.key("c");
 	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
-	assert.deepEqual(draft?.anchor, { itemId: "item", start: 0, end: cluster.length, quote: cluster });
+	assert.deepEqual(draft?.anchor, { itemId: "item", start: 0, end: cluster.length, quote: cluster, sourceText: cluster });
 });
 
 test("selecting a note makes its expanded tool output reachable by keyboard immediately", async (t) => {
@@ -335,7 +339,7 @@ for (const focusElsewhere of [false, true]) {
 		if (focusElsewhere) app.click("pi-note-existing");
 		const body = app.posts[0].body;
 		app.posts[0].resolve(response({ noteId: "saved", notes: [pending("existing", "Earlier comment"),
-			{ id: "saved", status: "pending", anchor: body.anchor, text: body.text }] }));
+			{ ...pending("saved", body.text), anchor: body.anchor }] }));
 		await setImmediate();
 		assert.equal(app.node("pi-save-comment"), undefined);
 		assert.equal(app.focusedInput(), focusElsewhere ? "pi-note-existing" : "Transcript");
@@ -360,7 +364,7 @@ test("Visual mode stops at the message boundary and Escape clears it before leav
 	app.key("v");
 	app.key("c");
 	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
-	assert.deepEqual(draft.anchor, { itemId: "before", start: 0, end: 1, quote: "E" });
+	assert.deepEqual(draft.anchor, { itemId: "before", start: 0, end: 1, quote: "E", sourceText: "E" });
 });
 
 test("resizing across a wrapped line preserves the selection's source offsets", async (t) => {
@@ -370,11 +374,11 @@ test("resizing across a wrapped line preserves the selection's source offsets", 
 	app.click("pi-keyboard-toggle");
 	for (let col = 0; col < 7; col++) app.key("l");
 	app.key("v");
-	app.elementEvent("pi-keyboard-viewport", "on_size_change", { width: 392, height: 264 });
+	app.elementEvent("pi-transcript-scroll", "on_size_change", { width: 392, height: 264 });
 	app.key("l");
 	app.key("c");
 	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
-	assert.deepEqual(draft.anchor, { itemId: "item", start: 7, end: 9, quote: "hi" });
+	assert.deepEqual(draft.anchor, { itemId: "item", start: 7, end: 9, quote: "hi", sourceText: "hi" });
 });
 
 test("gg and G reach the transcript endpoints while Visual keeps each jump inside its message", async (t) => {
@@ -389,14 +393,14 @@ test("gg and G reach the transcript endpoints while Visual keeps each jump insid
 	first.key("g");
 	first.key("v");
 	first.key("c");
-	assert.deepEqual(draft(first).anchor, { itemId: "first", start: 0, end: 1, quote: "A" });
+	assert.deepEqual(draft(first).anchor, { itemId: "first", start: 0, end: 1, quote: "A", sourceText: "A" });
 
 	const last = await open(t, [], undefined, new Map(), false, { items });
 	last.click("pi-keyboard-toggle");
 	last.key("shift-g");
 	last.key("v");
 	last.key("c");
-	assert.deepEqual(draft(last).anchor, { itemId: "second", start: 8, end: 9, quote: "D" });
+	assert.deepEqual(draft(last).anchor, { itemId: "second", start: 8, end: 9, quote: "D", sourceText: "D" });
 
 	const visualLast = await open(t, [], undefined, new Map(), false, { items });
 	visualLast.click("pi-keyboard-toggle");
@@ -404,7 +408,7 @@ test("gg and G reach the transcript endpoints while Visual keeps each jump insid
 	visualLast.key("v");
 	visualLast.key("shift-g");
 	visualLast.key("c");
-	assert.deepEqual(draft(visualLast).anchor, { itemId: "first", start: 6, end: 7, quote: "B" });
+	assert.deepEqual(draft(visualLast).anchor, { itemId: "first", start: 6, end: 7, quote: "B", sourceText: "B" });
 
 	const visualFirst = await open(t, [], undefined, new Map(), false, { items });
 	visualFirst.click("pi-keyboard-toggle");
@@ -413,7 +417,7 @@ test("gg and G reach the transcript endpoints while Visual keeps each jump insid
 	visualFirst.key("g");
 	visualFirst.key("g");
 	visualFirst.key("c");
-	assert.deepEqual(draft(visualFirst).anchor, { itemId: "second", start: 0, end: 1, quote: "C" });
+	assert.deepEqual(draft(visualFirst).anchor, { itemId: "second", start: 0, end: 1, quote: "C", sourceText: "C" });
 });
 
 test("the g prefix jumps only on two initial presses and clears on another key, auto-repeat, or re-entry", async (t) => {
@@ -429,7 +433,7 @@ test("the g prefix jumps only on two initial presses and clears on another key, 
 	interrupted.key("g");
 	interrupted.key("v");
 	interrupted.key("c");
-	assert.deepEqual(draft(interrupted).anchor, { itemId: "second", start: 8, end: 9, quote: "D" });
+	assert.deepEqual(draft(interrupted).anchor, { itemId: "second", start: 8, end: 9, quote: "D", sourceText: "D" });
 
 	const repeated = await open(t, [], undefined, new Map(), false, { items });
 	repeated.click("pi-keyboard-toggle");
@@ -438,7 +442,7 @@ test("the g prefix jumps only on two initial presses and clears on another key, 
 	repeated.key("g", { is_held: true });
 	repeated.key("v");
 	repeated.key("c");
-	assert.deepEqual(draft(repeated).anchor, { itemId: "second", start: 8, end: 9, quote: "D" });
+	assert.deepEqual(draft(repeated).anchor, { itemId: "second", start: 8, end: 9, quote: "D", sourceText: "D" });
 
 	const reentered = await open(t, [], undefined, new Map(), false, { items });
 	reentered.click("pi-keyboard-toggle");
@@ -448,17 +452,20 @@ test("the g prefix jumps only on two initial presses and clears on another key, 
 	reentered.key("g");
 	reentered.key("v");
 	reentered.key("c");
-	assert.deepEqual(draft(reentered).anchor, { itemId: "second", start: 0, end: 1, quote: "C" });
+	assert.deepEqual(draft(reentered).anchor, { itemId: "second", start: 0, end: 1, quote: "C", sourceText: "C" });
 });
 
-test("gg and G scroll the jumped-to row into view", async (t) => {
+test("gg and G scroll the jumped-to transcript item into view", async (t) => {
 	const lines = Array.from({ length: 12 }, (_, index) => `line ${index}`);
 	const app = await open(t, [], undefined, new Map(), false, {
-		items: [{ id: "item", kind: "assistant", label: "Assistant", text: lines.join("\n") }],
+		items: [
+			{ id: "first", kind: "assistant", label: "Assistant", text: lines.join("\n") },
+			{ id: "second", kind: "user", label: "You", text: "Last message" },
+		],
 	});
 	app.click("pi-keyboard-toggle");
 	app.key("shift-g");
-	assert.equal(app.scrollTop(), 6 * keyboard.ROW_HEIGHT);
+	assert.equal(app.scrollTop(), 1);
 	app.key("g");
 	app.key("g");
 	assert.equal(app.scrollTop(), 0);
@@ -532,7 +539,7 @@ test("reconnect keeps stale note actions disabled until the new review succeeds"
 	app.click("pi-reconnect");
 	await setImmediate();
 	assert.match(app.text(), /Quote from port 2345/);
-	const actions = ["pi-deliver", "pi-start-note", "pi-edit-note", "pi-delete-note"];
+	const actions = ["pi-send-main", "pi-start-note", "pi-edit-note", "pi-delete-note"];
 	for (const id of actions) assert.equal(app.node(id).handlers.on_click, undefined, id);
 	firstReview.resolve(response({ error: "Review unavailable" }, 503));
 	await setImmediate();
@@ -541,7 +548,7 @@ test("reconnect keeps stale note actions disabled until the new review succeeds"
 	app.click("pi-note-thread");
 	app.editReply("Draft reply");
 	assert.equal(app.node("pi-reply-thread").handlers.on_click, undefined);
-	app.replyInput().submit({ secondary: true, shift: false }, "\n");
+	app.replyInput().submit({ secondary: true, shift: true }, "\n");
 	assert.deepEqual(app.posts, []);
 	app.pollReview();
 	await setImmediate();
@@ -759,20 +766,20 @@ test("reopening after a lost acknowledgment retries exactly the previous reply a
 	restored.click("pi-note-thread");
 	assert.match(restored.text(), /Retry previous reply/);
 	restored.editReply("New draft");
-	restored.replyInput().submit({ secondary: true, shift: false }, "\n");
+	restored.replyInput().submit({ secondary: true, shift: true }, "\n");
 	await setImmediate();
 	assert.deepEqual(restored.posts[0].body, sent);
 	restored.posts[0].resolve(response({ notes: [saved] }));
 	await setImmediate();
-	assert.equal(restored.replyInput().value(), "New draft\n");
+	assert.equal(restored.replyInput().value(), "New draft");
 	restored.click("pi-reply-thread");
 	await setImmediate();
-	assert.equal(restored.posts[1].body.text, "New draft\n");
+	assert.equal(restored.posts[1].body.text, "New draft");
 	assert.notEqual(restored.posts[1].body.requestId, sent.requestId);
 });
 
 for (const end of [3, 11]) {
-	test(`the retry shortcut acknowledges a running turn and ${end === 3 ? "clears just the unchanged draft" : "keeps changes from replacing a selection"}`, async (t) => {
+	test(`the retry shortcut acknowledges a running turn without adding a newline at selection end ${end}`, async (t) => {
 		const drafts = new Map();
 		const requestId = randomUUID();
 		const body = { action: "reply", noteId: thread.id, text: "中🦀Existing reply", requestId };
@@ -781,12 +788,12 @@ for (const end of [3, 11]) {
 		const running = { ...thread, turns: [{ id: requestId, status: "running", text: body.text }] };
 		const app = await open(t, [running], undefined, drafts);
 		app.click("pi-note-thread");
-		app.replyInput().submit({ secondary: true, shift: false }, "\n", { start: 3, end });
+		app.replyInput().submit({ secondary: true, shift: true }, "\n", { start: 3, end });
 		await setImmediate();
 		assert.deepEqual(app.posts[0].body, body);
 		app.posts[0].resolve(response({ notes: [running] }));
 		await setImmediate();
-		assert.equal(app.replyInput().value(), end === 3 ? "" : "中🦀\n reply");
+		assert.equal(app.replyInput().value(), "");
 		assert.equal(app.node("pi-reply-thread").handlers.on_click, undefined);
 	});
 }
@@ -896,36 +903,595 @@ test("an in-flight reply preserves newer reply text", async (t) => {
 	assert.equal(app.drafts.get(model.replyDraftKey(sessionId, thread.id)), "Newer reply");
 });
 
-for (const action of ["save", "reply"]) {
-	test(`only Cmd/Ctrl+Enter can ${action} from the textarea`, async (t) => {
-		const app = await open(t, [thread]);
-		if (action === "save") app.addComment();
-		else app.click("pi-note-thread");
-		const input = action === "save" ? app.commentInput() : app.replyInput();
-		const button = action === "save" ? "pi-save-comment" : "pi-reply-thread";
-		input.edit("First line");
-		input.submit({ secondary: false, shift: false }, "\n");
-		assert.deepEqual(app.posts, []);
-		assert.equal(input.value(), "First line\n");
-		input.edit(`${input.value()}Second line`);
-		input.submit({ secondary: false, shift: true }, "\n");
-		assert.deepEqual(app.posts, []);
-		assert.equal(input.value(), "First line\nSecond line\n");
-		input.submit({ secondary: true, shift: true });
-		assert.deepEqual(app.posts, []);
-		assert.equal(input.value(), "First line\nSecond line\n");
-		assert.ok(app.node(button).handlers.on_click);
-		input.edit(`${input.value()}Third line`);
-		input.submit({ secondary: true, shift: false }, "\n");
+test("Enter saves the comment without the native newline, Shift+Enter keeps it, and a replaced selection is restored", async (t) => {
+	const app = await open(t);
+	app.addComment();
+	const input = app.commentInput();
+	input.edit("First line");
+	input.submit({ secondary: false, shift: true }, "\n");
+	assert.deepEqual(app.posts, []);
+	assert.equal(input.value(), "First line\n");
+	input.edit(`${input.value()}Second line`);
+	input.submit({ secondary: false, shift: false }, "\n");
+	await setImmediate();
+	assert.equal(app.posts.length, 1);
+	assert.deepEqual(app.posts[0].body.anchor, anchor);
+	assert.equal(app.posts[0].body.text, "First line\nSecond line");
+	const saved = pending("saved", "First line\nSecond line");
+	app.posts[0].resolve(response({ notes: [saved], noteId: saved.id }));
+	await setImmediate();
+	assert.equal(app.node("pi-save-comment"), undefined);
+
+	const selected = await open(t);
+	selected.addComment();
+	selected.commentInput().edit("abcdef");
+	selected.commentInput().select({ start: 2, end: 4 });
+	selected.commentInput().submit({ secondary: false, shift: false }, "\n", { start: 2, end: 4 });
+	await setImmediate();
+	assert.equal(selected.posts[0].body.text, "abcdef");
+});
+
+test("main Enter saves, Shift+Enter inserts a newline, and the modified keys send to distinct destinations", async (t) => {
+	const app = await open(t, [pending("note", "Pending comment")]);
+	const input = app.mainInput();
+	input.edit("Main message");
+	input.submit({ secondary: false, shift: false }, "\n");
+	assert.deepEqual(app.posts, []);
+	assert.equal(input.value(), "Main message");
+	assert.equal(app.drafts.get(model.mainDraftKey(sessionId)), "Main message");
+	input.submit({ secondary: false, shift: true }, "\n");
+	assert.equal(input.value(), "Main message\n");
+	input.submit({ secondary: true, shift: false }, "\n");
+	await setImmediate();
+	assert.equal(app.posts.length, 1);
+	assert.equal(app.posts[0].body.action, "send");
+	assert.deepEqual(app.posts[0].body.noteIds, ["note"]);
+	assert.equal(app.posts[0].body.text, "Main message\n");
+
+	const started = await open(t);
+	started.mainInput().edit("Background only");
+	started.mainInput().submit({ secondary: true, shift: true }, "\n");
+	await setImmediate();
+	assert.equal(started.posts[0].body.action, "start");
+	assert.equal(started.posts[0].body.text, "Background only");
+});
+
+test("acknowledging another view's background start preserves even an identical draft", async (t) => {
+	const original = { action: "start", createId: randomUUID(), text: "Same question" };
+	const drafts = new Map([
+		[model.startAttemptKey(sessionId), JSON.stringify({ createId: original.createId, text: original.text })],
+		[model.mainDraftKey(sessionId), original.text],
+	]);
+	const started = { ...thread, anchor: null, id: original.createId, text: original.text };
+	const other = await open(t, [started], undefined, drafts);
+	other.click("pi-start-new");
+	await setImmediate();
+	assert.deepEqual(other.posts[0].body, original);
+	other.posts[0].resolve(response({ notes: [started], noteId: started.id }));
+	await setImmediate();
+	assert.equal(other.mainInput().value(), original.text);
+	assert.equal(drafts.get(model.mainDraftKey(sessionId)), original.text);
+	assert.equal(drafts.has(model.startAttemptKey(sessionId)), false);
+});
+
+test("checking a pending background start replays the original request and keeps a newer draft", async (t) => {
+	const first = await open(t);
+	first.mainInput().edit("Original question");
+	first.click("pi-start-new");
+	await setImmediate();
+	const original = first.posts[0].body;
+	first.posts[0].reject(new Error("Lost acknowledgment"));
+	await setImmediate();
+	first.mainInput().edit("");
+
+	const started = { ...thread, anchor: null, id: original.createId, text: original.text };
+	const reopened = await open(t, [started], undefined, first.drafts);
+	assert.equal(reopened.mainInput().value(), "");
+	assert.match(reopened.text(), /Check pending start/);
+	assert.ok(reopened.node("pi-start-new").handlers.on_click);
+	reopened.mainInput().edit("New question");
+	reopened.click("pi-start-new");
+	await setImmediate();
+	assert.deepEqual(reopened.posts[0].body, original);
+	reopened.posts[0].resolve(response({ notes: [started], noteId: started.id }));
+	await setImmediate();
+	assert.equal(reopened.mainInput().value(), "New question");
+	assert.equal(reopened.drafts.get(model.mainDraftKey(sessionId)), "New question");
+	assert.doesNotMatch(reopened.text(), /Check pending start/);
+	reopened.click("pi-start-new");
+	await setImmediate();
+	assert.equal(reopened.posts[1].body.text, "New question");
+	assert.notEqual(reopened.posts[1].body.createId, original.createId);
+});
+
+for (const shift of [false, true]) {
+	test(`a comment submission saves before sending to ${shift ? "background" : "main"} Pi`, async (t) => {
+		const existing = pending("existing", "Another comment");
+		const app = await open(t, [existing]);
+		app.addComment();
+		app.editComment("New comment");
+		app.commentInput().submit({ secondary: true, shift }, "\n");
 		await setImmediate();
-		assert.equal(app.posts.length, 1);
-		const { body } = app.posts[0];
-		assert.equal(body.action, action);
-		assert.equal(body.text, "First line\nSecond line\nThird line\n");
-		if (action === "save") assert.deepEqual(body.anchor, anchor);
-		else assert.equal(body.noteId, thread.id);
+		assert.equal(app.posts[0].body.action, "save");
+		assert.equal(app.posts[0].body.text, "New comment");
+		const saved = pending("new", "New comment");
+		app.posts[0].resolve(response({ notes: [existing, saved], noteId: saved.id }));
+		await setImmediate();
+		assert.equal(app.posts.length, 2);
+		const body = app.posts[1].body;
+		if (shift) assert.deepEqual(body, { action: "start", noteId: saved.id });
+		else {
+			assert.equal(body.action, "send");
+			assert.deepEqual(body.noteIds, [existing.id, saved.id]);
+			assert.deepEqual(body.noteVersions, [existing.version, saved.version]);
+		}
 	});
 }
+
+for (const action of ["send", "start"]) {
+	test(`acknowledging a ${action} preserves an identical draft written by another view`, async (t) => {
+		const drafts = new Map();
+		const first = await open(t, [], undefined, drafts);
+		const other = await open(t, [], undefined, drafts);
+		first.mainInput().edit("Shared wording");
+		first.click(action === "send" ? "pi-send-main" : "pi-start-new");
+		await setImmediate();
+		const { body } = first.posts[0];
+		other.mainInput().edit(body.text);
+		const started = { ...thread, anchor: null, id: body.createId, text: body.text };
+		first.posts[0].resolve(response(action === "send"
+			? { notes: [], sentRequestId: body.requestId }
+			: { notes: [started], noteId: started.id }));
+		await setImmediate();
+		assert.equal(first.mainInput().value(), body.text);
+		const reopened = await open(t, [], undefined, drafts);
+		assert.equal(reopened.mainInput().value(), body.text);
+	});
+}
+
+test("a background start rejected before dispatch does not pin the old draft", async (t) => {
+	const app = await open(t);
+	app.mainInput().edit("First question");
+	app.click("pi-start-new");
+	await setImmediate();
+	app.posts[0].resolve(response({ error: "No model selected." }, 409));
+	await setImmediate();
+	assert.equal(app.mainInput().value(), "First question");
+	app.mainInput().edit("Current question");
+	app.click("pi-start-new");
+	await setImmediate();
+	assert.equal(app.posts[1].body.text, "Current question");
+	assert.notEqual(app.posts[1].body.createId, app.posts[0].body.createId);
+});
+
+test("an unacknowledged main send keeps the draft and checks the same request ID without replaying", async (t) => {
+	const app = await open(t, [pending("note", "Pending comment")]);
+	app.mainInput().edit("Keep this message");
+	app.click("pi-send-main");
+	await setImmediate();
+	assert.equal(app.posts.length, 1);
+	const body = app.posts[0].body;
+	assert.match(body.requestId, /^[0-9a-f-]{36}$/i);
+	assert.equal(app.node("pi-send-main").handlers.on_click, undefined);
+	app.mainInput().submit({ secondary: true, shift: false }, "\n");
+	assert.equal(app.posts.length, 1);
+	app.posts[0].reject(new Error("Lost acknowledgment"));
+	await setImmediate();
+	assert.match(app.text(), /Could not reach the Pi annotation server/);
+	assert.equal(app.mainInput().value(), "Keep this message");
+	app.mainInput().edit("New unsent message");
+	app.click("pi-send-main");
+	await setImmediate();
+	assert.equal(app.posts.length, 2);
+	assert.deepEqual(app.posts[1].body, { action: "check-send", requestId: body.requestId });
+	const sent = { ...pending("note", "Pending comment"), status: "sent" };
+	app.posts[1].resolve(response({ notes: [sent], sentRequestId: body.requestId }));
+	await setImmediate();
+	assert.equal(app.mainInput().value(), "New unsent message");
+	assert.equal(app.drafts.get(model.mainDraftKey(sessionId)), "New unsent message");
+	app.click("pi-send-main");
+	await setImmediate();
+	assert.equal(app.posts[2].body.text, "New unsent message");
+	assert.deepEqual(app.posts[2].body.noteIds, []);
+	assert.notEqual(app.posts[2].body.requestId, body.requestId);
+});
+
+test("a second open tab checks the shared pending send without replacing it or clearing its own draft", async (t) => {
+	const drafts = new Map();
+	const first = await open(t, [], undefined, drafts);
+	const second = await open(t, [], undefined, drafts);
+	first.mainInput().edit("Shared text");
+	second.mainInput().edit("Shared text");
+	first.click("pi-send-main");
+	await setImmediate();
+	const { requestId } = first.posts[0].body;
+	second.mainInput().submit({ secondary: true, shift: false });
+	assert.deepEqual(second.posts, []);
+	assert.equal(JSON.parse(drafts.get(model.sendAttemptKey(sessionId))).requestId, requestId);
+	assert.match(second.text(), /Check previous send/);
+
+	first.posts[0].reject(new Error("Lost acknowledgment"));
+	second.restart();
+	await setImmediate();
+	second.click("pi-reconnect");
+	await setImmediate();
+	second.click("pi-send-main");
+	assert.deepEqual(second.posts[0].body, { action: "check-send", requestId });
+	second.posts[0].resolve(response({ notes: [], sentRequestId: requestId }));
+	await setImmediate();
+	assert.equal(second.mainInput().value(), "Shared text");
+	assert.equal(drafts.get(model.mainDraftKey(sessionId)), "Shared text");
+	assert.doesNotMatch(first.text(), /Check previous send/);
+
+	second.mainInput().edit("Intentional follow-up");
+	second.click("pi-send-main");
+	await setImmediate();
+	const next = second.posts[1];
+	assert.equal(next.body.action, "send");
+	assert.equal(next.body.text, "Intentional follow-up");
+	assert.notEqual(next.body.requestId, requestId);
+	next.resolve(response({ notes: [], sentRequestId: next.body.requestId }));
+	await setImmediate();
+	assert.equal(second.mainInput().value(), "");
+});
+
+test("a not-sent check clears a staged attempt without dispatching or clearing either draft", async (t) => {
+	const drafts = new Map();
+	const flush = Promise.withResolvers();
+	const first = await open(t, [], undefined, drafts, false, { flush: () => flush.promise });
+	const second = await open(t, [], undefined, drafts);
+	first.mainInput().edit("Keep this message");
+	second.mainInput().edit("Keep this message");
+	first.click("pi-send-main");
+	second.click("pi-send-main");
+	assert.equal(second.posts[0].body.action, "check-send");
+	second.posts[0].resolve(response({ error: "This request was not sent. Start a new send." }, 409));
+	await setImmediate();
+	flush.resolve();
+	await setImmediate();
+	assert.deepEqual(first.posts, []);
+	assert.equal(first.mainInput().value(), "Keep this message");
+	assert.equal(second.mainInput().value(), "Keep this message");
+	assert.equal(drafts.get(model.mainDraftKey(sessionId)), "Keep this message");
+	assert.equal(drafts.has(model.sendAttemptKey(sessionId)), false);
+});
+
+test("a send blocked by a server receipt can reconcile that receipt without clearing its draft", async (t) => {
+	const app = await open(t);
+	app.mainInput().edit("Keep this message");
+	app.click("pi-send-main");
+	await setImmediate();
+	const requestId = randomUUID();
+	app.posts[0].resolve(response({ error: "Receipt unknown. Check the source conversation before sending again.", pendingSendRequestId: requestId }, 409));
+	await setImmediate();
+
+	const reopened = await open(t, [], undefined, app.drafts);
+	reopened.click("pi-send-main");
+	assert.deepEqual(reopened.posts[0].body, { action: "check-send", requestId });
+	reopened.posts[0].resolve(response({ error: "Receipt unknown. Check the source conversation before sending again." }, 409));
+	await setImmediate();
+	reopened.click("pi-resolve-sent");
+	reopened.click("pi-resolve-sent");
+	assert.deepEqual(reopened.posts[1].body, { action: "resolve-send", requestId, outcome: "sent" });
+	reopened.posts[1].resolve(response({ notes: [], sentRequestId: requestId }));
+	await setImmediate();
+	assert.equal(reopened.mainInput().value(), "Keep this message");
+	assert.equal(app.drafts.get(model.mainDraftKey(sessionId)), "Keep this message");
+	assert.equal(app.drafts.has(model.sendAttemptKey(sessionId)), false);
+});
+
+test("main send keeps the draft when another view edits a comment before dispatch", async (t) => {
+	const note = pending("note", "Seen comment");
+	const app = await open(t, [note]);
+	app.mainInput().edit("Keep this message");
+	app.click("pi-send-main");
+	await setImmediate();
+	const { body } = app.posts[0];
+	assert.deepEqual(body.noteIds, [note.id]);
+	assert.deepEqual(body.noteVersions, [note.version]);
+
+	app.posts[0].resolve(response({ error: "A selected note changed. Review the notes before sending again." }, 409));
+	await setImmediate();
+	assert.match(app.text(), /changed.*before sending/i);
+	assert.equal(app.mainInput().value(), "Keep this message");
+	assert.doesNotMatch(app.text(), /Check previous send/);
+	assert.equal(app.drafts.has(model.sendAttemptKey(sessionId)), false);
+});
+
+test("a live uncertain receipt offers check and sent confirmation, not a resend or not-sent resolution", async (t) => {
+	const app = await open(t);
+	app.mainInput().edit("One message");
+	app.click("pi-send-main");
+	await setImmediate();
+	const { requestId } = app.posts[0].body;
+	app.posts[0].resolve(response({ error: "Receipt unknown. Main Pi may still deliver this message. Check again or confirm it was sent if you see it." }, 409));
+	await setImmediate();
+	assert.match(app.text(), /may still deliver/);
+	assert.match(app.text(), /Check previous send/);
+	assert.equal(app.node("pi-resolve-not-sent"), undefined);
+	assert.equal(app.mainInput().value(), "One message");
+	app.click("pi-resolve-sent");
+	assert.equal(app.posts.length, 1);
+	app.click("pi-resolve-sent");
+	assert.deepEqual(app.posts[1].body, { action: "resolve-send", requestId, outcome: "sent" });
+	app.posts[1].resolve(response({ notes: [], sentRequestId: requestId }));
+	await setImmediate();
+	assert.equal(app.mainInput().value(), "");
+	assert.match(app.text(), /Sent your message/);
+});
+
+test("an acknowledged main draft is not resurrected by Enter", async (t) => {
+	const app = await open(t, [], undefined, new Map(), true);
+	app.mainInput().edit("Send once");
+	app.click("pi-send-main");
+	await setImmediate();
+	app.posts[0].resolve(response({ notes: [], sentRequestId: app.posts[0].body.requestId }));
+	await setImmediate();
+	for (const secondary of [false, true]) {
+		app.mainInput().submit({ secondary, shift: false }, "\n");
+		await setImmediate();
+		assert.equal(app.mainInput().value(), "");
+		assert.equal(app.drafts.has(model.mainDraftKey(sessionId)), false);
+		assert.equal(app.posts.length, 1);
+	}
+});
+
+test("a restored composer submits its exact draft and a replacement composer starts blank", async (t) => {
+	const drafts = new Map([[model.composerDraftKey(sessionId), model.encodeComposerDraft({
+		noteId: null, anchor, text: "Recovered text", createId: randomUUID(),
+	})]]);
+	const app = await open(t, [], undefined, drafts);
+	app.commentInput().submit({ secondary: false, shift: false }, "\n", { start: 0, end: 0 });
+	assert.equal(app.posts[0].body.text, "Recovered text");
+	app.posts[0].resolve(response({ notes: [pending("saved", "Recovered text")], noteId: "saved" }));
+	await setImmediate();
+	app.addComment();
+	app.commentInput().submit({ secondary: false, shift: false }, "\n");
+	assert.equal(app.commentInput().value(), "");
+	assert.equal(app.posts.length, 1);
+});
+
+test("a newline pasted in an earlier input event is not removed by a later submit without insertion", async (t) => {
+	const app = await open(t);
+	app.mainInput().edit("Line");
+	app.mainInput().edit("Line\n");
+	await setImmediate();
+	app.mainInput().submit({ secondary: true, shift: false });
+	await setImmediate();
+	assert.equal(app.posts[0].body.text, "Line\n");
+});
+
+test("a stale candidate does not replace a previous pasted newline when native Enter inserts a new one", async (t) => {
+	const app = await open(t);
+	app.mainInput().edit("Line");
+	app.mainInput().edit("Line\n");
+	app.mainInput().submit({ secondary: true, shift: false }, "\n");
+	await setImmediate();
+	assert.equal(app.posts[0].body.text, "Line\n");
+});
+
+for (const outcome of ["sent", "not-sent"]) {
+	test(`a reopened send can be recorded as ${outcome} only after an unknown receipt and explicit confirmation`, async (t) => {
+		const note = pending("note", "Pending comment");
+		const attempt = { action: "send", requestId: randomUUID(), noteIds: [note.id], text: "Previous message" };
+		const drafts = new Map([
+			[model.sendAttemptKey(sessionId), JSON.stringify(attempt)],
+			[model.mainDraftKey(sessionId), attempt.text],
+		]);
+		const app = await open(t, [note], undefined, drafts);
+		assert.equal(app.node("pi-resolve-sent"), undefined);
+		app.addComment();
+		app.editComment("New comment");
+		assert.equal(app.node("pi-send-comment").handlers.on_click, undefined);
+		assert.match(app.text(), /Check the previous send before using Save & send/);
+		app.commentInput().submit({ secondary: true, shift: false }, "\n");
+		assert.equal(app.posts.length, 0);
+		assert.equal(app.commentInput().value(), "New comment");
+		app.click("pi-cancel-comment");
+		app.mainInput().submit({ secondary: true, shift: false }, "\n");
+		assert.equal(app.posts.length, 0);
+		app.click("pi-send-main");
+		assert.deepEqual(app.posts[0].body, { action: "check-send", requestId: attempt.requestId });
+		app.posts[0].resolve(response({ error: "Main Pi send is still in progress." }, 409));
+		await setImmediate();
+		assert.equal(app.node("pi-resolve-sent"), undefined);
+		app.click("pi-send-main");
+		app.posts[1].resolve(response({ error: "Receipt unknown. Check the source conversation before sending again." }, 409));
+		await setImmediate();
+		const id = `pi-resolve-${outcome}`;
+		app.click(id);
+		assert.equal(app.posts.length, 2);
+		assert.match(app.text(), /Confirm it was (not )?sent/);
+		app.click(id);
+		assert.deepEqual(app.posts[2].body, { action: "resolve-send", requestId: attempt.requestId, outcome });
+		app.posts[2].resolve(response(outcome === "sent"
+			? { notes: [{ ...note, status: "sent" }], sentRequestId: attempt.requestId }
+			: { notes: [note], resolvedRequestId: attempt.requestId }));
+		await setImmediate();
+		assert.equal(app.node(id), undefined);
+		assert.equal(drafts.has(model.sendAttemptKey(sessionId)), false);
+		assert.equal(app.mainInput().value(), attempt.text);
+		assert.equal(drafts.get(model.mainDraftKey(sessionId)), attempt.text);
+	});
+}
+
+test("Save & send uses the invoked batch and keeps a newer main draft", async (t) => {
+	const first = pending("first", "Already pending");
+	const later = pending("later", "Added while saving");
+	const saved = pending("saved", "New comment");
+	const app = await open(t, [first]);
+	app.mainInput().edit("Original main text");
+	app.addComment();
+	app.editComment(saved.text);
+	app.click("pi-send-comment");
+	assert.equal(app.posts[0].body.action, "save");
+	app.mainInput().edit("Newer main text");
+	app.posts[0].resolve(response({ notes: [first, later, saved], noteId: saved.id }));
+	await setImmediate();
+	const { body } = app.posts[1];
+	assert.equal(body.text, "Original main text");
+	assert.deepEqual(body.noteIds, [first.id, saved.id]);
+	assert.deepEqual(body.noteVersions, [first.version, saved.version]);
+	app.posts[1].resolve(response({ notes: [{ ...first, status: "sent" }, later, { ...saved, status: "sent" }], sentRequestId: body.requestId }));
+	await setImmediate();
+	assert.equal(app.mainInput().value(), "Newer main text");
+	assert.equal(app.drafts.get(model.mainDraftKey(sessionId)), "Newer main text");
+});
+
+test("Save & send stops when another review view edits an invoked comment while saving", async (t) => {
+	const first = pending("first", "Already pending");
+	const edited = pending(first.id, "Edited by another view");
+	const saved = pending("saved", "New comment");
+	const app = await open(t, [first]);
+	app.mainInput().edit("Keep the main draft");
+	app.addComment();
+	app.editComment(saved.text);
+	app.click("pi-send-comment");
+	app.posts[0].resolve(response({ notes: [edited, saved], noteId: saved.id }));
+	await setImmediate();
+
+	assert.deepEqual(app.posts.map(({ body }) => body.action), ["save"]);
+	assert.match(app.text(), /changed.*before sending/i);
+	assert.match(app.text(), /Edited by another view/);
+	assert.match(app.text(), /New comment/);
+	assert.equal(app.mainInput().value(), "Keep the main draft");
+});
+
+test("main send excludes rewritten anchors and requires legacy quotes to match", async (t) => {
+	const stale = pending("stale", "Old source");
+	const { sourceText, ...legacyAnchor } = anchor;
+	const legacy = { ...pending("legacy", "Legacy source"), anchor: { ...legacyAnchor, quote: "Rewri" } };
+	const transcript = { items: [{ id: anchor.itemId, kind: "user", label: "You", text: "Rewritten" }] };
+	const blocked = await open(t, [stale, { ...pending("legacy-stale", "Legacy stale"), anchor: legacyAnchor }], undefined, new Map(), false, transcript);
+	assert.equal(blocked.node("pi-send-main").handlers.on_click, undefined);
+	const app = await open(t, [stale, legacy], undefined, new Map(), false, transcript);
+	app.click("pi-send-main");
+	await setImmediate();
+	assert.deepEqual(app.posts[0].body.noteIds, [legacy.id]);
+});
+
+test("checking an absent send never dispatches and a later explicit send is separate", async (t) => {
+	const attempt = { action: "send", requestId: randomUUID(), noteIds: [], noteVersions: [], text: "Previously staged" };
+	const drafts = new Map([
+		[model.sendAttemptKey(sessionId), JSON.stringify(attempt)],
+		[model.mainDraftKey(sessionId), attempt.text],
+	]);
+	const app = await open(t, [], undefined, drafts);
+	app.click("pi-send-main");
+	assert.deepEqual(app.posts[0].body, { action: "check-send", requestId: attempt.requestId });
+	app.posts[0].resolve(response({ error: "This request was not sent. Start a new send." }, 409));
+	await setImmediate();
+	assert.equal(app.posts.length, 1);
+	assert.equal(app.mainInput().value(), attempt.text);
+	assert.equal(app.node("pi-resolve-not-sent"), undefined);
+	app.click("pi-send-main");
+	await setImmediate();
+	assert.equal(app.posts[1].body.action, "send");
+	assert.notEqual(app.posts[1].body.requestId, attempt.requestId);
+});
+
+test("an independent copied comment remains editable after reopening its draft", async (t) => {
+	const note = { ...pending("copy", "Original copy"), anchor: null };
+	const app = await open(t, [note]);
+	app.click("pi-note-copy");
+	app.click("pi-edit-copy");
+	app.editComment("Edited copy");
+	const reopened = await open(t, [note], undefined, app.drafts);
+	assert.equal(reopened.commentInput().value(), "Edited copy");
+	assert.match(reopened.text(), /Independent conversation copy/);
+	reopened.click("pi-save-comment");
+	assert.deepEqual(reopened.posts[0].body, {
+		action: "save", noteId: note.id, expectedText: note.text, anchor: null, text: "Edited copy",
+	});
+});
+
+test("copy replaces an invalid identity, flushes it before posting, and reuses it after reopening", async (t) => {
+	const firstFlush = Promise.withResolvers();
+	const drafts = new Map([[model.copyAttemptKey(sessionId, thread.id), "incomplete-uuid"]]);
+	const completed = { ...thread, turns: [{ id: "turn", status: "completed", text: "Ask", reply: "Answer" }] };
+	const app = await open(t, [completed], undefined, drafts, false, { flush: () => firstFlush.promise });
+	try {
+		app.click("pi-note-thread");
+		app.click("pi-copy-thread");
+		assert.equal(app.posts.length, 0);
+	} finally {
+		firstFlush.resolve();
+	}
+	await setImmediate();
+	const { body } = app.posts[0];
+	assert.match(body.createId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+	app.posts[0].reject(new Error("Lost acknowledgment"));
+	await setImmediate();
+	const copy = { ...pending(body.createId, "Original copy"), anchor: null };
+	const reopened = await open(t, [completed, copy], undefined, drafts);
+	reopened.click("pi-note-thread");
+	reopened.click("pi-copy-thread");
+	await setImmediate();
+	assert.deepEqual(reopened.posts[0].body, body);
+	reopened.posts[0].resolve(response({ notes: [completed, copy], noteId: copy.id }));
+	await setImmediate();
+	reopened.click("pi-note-thread");
+	reopened.click("pi-copy-thread");
+	await setImmediate();
+	assert.notEqual(reopened.posts[1].body.createId, body.createId);
+});
+
+test("an initially empty transcript activates keyboard navigation on its first message", async (t) => {
+	const app = await open(t, [], undefined, new Map(), false, { items: [], updates: 1 });
+	app.event({ version: 2, reset: false, items: [{ id: "item", kind: "user", label: "You", text: "👩‍💻 hello" }] });
+	await setImmediate();
+	assert.deepEqual(app.node("pi-markdown-item").highlights.map(({ start, end }) => [start, end]), [[0, "👩‍💻".length]]);
+	app.key("v");
+	assert.match(app.text(), /VISUAL/);
+	assert.ok(app.node("pi-add-comment"));
+});
+
+test("a rewritten selection and a hidden tool output cannot be annotated from stale offsets", async (t) => {
+	const user = { id: "item", kind: "user", label: "You", text: "Quote text" };
+	const tool = { id: "tool", kind: "tool", label: "bash", text: "Tool output" };
+	const app = await open(t, [], undefined, new Map(), false, { items: [user, tool], updates: 1 });
+	app.key("v");
+	assert.ok(app.node("pi-add-comment"));
+	app.event({ version: 2, reset: true, items: [{ ...user, text: "Rewritten text" }, tool] });
+	await setImmediate();
+	assert.equal(app.node("pi-add-comment"), undefined);
+	assert.doesNotMatch(app.text(), /\bVISUAL\b/);
+	app.click("pi-tool-toggle-tool");
+	app.key("shift-g");
+	app.key("v");
+	assert.ok(app.node("pi-add-comment"));
+	app.click("pi-tool-toggle-tool");
+	assert.equal(app.node("pi-add-comment"), undefined);
+	assert.doesNotMatch(app.text(), /\bVISUAL\b/);
+});
+
+test("each background thread keeps its own reply and copy is the only way to snapshot it", async (t) => {
+	const first = { ...thread, id: "first", turns: [{ id: "turn", status: "completed", text: "Ask", reply: "Answer" }] };
+	const second = { ...thread, id: "second", turns: [] };
+	const app = await open(t, [first, second]);
+	app.click("pi-note-first");
+	app.replyInput(0).edit("Reply to first");
+	app.replyInput(0).submit({ secondary: true, shift: true }, "\n");
+	await setImmediate();
+	assert.equal(app.posts[0].body.noteId, "first");
+	app.posts[0].resolve(response({ notes: [first, second] }));
+	await setImmediate();
+	app.click("pi-note-second");
+	app.replyInput(1).edit("Reply to second");
+	app.replyInput(1).submit({ secondary: true, shift: true }, "\n");
+	await setImmediate();
+	assert.equal(app.posts[1].body.noteId, "second");
+	assert.equal(app.posts.length, 2);
+	app.posts[1].resolve(response({ notes: [first, second] }));
+	await setImmediate();
+	app.click("pi-note-first");
+	app.click("pi-copy-first");
+	await setImmediate();
+	assert.equal(app.posts.length, 3);
+	assert.equal(app.posts[2].body.action, "copy");
+	assert.equal(app.posts[2].body.noteId, "first");
+	assert.match(app.posts[2].body.createId, /^[0-9a-f-]{36}$/i);
+});
 
 test("clicking Add comment opens only the textarea at the selection and focuses it when mounted", async (t) => {
 	const app = await open(t);
@@ -943,7 +1509,7 @@ test("clicking Add comment opens only the textarea at the selection and focuses 
 	assert.deepEqual(composer.position, { left: 90, top: 60 });
 	assert.ok(flatten(composer).some((child) => child.elementId === "pi-save-comment"));
 	assert.equal(app.text().match(/Save comment/g)?.length, 1);
-	assert.equal(app.focusedInput(), undefined);
+	assert.equal(app.focusedInput(), "Transcript");
 	app.elementEvent("pi-local-composer-card", "on_size_change", { width: 350, height: 260 });
 	assert.equal(app.focusedInput(), "Write a comment on the selected text");
 	app.editComment("Here is a comment");
@@ -954,6 +1520,56 @@ test("clicking Add comment opens only the textarea at the selection and focuses 
 	assert.equal(app.node("pi-local-composer"), undefined);
 	assert.ok(app.node("pi-note-saved"));
 });
+
+test("a rendered Markdown selection keeps its quote and source range across draft recovery and editing", async (t) => {
+	const sourceText = "Please **explain**";
+	const quote = "Please explain";
+	const items = [{ id: "item", kind: "user", label: "You", text: `${sourceText} the cache` }];
+	const selection = { text: quote, range: { start: 0, end: sourceText.length }, position: { x: 280, y: 160 } };
+	const expectedAnchor = { itemId: "item", ...selection.range, quote, sourceText };
+	const first = await open(t, [], undefined, new Map(), false, { items });
+	first.select("pi-markdown-item", selection);
+	first.popupClick("pi-add-selection-comment");
+	await setImmediate();
+	first.editComment("Why?");
+
+	const reopened = await open(t, [], undefined, first.drafts, false, { items });
+	assert.equal(reopened.commentInput().value(), "Why?");
+	assert.match(reopened.text(), /^Please explain$/m);
+	reopened.click("pi-save-comment");
+	assert.deepEqual(reopened.posts[0].body.anchor, expectedAnchor);
+	const saved = { ...pending("saved", "Why?"), anchor: expectedAnchor };
+	reopened.posts[0].resolve(response({ notes: [saved], noteId: saved.id }));
+	await setImmediate();
+	assert.match(reopened.text(), /^Please explain$/m);
+	assert.ok(reopened.node("pi-markdown-item").highlights.some(({ start, end }) => start === 0 && end === sourceText.length));
+	reopened.click("pi-edit-saved");
+	reopened.editComment("Please elaborate");
+	reopened.click("pi-save-comment");
+	assert.deepEqual(reopened.posts[1].body, { action: "save", noteId: saved.id, expectedText: saved.text, anchor: expectedAnchor, text: "Please elaborate" });
+});
+
+test("a legacy formatted comment remains editable without inventing a source fingerprint", async (t) => {
+	const items = [{ id: "item", kind: "user", label: "You", text: "**Quote**" }];
+	const legacy = { ...pending("legacy", "Original"), anchor: { itemId: "item", start: 0, end: 9, quote: "Quote" } };
+	const app = await open(t, [legacy], undefined, new Map(), false, { items });
+	app.click("pi-note-legacy");
+	app.click("pi-edit-legacy");
+	app.editComment("Revised");
+	app.click("pi-save-comment");
+	assert.deepEqual(app.posts[0].body, { action: "save", noteId: legacy.id, expectedText: legacy.text, anchor: legacy.anchor, text: "Revised" });
+});
+
+for (const key of ["l", "v", "escape"]) {
+	test(`the ${key} key dismisses a mouse selection popup`, async (t) => {
+		const app = await open(t);
+		app.select("pi-markdown-item", { text: "Quote", range: { start: 0, end: 5 }, position: { x: 280, y: 160 } });
+		assert.ok(app.popup());
+		app.key(key);
+		assert.equal(app.popup(), undefined);
+		assert.equal(Boolean(app.node("pi-add-comment")), key === "v");
+	});
+}
 
 test("closing the local textarea preserves the draft and allows saving it from the sidebar", async (t) => {
 	const app = await open(t);
@@ -990,7 +1606,7 @@ test("resizing the transcript viewport dismisses the selection popup and keeps t
 	assert.equal(app.popup()?.kind, "popup");
 	resize({ width: 640, height: 440 });
 	assert.equal(app.popup(), undefined);
-	assert.equal(app.focusedInput(), undefined);
+	assert.equal(app.focusedInput(), "Transcript");
 	app.click("pi-add-comment");
 	assert.equal(app.focusedInput(), "Write a comment on the selected text");
 });
@@ -1028,7 +1644,7 @@ test("tool output starts as a summary and expands into selectable content that c
 	app.editComment("Comment from tool output");
 	app.click("pi-save-comment");
 	assert.equal(app.posts.length, 1);
-	assert.deepEqual(app.posts[0].body.anchor, { itemId: "tool", start: 0, end: 17, quote: "Tool output Alpha" });
+	assert.deepEqual(app.posts[0].body.anchor, { itemId: "tool", start: 0, end: 17, quote: "Tool output Alpha", sourceText: "Tool output Alpha" });
 	assert.equal(app.posts[0].body.text, "Comment from tool output");
 });
 
@@ -1040,13 +1656,14 @@ test("a saved comment's highlight appears on a collapsed tool row only after it 
 	assert.ok(app.node("pi-note-saved"));
 	assert.equal(app.node("pi-markdown-tool"), undefined);
 	assert.doesNotMatch(app.text(), /Tool output Alpha/);
+	const hasNoteHighlight = () => app.node("pi-markdown-tool").highlights.some(({ start, end }) => start === 5 && end === 11);
 	app.click("pi-note-saved");
-	assert.deepEqual(app.node("pi-markdown-tool").highlights.map(({ start, end }) => ({ start, end })), [{ start: 5, end: 11 }]);
+	assert.ok(hasNoteHighlight());
 	app.click("pi-tool-toggle-tool");
 	assert.doesNotMatch(app.text(), /Tool output Alpha/);
 	assert.ok(app.node("pi-note-saved"));
 	app.click("pi-tool-toggle-tool");
-	assert.deepEqual(app.node("pi-markdown-tool").highlights.map(({ start, end }) => ({ start, end })), [{ start: 5, end: 11 }]);
+	assert.ok(hasNoteHighlight());
 });
 
 test("an appended tool row starts collapsed and leaves an earlier expanded row open", async (t) => {

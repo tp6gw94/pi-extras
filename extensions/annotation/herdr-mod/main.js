@@ -1,42 +1,55 @@
 import { randomUUID } from "crypto";
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, Button, Popup, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
+import { h_flex, v_flex, Button, Popup, TextareaState, Textarea, TextView, ScrollHandle } from "gpui-base";
 import { checking, closeOverlay, focused, openOverlay, props, readTextFile, settings, theme, window } from "herdr";
 import {
 	applyUpdate,
 	branchNotes,
+	completedTurns,
 	composerDraftKey,
 	connectionFrom,
-	deliverRequest,
-	deliverableNotes,
+	copyAttemptKey,
+	copyRequest,
 	deleteRequest,
+	deliverableNotes,
 	encodeComposerDraft,
 	hasRunningTurn,
+	isUuid,
+	mainDraftKey,
 	notePhase,
 	offBranchCount,
+	panelNotes,
 	parseComposerDraft,
 	parseReplyAttempt,
 	parseReplyDraft,
 	parseReview,
+	parseSendAttempt,
 	parseSnapshot,
+	parseStartAttempt,
 	parseUpdate,
 	replyAttemptKey,
 	replyDraftKey,
 	replyRequest,
 	saveRequest,
+	sendAttemptKey,
+	sendRequest,
+	startAttemptKey,
+	startCreateRequest,
 	startRequest,
 } from "./model.js";
 import { fetchEvents, fetchReview, fetchSnapshot, postReview } from "./client.js";
-import { GUTTER_WIDTH, ROW_HEIGHT, TranscriptKeyboard } from "./keyboard.js";
+import { ROW_HEIGHT, TranscriptKeyboard } from "./keyboard.js";
 
 const HIDDEN_SLEEP_MS = 1500;
 const RETRY_SLEEP_MS = 2500;
 const REVIEW_POLL_MS = 4000;
+const SEND_NOTE_CHANGED = "A selected note changed. Review the notes before sending again.";
 const KEYBOARD_MOTIONS = new Set(["h", "j", "k", "l", "ctrl-d", "ctrl-u"]);
 const commentPopupReplies = new Map();
 
 const PHASE_LABELS = {
 	pending: "Pending",
+	sent: "Sent to Pi",
 	appended: "In original input",
 	running: "Running",
 	completed: "Ready",
@@ -91,8 +104,12 @@ function itemKindLabel(item) {
 	return "Tool";
 }
 
+function chord() {
+	return window()?.platform === "macos" ? "Cmd" : "Ctrl";
+}
+
 function submitHint() {
-	return window()?.platform === "macos" ? "Cmd+Enter" : "Ctrl+Enter";
+	return `${chord()}+Enter`;
 }
 
 function actionButton(t, id, label, options = {}) {
@@ -178,7 +195,8 @@ export default class PiAnnotate extends View {
 		this.keyboardG = false;
 		this.keyboardFocus = cx.focus_handle();
 		this.saveFocus = cx.focus_handle();
-		this.keyboardScroll = VirtualListScrollHandle.new();
+		this.keyboardScroll = ScrollHandle.new();
+		this.keyboardWidth = null;
 		this.version = 0;
 		this.notes = [];
 		this.selection = null;
@@ -192,22 +210,34 @@ export default class PiAnnotate extends View {
 		this.composerFocused = false;
 		this.composerBlank = true;
 		this.composerError = "";
+		this.mainState = null;
+		this.mainFocused = false;
+		this.mainNotice = "";
+		this.mainError = "";
+		this.startAttempt = null;
+		this.ownedSend = undefined;
+		this.ownedStart = undefined;
+		this.observedSendRequestId = undefined;
+		this.sendReceiptUnknown = false;
+		this.sendMayStillArrive = false;
+		this.sendResolution = null;
+		this.inputBaselines = new WeakMap();
+		this.enterEdits = new WeakMap();
 		this.recovered = false;
 		this.replyStates = new Map();
 		this.replyFocused = new Map();
 		this.replyBlank = new Map();
 		this.failures = new Map();
 		this.pending = new Set();
-		this.batchNotice = "";
 		this.pollTask = null;
 		this.reviewTask = null;
 		this.reviewInFlight = false;
 		this.restored = false;
 		this.reviewReady = false;
-		if (this.preview) return;
 		this.sessionId = typeof current.sessionId === "string" ? current.sessionId : "";
 		this.connectionFile = typeof current.connectionFile === "string" ? current.connectionFile : "";
-		this.connect(cx);
+		this.ensureMainState();
+		if (!this.preview) this.connect(cx);
 	}
 
 	close() {
@@ -224,6 +254,7 @@ export default class PiAnnotate extends View {
 		this.pollTask?.cancel();
 		this.reviewTask?.cancel();
 		this.composerState?.release();
+		this.mainState?.release();
 		this.keyboardFocus.release();
 		this.saveFocus.release();
 		this.keyboardScroll.release();
@@ -268,12 +299,14 @@ export default class PiAnnotate extends View {
 				this.status = "live";
 				this.reviewError = "";
 				this.pruneExpandedTools();
-				this.reflowKeyboard();
 				this.pruneSelection();
 				if (!this.restored) {
 					this.restored = true;
 					this.restoreComposerDraft();
+					this.restoreMainDraft();
 				}
+				this.syncSendAttempt();
+				this.reflowKeyboard(cx);
 				this.startPolling(cx, generation);
 				this.startReviewPolling(cx, generation);
 				this.refreshReview(cx, true);
@@ -353,7 +386,8 @@ export default class PiAnnotate extends View {
 				const hadError = this.reviewError;
 				this.applyReview(review);
 				const changed = before !== JSON.stringify(this.notes);
-				if (notify || hadError !== "" || changed || firstReview) cx.notify();
+				const sendChanged = this.syncSendAttempt();
+				if (notify || hadError !== "" || changed || sendChanged || firstReview) cx.notify();
 			} catch (error) {
 				if (this.closed || seq !== this.reviewSeq || generation !== this.generation) return;
 				const message = messageOf(error);
@@ -393,7 +427,7 @@ export default class PiAnnotate extends View {
 		if (this.composerState) return;
 		const state = TextareaState.new({ placeholder: "Write a comment on the selected text", rows: 4 });
 		state.on("change", (_event, cx) => {
-			if (!this.composer) return;
+			if (!this.composer || !this.noteInputChange(state, cx)) return;
 			const text = state.value();
 			if (text === this.composer.text) return;
 			this.composer.text = text;
@@ -413,8 +447,16 @@ export default class PiAnnotate extends View {
 			cx.notify();
 		});
 		state.on("submit", ({ secondary, shift }, cx) => {
-			if (secondary && !shift) this.saveComposer(cx);
+			if (!secondary && shift) return this.keepInput(state);
+			if (this.restoreBeforeEnter(state)) {
+				this.composer.text = state.value();
+				this.composerBlank = this.composer.text.trim() === "";
+				this.persistComposer();
+			}
+			if (!secondary) this.saveComposer(cx);
+			else this.saveThen(cx, shift ? "start" : "send");
 		});
+		this.inputBaselines.set(state, state.value());
 		this.composerState = state;
 	}
 
@@ -426,6 +468,7 @@ export default class PiAnnotate extends View {
 		this.replyBlank.set(note.id, initial.trim() === "");
 		let written = initial;
 		state.on("change", (_event, cx) => {
+			if (!this.noteInputChange(state, cx)) return;
 			const value = state.value();
 			if (value === "") {
 				if (localStorage.getItem(key) === written) localStorage.removeItem(key);
@@ -446,8 +489,18 @@ export default class PiAnnotate extends View {
 			cx.notify();
 		});
 		state.on("submit", ({ secondary, shift }, cx) => {
-			if (secondary && !shift) this.runReply(note.id, cx, true);
+			if (!secondary && shift) return this.keepInput(state);
+			if (this.restoreBeforeEnter(state)) {
+				written = state.value();
+				if (written === "") localStorage.removeItem(key);
+				else localStorage.setItem(key, written);
+				this.replyBlank.set(note.id, written.trim() === "");
+			}
+			if (secondary && shift) this.runReply(note.id, cx);
+			else if (secondary) this.sendMain(cx);
+			else cx.notify();
 		});
+		this.inputBaselines.set(state, initial);
 		this.replyStates.set(note.id, state);
 	}
 
@@ -460,12 +513,12 @@ export default class PiAnnotate extends View {
 			draft.createId = randomUUID();
 			this.persistComposer();
 		}
-		this.composerState.set_value(draft.text);
+		this.setInputValue(this.composerState, draft.text);
 		this.composerBlank = draft.text.trim() === "";
 		this.composerError = "";
 		this.composerFocused = false;
 		this.recovered = true;
-		this.selection = { ...draft.anchor };
+		this.selection = draft.anchor;
 		this.selectedNoteId = draft.noteId;
 	}
 
@@ -474,11 +527,311 @@ export default class PiAnnotate extends View {
 		localStorage.setItem(composerDraftKey(this.sessionId), encodeComposerDraft(this.composer));
 	}
 
+	ensureMainState() {
+		if (this.mainState) return;
+		const key = mainDraftKey(this.sessionId);
+		const initial = localStorage.getItem(key) ?? "";
+		this.mainDraftVersion = localStorage.getItem(`${key}:revision`);
+		const state = TextareaState.new({ placeholder: "Write to main Pi, or add context to the pending comments", value: initial, rows: 3 });
+		state.on("change", (_event, cx) => {
+			if (!this.noteInputChange(state, cx)) return;
+			this.persistMainText(state.value());
+			cx.notify();
+		});
+		state.on("focus", (_event, cx) => {
+			this.mainFocused = true;
+			cx.notify();
+		});
+		state.on("blur", (_event, cx) => {
+			this.mainFocused = false;
+			cx.notify();
+		});
+		state.on("submit", ({ secondary, shift }, cx) => {
+			if (!secondary && shift) return this.keepInput(state);
+			if (this.restoreBeforeEnter(state)) this.persistMainText(state.value());
+			if (secondary && shift) this.startUnanchored(cx);
+			else if (secondary) this.sendMain(cx);
+			else cx.notify();
+		});
+		this.inputBaselines.set(state, initial);
+		this.mainState = state;
+	}
+
+	restoreMainDraft() {
+		this.ensureMainState();
+		const startRaw = localStorage.getItem(startAttemptKey(this.sessionId));
+		this.startAttempt = parseStartAttempt(startRaw);
+		if (startRaw !== null && !this.startAttempt) localStorage.removeItem(startAttemptKey(this.sessionId));
+	}
+
+	currentSendAttempt() {
+		return parseSendAttempt(localStorage.getItem(sendAttemptKey(this.sessionId)));
+	}
+
+	syncSendAttempt() {
+		const requestId = this.currentSendAttempt()?.requestId;
+		if (requestId === this.observedSendRequestId) return false;
+		this.observedSendRequestId = requestId;
+		this.sendReceiptUnknown = false;
+		this.sendMayStillArrive = false;
+		this.sendResolution = null;
+		return true;
+	}
+
+	isEnterInsertion(before, after, range) {
+		if (range.start !== range.end || range.start === 0 || after[range.start - 1] !== "\n") return false;
+		const caret = range.start;
+		if (after.slice(0, caret - 1) !== before.slice(0, caret - 1)) return false;
+		const tail = after.slice(caret);
+		const end = before.length - tail.length;
+		return end >= caret - 1 && before.slice(end) === tail;
+	}
+
+	noteInputChange(state, cx) {
+		const value = state.value();
+		const before = this.inputBaselines.get(state);
+		if (before === value) return false;
+		this.inputBaselines.set(state, value);
+		this.enterEdits.delete(state);
+		const range = state.selected_range();
+		if (this.isEnterInsertion(before, value, range)) {
+			const edit = { before, value, caret: range.start };
+			this.enterEdits.set(state, edit);
+			cx.spawn(async (cx) => {
+				await cx.sleep(0);
+				if (this.enterEdits.get(state) === edit) this.enterEdits.delete(state);
+			});
+		}
+		return true;
+	}
+
+	keepInput(state) {
+		this.inputBaselines.set(state, state.value());
+		this.enterEdits.delete(state);
+	}
+
+	setInputValue(state, text) {
+		this.inputBaselines.set(state, text);
+		this.enterEdits.delete(state);
+		state.set_value(text);
+	}
+
+	restoreBeforeEnter(state) {
+		const edit = this.enterEdits.get(state);
+		this.keepInput(state);
+		if (!edit || state.value() !== edit.value) return false;
+		const { start, end } = state.selected_range();
+		if (start !== edit.caret || end !== start) return false;
+		this.setInputValue(state, edit.before);
+		state.set_selected_range({ start: start - 1, end: edit.before.length - (edit.value.length - start) });
+		return true;
+	}
+
+
+	mainText() {
+		return this.mainState.value();
+	}
+
+	sendableNotes() {
+		return deliverableNotes(this.notes, this.items);
+	}
+
+	persistMainText(text) {
+		const key = mainDraftKey(this.sessionId);
+		this.mainDraftVersion = randomUUID();
+		localStorage.setItem(`${key}:revision`, this.mainDraftVersion);
+		if (text === "") localStorage.removeItem(key);
+		else localStorage.setItem(key, text);
+	}
+
+	clearMainAfter(text, version) {
+		if (this.mainState.value() !== text || this.mainDraftVersion !== version) return;
+		const key = mainDraftKey(this.sessionId);
+		const storedVersion = localStorage.getItem(`${key}:revision`);
+		const storedText = localStorage.getItem(key) ?? "";
+		if (storedVersion !== version || storedText !== text) {
+			this.mainDraftVersion = storedVersion;
+			this.setInputValue(this.mainState, storedText);
+			return;
+		}
+		this.setInputValue(this.mainState, "");
+		this.persistMainText("");
+	}
+
+	finishSend(body, sent) {
+		const current = this.currentSendAttempt();
+		const matches = current?.requestId === body.requestId;
+		if (matches) localStorage.removeItem(sendAttemptKey(this.sessionId));
+		this.syncSendAttempt();
+		this.mainError = "";
+		if (!sent) this.mainNotice = "The previous request was not sent. Your draft and pending comments are still here.";
+		else if (body.action === "send" && this.ownedSend?.id === body.requestId && (!current || matches)) {
+			this.clearMainAfter(body.text, this.ownedSend.version);
+			this.mainNotice = body.noteIds.length > 0 ? `Sent ${body.noteIds.length} comment${body.noteIds.length === 1 ? "" : "s"}${body.text.trim() ? " and your message" : ""} to main Pi.` : "Sent your message to main Pi.";
+		} else this.mainNotice = "The previous send was confirmed. Your draft stays here.";
+		if (this.ownedSend?.id === body.requestId) this.ownedSend = undefined;
+	}
+
+	submitSend(cx, attempt, body) {
+		this.syncSendAttempt();
+		this.mainError = "";
+		this.mainNotice = "";
+		this.sendReceiptUnknown = false;
+		this.sendMayStillArrive = false;
+		this.sendResolution = null;
+		this.submitReview(cx, "send", body, (_noteId, _review, response) => {
+			if (response.sentRequestId === attempt.requestId) this.finishSend(attempt, true);
+			else if (response.resolvedRequestId === attempt.requestId && body.action === "resolve-send" && body.outcome === "not-sent") {
+				this.finishSend(attempt, false);
+			} else this.mainError = "Pi did not acknowledge this send. Your draft stays here.";
+		}, (message, error) => {
+			if (error.status === 409 && isUuid(error.pendingSendRequestId) && this.currentSendAttempt()?.requestId === attempt.requestId) {
+				localStorage.setItem(sendAttemptKey(this.sessionId), JSON.stringify({ action: "check-send", requestId: error.pendingSendRequestId }));
+				this.syncSendAttempt();
+				this.mainError = "Check the previous send before sending a new message.";
+				return;
+			}
+			if (body.action === "check-send" && error.status === 409 && message === "This request was not sent. Start a new send.") {
+				this.finishSend(attempt, false);
+				return;
+			}
+			if (body.action === "send" && error.status === 409 && message === SEND_NOTE_CHANGED) {
+				this.finishSend(attempt, false);
+			}
+			this.sendMayStillArrive = error.status === 409 && message === "Receipt unknown. Main Pi may still deliver this message. Check again or confirm it was sent if you see it.";
+			this.sendReceiptUnknown = this.sendMayStillArrive || (error.status === 409 && message === "Receipt unknown. Check the source conversation before sending again.");
+			this.mainError = message;
+		});
+	}
+
+	sendMain(cx, batch) {
+		if (!this.connection || this.pending.size > 0 || !this.reviewReady) return;
+		if (this.currentSendAttempt()) {
+			this.mainError = "Check the previous send before sending a new message.";
+			cx.notify();
+			return;
+		}
+		const current = new Map(this.sendableNotes().map((note) => [note.id, note.version]));
+		if (batch && [...batch.versions].some(([id, version]) => current.get(id) !== version)) {
+			this.mainError = SEND_NOTE_CHANGED;
+			cx.notify();
+			return;
+		}
+		const body = sendRequest(batch?.versions ?? current, batch?.text ?? this.mainText(), randomUUID());
+		if (!body) {
+			this.mainError = "Write a message or add a pending comment first.";
+			cx.notify();
+			return;
+		}
+		this.ownedSend = { id: body.requestId, version: batch ? batch.draftVersion : this.mainDraftVersion };
+		localStorage.setItem(sendAttemptKey(this.sessionId), JSON.stringify(body));
+		this.submitSend(cx, body, body);
+	}
+
+	checkSend(cx) {
+		const attempt = this.currentSendAttempt();
+		if (!attempt || this.pending.size > 0 || !this.reviewReady) return;
+		this.submitSend(cx, attempt, { action: "check-send", requestId: attempt.requestId });
+	}
+
+	resolveSend(cx, outcome) {
+		const attempt = this.currentSendAttempt();
+		if (!attempt || attempt.requestId !== this.observedSendRequestId || !this.sendReceiptUnknown || (outcome === "not-sent" && this.sendMayStillArrive) || this.pending.size > 0 || !this.reviewReady) return;
+		if (this.sendResolution !== outcome) {
+			this.sendResolution = outcome;
+			cx.notify();
+			return;
+		}
+		this.submitSend(cx, attempt, { action: "resolve-send", requestId: attempt.requestId, outcome });
+	}
+
+
+	startUnanchored(cx) {
+		if (!this.connection || this.pending.size > 0 || !this.reviewReady) return;
+		const key = startAttemptKey(this.sessionId);
+		const attempt = parseStartAttempt(localStorage.getItem(key));
+		this.startAttempt = attempt;
+		const body = attempt ?? startCreateRequest(randomUUID(), this.mainText());
+		if (!body) {
+			this.mainError = "Write a message before starting a background thread.";
+			cx.notify();
+			return;
+		}
+		this.startAttempt = body;
+		const stored = JSON.stringify({ createId: body.createId, text: body.text });
+		if (!attempt) {
+			this.ownedStart = { id: body.createId, version: this.mainDraftVersion };
+			localStorage.setItem(key, stored);
+		}
+		this.mainError = "";
+		this.mainNotice = "";
+		this.failures.delete("start-new");
+		this.submitReview(cx, "start-new", body, (noteId) => {
+			this.selectedNoteId = noteId;
+			const current = localStorage.getItem(key);
+			if (current === stored) localStorage.removeItem(key);
+			this.startAttempt = parseStartAttempt(localStorage.getItem(key));
+			if (this.ownedStart?.id === body.createId) {
+				if (current === null || current === stored) this.clearMainAfter(body.text, this.ownedStart.version);
+				this.ownedStart = undefined;
+			}
+			this.mainNotice = "Started an independent background thread.";
+		}, (message, error) => {
+			if (error.status === 409 && message === "No model selected.") {
+				if (localStorage.getItem(key) === stored) localStorage.removeItem(key);
+				this.startAttempt = parseStartAttempt(localStorage.getItem(key));
+			}
+			this.failures.set("start-new", message);
+		});
+	}
+
+	copyThread(note, cx) {
+		if (!this.reviewReady || note.status !== "thread" || this.pending.size > 0) return;
+		const key = copyAttemptKey(this.sessionId, note.id);
+		const stored = localStorage.getItem(key);
+		const createId = isUuid(stored) ? stored : randomUUID();
+		localStorage.setItem(key, createId);
+		this.submitAction(cx, `copy:${note.id}`, `copy:${note.id}`, copyRequest(note.id, createId), (noteId) => {
+			if (localStorage.getItem(key) === createId) localStorage.removeItem(key);
+			this.selectedNoteId = noteId;
+		});
+	}
+
+
+	saveThen(cx, mode) {
+		if (mode === "send" && this.currentSendAttempt()) {
+			this.composerError = "Check the previous send before using Save & send.";
+			cx.notify();
+			return;
+		}
+		const batch = mode === "send" ? {
+			text: this.mainText(),
+			draftVersion: this.mainDraftVersion,
+			versions: new Map(this.sendableNotes().map((note) => [note.id, note.version])),
+			quote: this.composer?.anchor?.quote,
+		} : null;
+		this.saveComposer(cx, (noteId, review, unchanged) => {
+			if (!unchanged) return;
+			const note = review.notes.find((candidate) => candidate.id === noteId);
+			if (!batch) {
+				if (note?.status === "pending") this.startThread(note, cx);
+				return;
+			}
+			if (note?.status !== "pending" || note.anchor?.quote !== batch.quote) {
+				this.mainError = SEND_NOTE_CHANGED;
+				cx.notify();
+				return;
+			}
+			batch.versions.set(note.id, note.version);
+			this.sendMain(cx, batch);
+		});
+	}
+
 	beginComposer(noteId, anchor, text) {
 		this.dismissSelectionPopup();
 		this.ensureComposerState();
 		this.composer = { noteId, anchor, text, ...(noteId ? { expectedText: text } : { createId: randomUUID() }) };
-		this.composerState.set_value(text);
+		this.setInputValue(this.composerState, text);
 		this.composerBlank = text.trim() === "";
 		this.composerFocused = false;
 		this.composerError = "";
@@ -492,7 +845,7 @@ export default class PiAnnotate extends View {
 		if (localStorage.getItem(key) === encodeComposerDraft(this.composer)) localStorage.removeItem(key);
 		this.composer = null;
 		this.composerPlacement = null;
-		this.composerState.set_value("");
+		this.setInputValue(this.composerState, "");
 		this.composerBlank = true;
 		this.composerFocused = false;
 		this.composerError = "";
@@ -501,7 +854,7 @@ export default class PiAnnotate extends View {
 	}
 
 	pruneSelection() {
-		if (this.selection && !this.items.some((item) => item.id === this.selection.itemId)) {
+		if (this.selection && !this.anchorInScope(this.selection)) {
 			this.selection = null;
 			this.dismissSelectionPopup();
 		}
@@ -513,9 +866,10 @@ export default class PiAnnotate extends View {
 		for (const id of this.expandedTools) if (!tools.has(id)) this.expandedTools.delete(id);
 	}
 
-	anchorInScope(anchor) {
-		const item = this.items.find((candidate) => candidate.id === anchor.itemId);
-		return Boolean(item) && anchor.end <= item.text.length;
+	anchorInScope(anchor, text = this.items.find((item) => item.id === anchor?.itemId)?.text) {
+		if (anchor === null) return true;
+		return text !== undefined && anchor.end <= text.length
+			&& (anchor.sourceText === undefined || text.slice(anchor.start, anchor.end) === anchor.sourceText);
 	}
 
 	composerTargetError() {
@@ -532,10 +886,11 @@ export default class PiAnnotate extends View {
 		const { start, end } = selection.range;
 		const inRange = Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start && end <= item.text.length;
 		if (!inRange) return;
+		const sourceText = item.text.slice(start, end);
 		const previous = this.selection;
-		if (!selection.position && !this.selectionPopup && previous?.itemId === item.id && previous.start === start && previous.end === end && previous.quote === selection.text) return;
+		if (!selection.position && !this.selectionPopup && previous?.itemId === item.id && previous.start === start && previous.end === end && previous.quote === selection.text && previous.sourceText === sourceText) return;
 		this.dismissSelectionPopup();
-		this.selection = { itemId: item.id, start, end, quote: selection.text };
+		this.selection = { itemId: item.id, start, end, quote: selection.text, sourceText };
 		if (selection.position) this.showSelectionPopup(selection.position, cx);
 		cx.notify();
 	}
@@ -572,57 +927,72 @@ export default class PiAnnotate extends View {
 		cx.notify();
 	}
 
-	enterKeyboard(cx) {
+	ensureKeyboard(cx) {
+		if (this.keyboard) return;
+		if (cx && !this.composer && !this.focusedTextState()) this.keyboardFocus.focus();
 		const keyboard = new TranscriptKeyboard(this.items, this.expandedTools, this.selection);
 		if (!keyboard.cursor) return;
-		this.clearSelection(cx);
+		if (this.keyboardWidth !== null) keyboard.resize(this.keyboardWidth, this.items, this.expandedTools);
 		this.keyboard = keyboard;
+	}
+
+	focusedTextState() {
+		if (this.composerFocused || this.mainFocused) return true;
+		for (const focused of this.replyFocused.values()) if (focused) return true;
+		return false;
+	}
+
+	focusTranscript(cx) {
 		this.keyboardG = false;
+		this.ensureKeyboard();
 		this.keyboardFocus.focus();
-		this.keyboardScroll.scroll_to_item(keyboard.cursor.row);
+		if (this.keyboard) this.revealKeyboardCursor();
 		cx.notify();
 	}
 
-	exitKeyboard() {
-		this.keyboard = null;
+	reflowKeyboard(cx) {
+		if (!this.keyboard) {
+			this.ensureKeyboard(cx);
+			return;
+		}
+		if (this.keyboard.reflow(this.items, this.expandedTools)) return;
+		if (!this.composer && this.keyboard.visual) this.selection = null;
 		this.keyboardG = false;
-		if (!this.composer) this.selection = null;
+		this.keyboard = null;
+		this.ensureKeyboard();
 	}
 
-	reflowKeyboard() {
-		if (!this.keyboard) return;
-		const row = this.keyboard.cursor.row;
-		if (!this.keyboard.reflow(this.items, this.expandedTools)) this.exitKeyboard();
-		else if (this.keyboard.cursor.row !== row) this.revealKeyboardCursor();
-	}
 
 	resizeKeyboard(size, cx) {
+		this.keyboardWidth = size.width / settings().zoom;
 		if (!this.keyboard) return;
-		const resized = this.keyboard.resize(size.width / settings().zoom, this.items, this.expandedTools);
+		const resized = this.keyboard.resize(this.keyboardWidth, this.items, this.expandedTools);
 		if (resized) this.revealKeyboardCursor();
-		else this.exitKeyboard();
+		else this.reflowKeyboard();
 		cx.notify();
 	}
 
-	revealKeyboardCursor(pageDelta = 0) {
-		const scroll = this.keyboardScroll;
-		const { row } = this.keyboard.cursor;
-		const offset = scroll.offset().y;
-		const top = Math.ceil(offset / ROW_HEIGHT);
-		const bottom = Math.max(top, Math.floor((offset + scroll.viewport_size().height) / ROW_HEIGHT) - 1);
-		if (pageDelta === 0 && row >= top && row <= bottom) return;
-		const target = Math.max(0, Math.min(row, Math.max(top + pageDelta, row - (bottom - top))));
-		scroll.scroll_to_item(target);
+	revealKeyboardCursor() {
+		const { item } = this.keyboard.rows[this.keyboard.cursor.row];
+		const index = this.items.findIndex((candidate) => candidate.id === item.id);
+		if (index >= 0) this.keyboardScroll.scroll_to_item(index);
 	}
 
-	updateSelection(pageDelta = 0) {
+	updateSelection() {
+		this.dismissSelectionPopup();
 		this.selection = this.keyboard.selection();
-		this.revealKeyboardCursor(pageDelta);
+		this.revealKeyboardCursor();
 	}
 
 	onTranscriptKey(event, cx) {
 		if (!this.keyboard || this.composer || !this.keyboardFocus.is_focused()) return;
 		const key = event.keystroke;
+		if (key === "cmd-enter" || key === "ctrl-enter") {
+			if (!event.is_held) this.sendMain(cx);
+			cx.stop_propagation();
+			cx.notify();
+			return;
+		}
 		if (key !== "g") this.keyboardG = false;
 		if (key === "g") {
 			if (event.is_held) this.keyboardG = false;
@@ -635,18 +1005,16 @@ export default class PiAnnotate extends View {
 			this.keyboard.jumpLast();
 			this.updateSelection();
 		} else if (KEYBOARD_MOTIONS.has(key)) {
-			const pageRows = Math.floor(this.keyboardScroll.viewport_size().height / ROW_HEIGHT);
-			this.updateSelection(this.keyboard.move(key, pageRows));
+			this.keyboard.move(key, this.keyboardScroll.viewport_size().height / ROW_HEIGHT);
+			this.updateSelection();
 		} else if (key === "v") {
 			if (!event.is_held) {
+				this.dismissSelectionPopup();
 				this.keyboard.toggleVisual();
 				this.selection = this.keyboard.selection();
 			}
 		} else if (key === "escape") {
-			if (!event.is_held) {
-				if (this.keyboard.visual) this.clearSelection(cx);
-				else this.exitKeyboard();
-			}
+			if (!event.is_held && (this.selection || this.keyboard.visual)) this.clearSelection(cx);
 		} else if (key === "c" && this.keyboard.visual) {
 			if (this.selection) this.openComposer(cx);
 		} else return;
@@ -681,8 +1049,8 @@ export default class PiAnnotate extends View {
 
 	editNote(note, cx) {
 		if (!this.reviewReady || note.status !== "pending" || this.composer) return;
-		this.beginComposer(note.id, { ...note.anchor }, note.text);
-		this.selection = { ...note.anchor };
+		this.beginComposer(note.id, note.anchor, note.text);
+		this.selection = note.anchor;
 		this.selectedNoteId = note.id;
 		this.confirmDeleteId = null;
 		this.composerState.focus();
@@ -698,7 +1066,7 @@ export default class PiAnnotate extends View {
 	selectNote(noteId, cx) {
 		this.selectedNoteId = this.selectedNoteId === noteId ? null : noteId;
 		const note = this.notes.find((candidate) => candidate.id === this.selectedNoteId);
-		const item = note && this.items.find((candidate) => candidate.id === note.anchor.itemId);
+		const item = note?.anchor && this.items.find((candidate) => candidate.id === note.anchor.itemId);
 		if (item?.kind === "tool" && !this.expandedTools.has(item.id)) {
 			this.expandedTools.add(item.id);
 			this.reflowKeyboard();
@@ -707,7 +1075,7 @@ export default class PiAnnotate extends View {
 		cx.notify();
 	}
 
-	saveComposer(cx) {
+	saveComposer(cx, after) {
 		if (!this.composer || !this.connection || this.pending.size > 0 || this.composerTargetError()) return;
 		const composer = this.composer;
 		const text = this.composerState.value();
@@ -740,6 +1108,7 @@ export default class PiAnnotate extends View {
 				this.selectedNoteId = noteId;
 				const retainsFocus = fromSave ? this.saveFocus.is_focused() : fromComposer && this.composerFocused;
 				this.closeComposer(tab === focused()?.tab && retainsFocus);
+				after?.(noteId, review, true);
 				return;
 			}
 			const ownsDraft = localStorage.getItem(key) === encodeComposerDraft(composer);
@@ -750,6 +1119,7 @@ export default class PiAnnotate extends View {
 			delete composer.createId;
 			if (changedSinceCreate) this.composerError = "The saved comment has changed. Your draft is still here.";
 			if (ownsDraft) this.persistComposer();
+			after?.(noteId, review, false);
 		}, (message) => {
 			if (this.composer === composer) this.composerError = message;
 		});
@@ -764,26 +1134,31 @@ export default class PiAnnotate extends View {
 		cx.notify();
 		cx.spawn(async (cx) => {
 			try {
-				if (body.action === "reply") {
+				if (body.action === "reply" || body.action === "send" || body.action === "copy" || (body.action === "start" && body.createId)) {
 					await localStorage.flush();
 					if (this.closed || generation !== this.generation) return;
+					if (body.action === "send" && this.currentSendAttempt()?.requestId !== body.requestId) return;
 				}
 				const response = await postReview(connection, body);
 				if (this.closed) return;
 				const current = generation === this.generation;
 				if (!current && body.action !== "save" && body.action !== "reply") return;
 				const review = parseReview(response);
-				if (body.action === "save" && (typeof response.noteId !== "string" || response.noteId === "")) {
-					throw new Error("The Pi save response has no note ID.");
+				if ((body.action === "save" || body.action === "copy") && (typeof response.noteId !== "string" || response.noteId === "")) {
+					throw new Error(`The Pi ${body.action} response has no note ID.`);
+				}
+				if (body.action === "start" && body.createId && response.noteId !== body.createId) {
+					throw new Error("Pi did not acknowledge the previous background start.");
 				}
 				if (current) this.applyReview(review);
-				onSuccess(response.noteId, review);
+				this.pending.delete(pendingKey);
+				onSuccess(response.noteId, review, response);
 			} catch (error) {
 				if (!this.closed && (generation === this.generation || body.action === "reply")) onFailure(messageOf(error), error);
 			} finally {
 				if (!this.closed) {
 					this.pending.delete(pendingKey);
-					if (window()?.visible !== false) this.refreshReview(cx, false);
+					if (this.pending.size === 0 && window()?.visible !== false) this.refreshReview(cx, false);
 					cx.notify();
 				}
 			}
@@ -795,17 +1170,6 @@ export default class PiAnnotate extends View {
 		this.submitReview(cx, pendingKey, body, onSuccess, (message) => this.failures.set(failureKey, message));
 	}
 
-	deliver(cx) {
-		if (!this.reviewReady || this.pending.size > 0) return;
-		const notes = deliverableNotes(this.notes, this.items);
-		const body = deliverRequest(notes.map((note) => note.id));
-		if (!body) return;
-		this.batchNotice = "";
-		this.submitAction(cx, "deliver", "deliver", body, () => {
-			this.batchNotice = `Appended ${body.noteIds.length} comment${body.noteIds.length === 1 ? "" : "s"} to the original Pi input. Nothing was submitted.`;
-		});
-	}
-
 	startThread(note, cx) {
 		if (!this.reviewReady || note.status !== "pending" || this.pending.size > 0) return;
 		const body = startRequest(note.id);
@@ -815,7 +1179,7 @@ export default class PiAnnotate extends View {
 		});
 	}
 
-	runReply(noteId, cx, fromShortcut = false) {
+	runReply(noteId, cx) {
 		const note = this.notes.find((candidate) => candidate.id === noteId);
 		const state = this.replyStates.get(noteId);
 		if (!this.reviewReady || !note || note.status !== "thread" || !state || this.pending.size > 0) return;
@@ -838,11 +1202,7 @@ export default class PiAnnotate extends View {
 			cx.notify();
 			return;
 		}
-		let unchanged = text === body.text;
-		if (!unchanged && retry && fromShortcut) {
-			const { start, end } = state.selected_range();
-			unchanged = start === end && text[start - 1] === "\n" && text.slice(0, start - 1) + text.slice(start) === body.text;
-		}
+		const unchanged = text === body.text;
 		const encoded = stored ?? JSON.stringify(body);
 		if (!retry) localStorage.setItem(attemptKey, encoded);
 		const clearAttempt = () => {
@@ -855,7 +1215,7 @@ export default class PiAnnotate extends View {
 		this.submitReview(cx, `thread:${noteId}`, body, () => {
 			if (!clearAttempt() || !unchanged || this.replyStates.get(noteId) !== state || state.value() !== text) return;
 			if (localStorage.getItem(key) === text) localStorage.removeItem(key);
-			state.set_value("");
+			this.setInputValue(state, "");
 			this.replyBlank.set(noteId, true);
 		}, (message, error) => {
 			if (error.status === 409) clearAttempt();
@@ -892,14 +1252,10 @@ export default class PiAnnotate extends View {
 			.child(h_flex().h(22).px(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.raised)
 				.child(div().text_size(10.5).text_color(t.muted).child("Current branch")))
 			.child(div().flex_1())
-			.child(actionButton(t, "pi-keyboard-toggle", this.keyboard ? "Exit keyboard" : "Keyboard selection", {
+			.child(actionButton(t, "pi-keyboard-toggle", "Focus transcript", {
 				quiet: true,
-				disabled: !this.keyboard && (Boolean(this.composer) || !this.items.some((item) => item.text.trim() && (item.kind !== "tool" || this.expandedTools.has(item.id)))),
-				onClick: (_event, cx) => {
-					if (this.keyboard) this.exitKeyboard();
-					else this.enterKeyboard(cx);
-					cx.notify();
-				},
+				disabled: Boolean(this.composer) || !this.items.some((item) => item.text.trim() && (item.kind !== "tool" || this.expandedTools.has(item.id))),
+				onClick: (_event, cx) => this.focusTranscript(cx),
 			}).tab_stop(true))
 			.when(Boolean(this.sessionId), (row) => row.child(div().text_size(10).text_color(t.dim).child(this.sessionId.slice(0, 8))))
 			.child(div().text_size(10.5).text_color(t.dim).child(`${this.items.length} message${this.items.length === 1 ? "" : "s"}`))
@@ -938,12 +1294,19 @@ export default class PiAnnotate extends View {
 			const selected = notes.find((note) => note.id === this.selectedNoteId);
 			for (const note of notes) {
 				if (note.id === this.selectedNoteId) continue;
-				if (note.anchor.end > item.text.length) continue;
+				if (!this.anchorInScope(note.anchor, item.text)) continue;
 				text = text.highlight_range(note.anchor.start, note.anchor.end, t.selected);
 			}
-			if (selected && selected.anchor.end <= item.text.length) text = text.highlight_range(selected.anchor.start, selected.anchor.end, t.selection);
-			if (this.selection?.itemId === item.id && this.selection.end <= item.text.length) {
+			if (selected && this.anchorInScope(selected.anchor, item.text)) text = text.highlight_range(selected.anchor.start, selected.anchor.end, t.selection);
+			if (this.selection?.itemId === item.id && this.anchorInScope(this.selection, item.text)) {
 				text = text.highlight_range(this.selection.start, this.selection.end, t.selection);
+			}
+			const cursor = this.keyboard?.cursor;
+			const cursorRow = cursor && this.keyboard.rows[cursor.row];
+			if (cursorRow?.item.id === item.id && cursorRow.item.text === item.text) {
+				const start = cursorRow.offsets[cursor.col];
+				const end = cursorRow.offsets[cursor.col + 1];
+				if (end !== undefined) text = text.highlight_range(start, end, t.solid);
 			}
 		}
 		let tone = t.muted;
@@ -952,6 +1315,9 @@ export default class PiAnnotate extends View {
 		const tag = itemKindLabel(item);
 		return v_flex()
 			.id(`pi-item-${item.id}`)
+			.w_full()
+			.max_w(900)
+			.mx_auto()
 			.px(18)
 			.py(16)
 			.gap(8)
@@ -967,8 +1333,9 @@ export default class PiAnnotate extends View {
 					onClick: (_event, cx) => {
 						if (this.expandedTools.has(item.id)) {
 							this.expandedTools.delete(item.id);
-							if (this.selection?.itemId === item.id) this.dismissSelectionPopup();
+							if (this.selection?.itemId === item.id && !this.composer) this.clearSelection(cx);
 						} else this.expandedTools.add(item.id);
+						this.reflowKeyboard();
 						cx.notify();
 					},
 				}).accessibility_label(`${expanded ? "Hide" : "Show"} ${item.label} output`)))
@@ -976,57 +1343,10 @@ export default class PiAnnotate extends View {
 			.when(expanded, (column) => column.child(text));
 	}
 
-	renderKeyboardRow(t, row, index, cursor, font) {
-		const { item, offsets } = row;
-		const start = offsets[0];
-		const end = offsets.at(-1);
-		const selected = this.selection?.itemId === item.id ? this.selection : null;
-		const active = this.keyboard.cursor.row === index && !this.composer;
-		const cuts = [start, end];
-		for (const range of [selected, active ? cursor : null]) {
-			if (!range) continue;
-			if (range.start > start && range.start < end) cuts.push(range.start);
-			if (range.end > start && range.end < end) cuts.push(range.end);
-		}
-		const boundaries = [...new Set(cuts)].sort((a, b) => a - b);
-		const text = h_flex().text_size(12).whitespace_nowrap().font_family(font);
-		for (let i = 1; i < boundaries.length; i++) {
-			const from = boundaries[i - 1];
-			const to = boundaries[i];
-			const caret = active && from === cursor.start;
-			const highlighted = selected && from >= selected.start && to <= selected.end;
-			text.child(div().flex_none()
-				.when(caret, (span) => span.bg(t.solid).text_color(t.solid_foreground))
-				.when(!caret && highlighted, (span) => span.bg(t.selection))
-				.child(item.text.slice(from, to).replaceAll("\t", "    ")));
-		}
-		if (active && start === end) text.child(div().w(7).h(16).bg(t.solid));
-		return h_flex().w_full().h(ROW_HEIGHT).px(12).items_center().overflow_hidden()
-			.when(active, (line) => line.bg(t.surface))
-			.child(div().w(GUTTER_WIDTH).flex_none().text_size(10).text_color(t.dim).child(index === row.first ? itemKindLabel(item) : ""))
-			.child(text);
-	}
-
-	renderKeyboard(t) {
-		const keyboard = this.keyboard;
-		const cursor = keyboard.current();
-		const font = window()?.platform === "macos" ? "Menlo" : "monospace";
-		return v_flex().flex_1().min_h(0)
-			.child(h_flex().px(12).py(6).gap(10).items_center().border_b_1().border_color(t.border)
-				.child(div().text_size(10.5).text_color(t.accent).font_medium().child(keyboard.visual ? "VISUAL" : "NORMAL"))
-				.child(div().text_size(10.5).text_color(t.muted).child("Markdown source · hjkl move · gg/G first/last · Ctrl+D/U half page · v select · c comment · Esc back")))
-			.child(v_flex().id("pi-keyboard-viewport").relative().flex_1().min_h(0)
-				.on_size_change((size, cx) => this.resizeKeyboard(size, cx))
-				.child(v_virtual_list("pi-keyboard-lines", keyboard.rows.length, ROW_HEIGHT,
-					(index) => `${keyboard.rows[index].item.id}:${keyboard.rows[index].offsets[0]}`,
-					({ start, end }) => keyboard.rows.slice(start, end).map((row, index) => this.renderKeyboardRow(t, row, start + index, cursor, font)))
-					.size_full().track_scroll(this.keyboardScroll))
-				.child(Scrollbar.vertical("pi-keyboard-lines").absolute().inset_0()));
-	}
-
 	renderTranscript(t, cx, notes) {
 		const byItem = new Map();
 		for (const note of notes) {
+			if (note.anchor === null) continue;
 			const list = byItem.get(note.anchor.itemId) ?? [];
 			list.push(note);
 			byItem.set(note.anchor.itemId, list);
@@ -1047,8 +1367,13 @@ export default class PiAnnotate extends View {
 		return v_flex()
 			.id("pi-transcript")
 			.track_focus(this.keyboardFocus)
-			.tab_stop(Boolean(this.keyboard))
+			.tab_stop(true)
 			.on_key_down((event, cx) => this.onTranscriptKey(event, cx))
+			.on_mouse_down("left", (_event, cx) => {
+				if (this.composer) return;
+				this.keyboardFocus.focus();
+				cx.notify();
+			})
 			.relative()
 			.flex_1()
 			.min_w(0)
@@ -1056,28 +1381,30 @@ export default class PiAnnotate extends View {
 			.bg(t.background)
 			.on_window_mouse_up("left", (event) => { this.transcriptBounds = event.bounds ?? null; })
 			.child(this.renderTranscriptHeader(t))
+			.child(h_flex().px(18).py(5).gap(10).items_center().flex_none().bg(t.chrome).border_b_1().border_color(t.border)
+				.child(div().text_size(10).font_medium().text_color(this.keyboard?.visual ? t.accent : t.muted).child(this.keyboard?.visual ? "VISUAL" : "NORMAL"))
+				.child(div().text_size(10).text_color(t.dim).child("hjkl move · gg/G jump · Ctrl+D/U half page · v select · c comment · Esc cancel selection"))
+				.child(div().flex_1())
+				.child(div().text_size(10).text_color(t.dim).child(`${chord()} Enter sends pending + message`)))
 			.when(Boolean(this.connectionError), (column) => column.child(this.renderConnectionBanner(t, cx)))
-			.when(this.keyboard, (column) => column.child(this.renderKeyboard(t)))
-			.when(!this.keyboard, (column) => column.child(v_flex()
+			.child(v_flex()
 				.id("pi-transcript-scroll")
 				.flex_1()
 				.min_h(0)
 				.overflow_y_scrollbar()
-				.on_size_change((_size, cx) => {
+				.track_scroll(this.keyboardScroll)
+				.on_size_change((size, cx) => {
 					this.dismissSelectionPopup();
 					this.dismissLocalComposer(cx);
+					this.resizeKeyboard(size, cx);
 				})
 				.when(this.selectionPopup || this.composerPlacement, (column) => column.on_scroll_wheel((_event, cx) => {
 					this.dismissSelectionPopup();
 					this.dismissLocalComposer(cx);
 				}))
-				.child(v_flex()
-					.w_full()
-					.max_w(900)
-					.mx_auto()
-					.py(8)
-					.when(this.items.length === 0, (column) => column.child(empty))
-					.children(this.items.map((item) => this.renderItem(t, cx, item, byItem.get(item.id) ?? []))))))
+				.py(8)
+				.when(this.items.length === 0, (column) => column.child(empty))
+				.children(this.items.map((item) => this.renderItem(t, cx, item, byItem.get(item.id) ?? []))))
 			.when(this.composerPlacement, (column) => column.child(this.renderLocalComposer(t, cx, this.composerPlacement)));
 	}
 
@@ -1109,22 +1436,65 @@ export default class PiAnnotate extends View {
 				.child(this.renderComposer(t, cx)));
 	}
 
-	renderBatch(t, cx, notes) {
-		const deliverable = notes.filter((note) => note.status === "pending");
-		const busy = this.pending.has("deliver");
-		const disabled = !this.reviewReady || deliverable.length === 0 || this.pending.size > 0;
-		const label = busy ? "Putting in original Pi input…" : `Put in original Pi input (${deliverable.length})`;
-		const failure = this.failures.get("deliver");
+	renderBatch(t, cx) {
+		const deliverable = this.sendableNotes();
+		const staleCount = branchNotes(this.notes, this.items).filter((note) => note.status === "pending").length - deliverable.length;
+		const text = this.mainState.value();
+		const canAct = this.reviewReady && this.pending.size === 0;
+		const attempt = this.currentSendAttempt();
+		const canSend = canAct && (attempt || deliverable.length > 0 || text.trim() !== "");
+		const sendLabel = this.pending.has("send") ? "Working…" : attempt ? "Check previous send" : `Send to main Pi${deliverable.length ? ` (${deliverable.length})` : ""}`;
+		const canStart = canAct && (this.startAttempt || text.trim() !== "");
 		return v_flex()
-			.gap(5)
-			.child(actionButton(t, "pi-deliver", label, {
-				primary: true,
-				disabled,
-				onClick: (_event, cx) => this.deliver(cx),
-			}).w_full())
-			.child(div().text_size(10).text_color(t.dim).child("Appends quotes and comments to the Pi editor. Does not submit."))
-			.when(Boolean(this.batchNotice), (column) => column.child(div().text_size(10.5).text_color(t.done).child(this.batchNotice)))
-			.when(Boolean(failure), (column) => column.child(div().text_size(10.5).text_color(t.blocked).child(failure)));
+			.gap(7)
+			.child(h_flex().items_center().gap(8)
+				.child(div().text_size(11.5).font_medium().child("Main Pi"))
+				.child(div().text_size(10).text_color(t.dim).child(`${deliverable.length} pending`)))
+			.child(div()
+				.rounded(7)
+				.border_1()
+				.border_color(this.mainFocused ? t.accent : t.input)
+				.bg(t.background)
+				.p(8)
+				.child(Textarea.new(this.mainState)
+					.w_full()
+					.h(76)
+					.text_size(12)
+					.text_color(t.foreground)))
+			.child(h_flex().gap(6).items_center()
+				.child(actionButton(t, "pi-send-main", sendLabel, {
+					primary: true,
+					disabled: !canSend,
+					onClick: (_event, cx) => attempt ? this.checkSend(cx) : this.sendMain(cx),
+				}))
+				.child(actionButton(t, "pi-start-new", this.pending.has("start-new") ? "Working…" : this.startAttempt ? "Check pending start" : "Start independent thread", {
+					quiet: true,
+					disabled: !canStart,
+					onClick: (_event, cx) => this.startUnanchored(cx),
+				})))
+			.child(div().text_size(10).text_color(t.dim).child(`Enter saves · Shift+Enter adds a line · ${submitHint()} sends to main Pi · ${chord()}+Shift+Enter starts a background thread`))
+			.when(attempt && attempt.requestId === this.observedSendRequestId && this.sendReceiptUnknown, (column) => column
+				.child(div().text_size(10.5).text_color(t.blocked).child("Check main Pi for the exact previous message before recording what happened."))
+				.child(h_flex().gap(6).items_center()
+					.child(actionButton(t, "pi-resolve-sent", this.sendResolution === "sent" ? "Confirm it was sent" : "It was sent", {
+						disabled: !canAct,
+						onClick: (_event, cx) => this.resolveSend(cx, "sent"),
+					}))
+					.when(!this.sendMayStillArrive, (row) => row.child(actionButton(t, "pi-resolve-not-sent", this.sendResolution === "not-sent" ? "Confirm it was not sent" : "It was not sent", {
+						disabled: !canAct,
+						onClick: (_event, cx) => this.resolveSend(cx, "not-sent"),
+					})))
+					.when(this.sendResolution, (row) => row.child(actionButton(t, "pi-cancel-resolution", "Cancel", {
+						quiet: true,
+						onClick: (_event, cx) => {
+							this.sendResolution = null;
+							cx.notify();
+						},
+					})))))
+			.when(staleCount > 0, (column) => column.child(div().text_size(10.5).text_color(t.blocked).child(`${staleCount} pending comment${staleCount === 1 ? " was" : "s were"} left out because the original text changed.`)))
+			.when(Boolean(this.mainNotice), (column) => column.child(div().text_size(10.5).text_color(t.done).child(this.mainNotice)))
+			.when(Boolean(this.mainError), (column) => column.child(div().text_size(10.5).text_color(t.blocked).child(this.mainError)))
+			.when(Boolean(this.failures.get("start-new")), (column) => column.child(div().text_size(10.5).text_color(t.blocked).child(this.failures.get("start-new"))));
 	}
 
 	renderSelection(t, cx) {
@@ -1163,13 +1533,15 @@ export default class PiAnnotate extends View {
 	}
 
 	renderComposer(t, cx) {
-		const item = this.items.find((candidate) => candidate.id === this.composer.anchor.itemId);
+		const anchor = this.composer.anchor;
+		const item = anchor && this.items.find((candidate) => candidate.id === anchor.itemId);
 		const value = this.composerState.value();
 		const scope = this.anchorInScope(this.composer.anchor);
 		const busy = this.pending.has("save");
 		const targetError = this.composerTargetError();
 		const error = targetError || this.composerError;
 		const disabled = value.trim() === "" || !scope || this.pending.size > 0 || Boolean(targetError);
+		const sendPending = Boolean(this.currentSendAttempt());
 		return v_flex()
 			.p(12)
 			.gap(8)
@@ -1180,7 +1552,7 @@ export default class PiAnnotate extends View {
 				.child(div().text_size(11.5).font_medium().child(this.composer.noteId ? "Edit comment" : "Add comment"))
 				.when(this.recovered, (row) => row.child(h_flex().h(18).px(6).items_center().rounded(4).bg(t.raised)
 					.child(div().text_size(9.5).text_color(t.muted).child("Recovered draft")))))
-			.child(quoteBlock(t, this.composer.anchor, item, true))
+			.child(anchor ? quoteBlock(t, anchor, item, true) : div().text_size(10.5).text_color(t.dim).child("Independent conversation copy"))
 			.child(div().text_size(10.5).text_color(t.dim).child("Comment"))
 			.child(div()
 				.rounded(7)
@@ -1195,18 +1567,29 @@ export default class PiAnnotate extends View {
 					.text_color(t.foreground)))
 			.when(!scope, (column) => column.child(div().text_size(10.5).text_color(t.blocked).child("The selection left the current branch. Copy the draft or clear it.")))
 			.when(Boolean(error), (column) => column.child(div().text_size(10.5).text_color(t.blocked).child(error)))
+			.when(sendPending && !error, (column) => column.child(div().text_size(10.5).text_color(t.blocked).child("Check the previous send before using Save & send.")))
 			.child(h_flex().items_center().gap(6)
 				.child(actionButton(t, "pi-cancel-comment", "Cancel", {
 					quiet: true,
 					onClick: (_event, cx) => this.cancelComposer(cx),
 				}))
 				.child(div().flex_1())
+				.child(actionButton(t, "pi-send-comment", "Save & send", {
+					quiet: true,
+					disabled: disabled || sendPending,
+					onClick: (_event, cx) => this.saveThen(cx, "send"),
+				}))
+				.child(actionButton(t, "pi-start-comment", "Save & start", {
+					quiet: true,
+					disabled,
+					onClick: (_event, cx) => this.saveThen(cx, "start"),
+				}))
 				.child(actionButton(t, "pi-save-comment", busy ? "Saving…" : "Save comment", {
 					primary: true,
 					disabled,
 					onClick: (_event, cx) => this.saveComposer(cx),
 				}).track_focus(this.saveFocus)))
-			.child(div().text_size(10).text_color(t.dim).child(`${submitHint()} saves the comment only.`));
+			.child(div().text_size(10).text_color(t.dim).child(`Enter saves only. ${submitHint()} saves then sends. ${chord()}+Shift+Enter saves then starts a background thread. Shift+Enter adds a line.`));
 	}
 
 	renderNoteHeader(t, note, phase, expanded) {
@@ -1221,7 +1604,8 @@ export default class PiAnnotate extends View {
 				.child(div().flex_1())
 				.when(this.pending.has(`thread:${note.id}`), (row) => row.child(div().text_size(10).text_color(t.working).frames(["Working   ", "Working.  ", "Working.. ", "Working..."], 500))))
 			.when(!expanded, (column) => column
-				.child(div().text_size(11.5).text_color(t.muted).truncate().child(inlineClip(note.anchor.quote, 150)))
+				.when(note.anchor !== null, (body) => body.child(div().text_size(11.5).text_color(t.muted).truncate().child(inlineClip(note.anchor.quote, 150))))
+				.when(note.anchor === null, (body) => body.child(div().text_size(10).text_color(t.dim).child("Independent of the current branch")))
 				.child(div().text_size(12).text_color(t.foreground).truncate().child(inlineClip(note.text, 150))));
 		return Button.new(`pi-note-${note.id}`)
 			.w_full()
@@ -1331,7 +1715,7 @@ export default class PiAnnotate extends View {
 		const busy = this.pending.has(`thread:${note.id}`);
 		const retry = localStorage.getItem(replyAttemptKey(this.sessionId, note.id)) !== null;
 		const disabled = !this.reviewReady || (!retry && (running || state.value().trim() === "")) || this.pending.size > 0;
-		let hint = `${submitHint()} runs this reply.`;
+		let hint = `${chord()}+Shift+Enter runs this reply. ${submitHint()} sends to main Pi.`;
 		let label = "Reply and run";
 		if (retry) {
 			hint = "Retry checks the previous reply. New edits stay here.";
@@ -1362,18 +1746,35 @@ export default class PiAnnotate extends View {
 	}
 
 	renderNoteBody(t, cx, note) {
-		const item = this.items.find((candidate) => candidate.id === note.anchor.itemId);
+		const item = note.anchor && this.items.find((candidate) => candidate.id === note.anchor.itemId);
 		return v_flex()
 			.px(10)
 			.pb(10)
 			.gap(8)
-			.child(quoteBlock(t, note.anchor, item, true))
+			.when(note.anchor !== null, (column) => column.child(quoteBlock(t, note.anchor, item, true)))
+			.when(note.anchor === null, (column) => column.child(div().text_size(10.5).text_color(t.dim).child("Independent conversation copy")))
 			.child(v_flex().gap(2)
 				.child(div().text_size(10).text_color(t.dim).child("You"))
 				.child(div().text_size(12).text_color(t.foreground).child(note.text)))
 			.when(note.status === "pending", (column) => column.child(this.renderPendingActions(t, cx, note)))
+			.when(note.status === "sent", (column) => column.child(div().text_size(10.5).text_color(t.done).child("Sent to main Pi.")))
 			.when(note.status === "appended", (column) => column.child(div().text_size(10.5).text_color(t.done).child("Appended to the original Pi input. Review and send it there.")))
-			.when(note.status === "thread", (column) => column.children(note.turns.map((turn) => this.renderTurn(t, turn))).child(this.renderReply(t, cx, note)));
+			.when(note.status === "thread", (column) => column.children(note.turns.map((turn) => this.renderTurn(t, turn))).child(this.renderCopy(t, cx, note)).child(this.renderReply(t, cx, note)));
+	}
+
+	renderCopy(t, cx, note) {
+		const completed = completedTurns(note);
+		const failure = this.failures.get(`copy:${note.id}`);
+		return v_flex().gap(5).pt(3)
+			.child(h_flex().items_center().gap(6)
+				.child(actionButton(t, `pi-copy-${note.id}`, "Add to main Pi drafts", {
+					quiet: true,
+					disabled: !this.reviewReady || completed === 0 || this.pending.size > 0,
+					onClick: (_event, cx) => this.copyThread(note, cx),
+				}))
+				.child(div().flex_1())
+				.child(div().text_size(10).text_color(t.dim).child("Includes completed exchanges and the original comment. The original thread stays unchanged.")))
+			.when(Boolean(failure), (column) => column.child(div().text_size(10.5).text_color(t.blocked).child(failure)));
 	}
 
 	renderNote(t, cx, note) {
@@ -1388,19 +1789,20 @@ export default class PiAnnotate extends View {
 			.when(expanded, (column) => column.child(this.renderNoteBody(t, cx, note)));
 	}
 
-	renderNotes(t, cx, notes) {
+	renderNotes(t, cx, notes, panel) {
 		const off = offBranchCount(this.notes, this.items);
+		const background = panel === "background";
 		const empty = v_flex()
-			.p(14)
+			.p(12)
 			.gap(5)
 			.rounded(8)
 			.bg(t.surface)
 			.border_1()
 			.border_color(t.border)
-			.child(div().text_size(12).font_medium().child("No comments on this branch yet."))
-			.child(div().text_size(10.5).text_color(t.muted).child("Select a message, then choose Add comment."));
+			.child(div().text_size(11.5).font_medium().child(background ? "No background threads yet." : "No comments yet."))
+			.child(div().text_size(10.5).text_color(t.muted).child(background ? "Start one from a pending comment or from the main message box." : "Select a message, then choose Add comment."));
 		return v_flex()
-			.id("pi-notes-scroll")
+			.id(background ? "pi-background-scroll" : "pi-main-scroll")
 			.flex_1()
 			.min_h(0)
 			.overflow_y_scrollbar()
@@ -1408,9 +1810,12 @@ export default class PiAnnotate extends View {
 				.w_full()
 				.p(10)
 				.gap(8)
+				.child(h_flex().items_center().gap(6)
+					.child(div().text_size(11).font_semibold().child(background ? "Background threads" : "Comments"))
+					.child(div().text_size(10).text_color(t.dim).child(`${notes.length} on this branch`)))
 				.when(notes.length === 0, (column) => column.child(empty))
 				.children(notes.map((note) => this.renderNote(t, cx, note)))
-				.when(off > 0, (column) => column.child(div().pt(2).text_size(10).text_color(t.dim).child(`${off} saved note${off === 1 ? "" : "s"} on other branches stay stored and are hidden here.`))));
+				.when(off > 0 && !background, (column) => column.child(div().pt(2).text_size(10).text_color(t.dim).child(`${off} saved note${off === 1 ? "" : "s"} on other branches stay stored and are hidden here.`))));
 	}
 
 	renderSidebar(t, cx, notes) {
@@ -1429,11 +1834,11 @@ export default class PiAnnotate extends View {
 				.border_b_1()
 				.border_color(t.border)
 				.child(h_flex().items_center().gap(8)
-					.child(div().text_size(13).font_semibold().child("Comments"))
-					.child(div().text_size(10).text_color(t.muted).child(`${notes.length} on this branch`))
+					.child(div().text_size(13).font_semibold().child("Pi conversations"))
+					.child(div().text_size(10).text_color(t.muted).child(`${notes.length} visible`))
 					.child(div().flex_1())
 					.when(Boolean(this.sessionId), (row) => row.child(div().text_size(10).text_color(t.dim).child(this.sessionId.slice(0, 8)))))
-				.child(this.renderBatch(t, cx, notes))
+				.child(this.renderBatch(t, cx))
 				.when(Boolean(this.reviewError), (column) => column.child(v_flex().gap(4)
 					.child(div().text_size(10.5).text_color(t.blocked).child(this.reviewError))
 					.child(actionButton(t, "pi-retry-review", "Retry comments", {
@@ -1443,7 +1848,8 @@ export default class PiAnnotate extends View {
 			.when(this.composer && !this.composerPlacement, (column) => column.child(this.renderComposer(t, cx)))
 			.when(!this.composer && this.selection, (column) => column.child(this.renderSelection(t, cx)))
 			.when(!this.composer && !this.selection, (column) => column.child(this.renderSelectionHint(t)))
-			.child(this.renderNotes(t, cx, notes));
+			.child(this.renderNotes(t, cx, panelNotes(this.notes, this.items, "main"), "main"))
+			.child(this.renderNotes(t, cx, panelNotes(this.notes, this.items, "background"), "background"));
 	}
 
 	renderConnection(t, cx) {

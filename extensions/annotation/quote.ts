@@ -1,7 +1,7 @@
 import { stripControls } from "../ux/core/strip-controls.ts";
 
 export interface Annotation {
-	quote: string;
+	quote: string | null;
 	note: string;
 }
 
@@ -18,7 +18,7 @@ export function formatQuote(text: string, before = ""): string | undefined {
 }
 
 export function annotationBlock(item: Annotation): string | undefined {
-	const quote = formatQuote(stripControls(item.quote));
+	const quote = item.quote === null ? "" : formatQuote(stripControls(item.quote));
 	if (quote === undefined) return undefined;
 	const note = stripControls(item.note).trim();
 	return note === "" ? quote : `${quote}${note}\n\n`;
