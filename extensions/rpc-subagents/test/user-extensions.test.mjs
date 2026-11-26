@@ -185,13 +185,13 @@ test("auto entries resolving inside rpc-subagents are skipped with a single noti
   assert.equal(extensionsOf(first.args).some((path) => path === join(extensionDir, "index.ts")), false);
 });
 
-test("real child loads user extensions only, without pi-extras spawning tools, /annotate, project or filtered extensions", { skip: realSkip }, async (t) => {
+test("real child loads user extensions only, without pi-extras spawning tools, /annotate-herdr, project or filtered extensions", { skip: realSkip }, async (t) => {
   const f = await fixture(t, ["repo", "filtered"]);
   const prepared = await prepareChild(f);
   assert.equal(prepared.args.includes("--no-extensions"), true);
   const result = await runChild(t, f, prepared);
   assertChildBasics(result);
-  assert.equal(result.probe.commands.includes("annotate"), false, JSON.stringify(result.probe.commands));
+  assert.equal(result.probe.commands.includes("annotate-herdr"), false, JSON.stringify(result.probe.commands));
   assert.equal(result.probe.tools.includes("pkg_a"), true);
   assert.equal(result.probe.tools.includes("pkg_b"), false);
   assert.equal(result.probe.tools.includes("proj_tool"), false);

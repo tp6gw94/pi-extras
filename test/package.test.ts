@@ -57,14 +57,20 @@ describe("package layout", () => {
 		}
 	});
 
-	it("requires coding-agent >=1.3.0 with other host packages as * peers and bundles only grok-mermaid, croner and mermaid, at exact versions", () => {
-		assert.deepEqual(pkg.dependencies, { croner: "9.1.0", "grok-mermaid": "0.2.3", mermaid: "12.1.0" });
+	it("requires coding-agent >=1.3.0 with other host packages as * peers and pins croner", () => {
+		assert.deepEqual(pkg.dependencies, { croner: "9.1.0" });
 		assert.deepEqual(pkg.peerDependencies, {
 			"@earendil-works/pi-coding-agent": ">=1.3.0",
 			"@earendil-works/pi-tui": "*",
 			typebox: "*",
 		});
 		assert.equal(pkg.workspaces, undefined);
+	});
+
+	it("ships only the explicit Herdr annotation installer as a binary", () => {
+		const installer = "./extensions/annotation/bin/install-herdr-annotation.mjs";
+		assert.deepEqual(pkg.bin, { "pi-extras-install-herdr-annotation": installer });
+		assert.ok(existsSync(join(root, installer)));
 	});
 
 	it("states the Node.js version in engines instead of installing a node binary package", () => {

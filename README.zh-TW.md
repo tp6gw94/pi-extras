@@ -10,7 +10,7 @@ pi-extras 需要 `@earendil-works/pi-coding-agent` 1.3.0 以上與 Node.js 22。
 
 | Extension | 用途 | 文件 |
 | --- | --- | --- |
-| `annotation` | 引用對話段落並加上筆記，再附加到編輯器。可從瀏覽器頁面、終端機檢視，或在全螢幕 TUI 用 `/annotation-mode` 引用。`/annotate` 啟動伺服器，再執行一次就會停止。 | [README](extensions/annotation/README.zh-TW.md) |
+| `annotation` | 安裝隨附的 mod 後，用 `/annotate-herdr` 在原生 Herdr 分頁標註目前的 Pi 對話。 | [README](extensions/annotation/README.zh-TW.md) |
 | `hooks` | 依 `.pi/hooks.json`，在 agent 寫入檔案後格式化，並在回合結束前 lint 改過的檔案。 | [README](extensions/hooks/README.zh-TW.md) |
 | `inline-skills` | 在 prompt 中間用 `/` 選 skill，送出時附上 skill 的路徑。 | [README](extensions/inline-skills/README.md) |
 | `quota-resume` | 訂閱配額有明確重設時間時，在原 session 自動續跑一次；支援持久化等待與取消。 | [README](extensions/quota-resume/README.zh-TW.md) |
@@ -108,4 +108,4 @@ npm run typecheck
 - `npm run typecheck` 用 `tsconfig.json` 檢查 `ux` 與 `hooks`，用 `tsconfig.extensions.json` 檢查其他 extension。
 - `scripts/acceptance.sh` 會從 git 把 pi-extras 安裝到一個暫時的 home 目錄，檢查 pi 在三種情況下載入了什麼：全部載入、用設定檔篩選，以及用 `pi config` 關掉之後。
 
-pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，因此它們列為 peer dependency。coding-agent 的最低版本為 1.3.0，因為自動交接依賴該版本的 custom message 啟動生命週期。執行期 dependency 是 `croner`（給 `rpc-subagents` 的 cron 用）、`mermaid`（給 `annotation` 瀏覽器頁面的圖表用）與 `grok-mermaid`（給 `annotation` 終端機檢視的文字圖表用），三者都鎖定確切版本。
+pi 會提供 `@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui` 與 `typebox` 給 extension，因此它們列為 peer dependency。coding-agent 的最低版本為 1.3.0，因為自動交接依賴該版本的 custom message 啟動生命週期。套件唯一的執行期依賴是 `rpc-subagents` 排程使用的 `croner`，版本已鎖定。

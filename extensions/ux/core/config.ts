@@ -43,7 +43,7 @@ export function isValidKey(key: string): boolean {
 
 export function obsoleteKeyNotice(keys: readonly string[]): string {
 	const list = keys.map((k) => `keys.${k}`).join(", ");
-	return `pi-ux: ${list} in pi-ux.json is obsolete and ignored. The clipboard quote shortcut and /quote were removed; use /annotate from the annotation extension to quote conversation text. Delete the key to hide this notice.`;
+	return `pi-ux: ${list} in pi-ux.json is obsolete and ignored. The clipboard quote shortcut and /quote were removed; use /annotate-herdr from the annotation extension to quote conversation text. Delete the key to hide this notice.`;
 }
 
 export function parseConfig(text: string | undefined): { config: UxConfig; errors: string[]; obsolete: string[] } {

@@ -10,7 +10,7 @@ pi-extras requires `@earendil-works/pi-coding-agent` 1.3.0 or later and Node.js 
 
 | Extension | What it does | Docs |
 | --- | --- | --- |
-| `annotation` | Quotes parts of the conversation with notes and appends them to the editor, from a browser page, a terminal view, or `/annotation-mode` in the fullscreen TUI. `/annotate` starts the server, and `/annotate` again stops it. | [README](extensions/annotation/README.md) |
+| `annotation` | Opens the current Pi conversation in a native Herdr tab with `/annotate-herdr`, after you install the bundled mod. | [README](extensions/annotation/README.md) |
 | `hooks` | Formats each file after the agent writes it and lints changed files before the turn ends, from `.pi/hooks.json`. | [README](extensions/hooks/README.md) |
 | `inline-skills` | Lets you pick a skill with `/` in the middle of a prompt and sends its path along with the prompt. | [README](extensions/inline-skills/README.md) |
 | `quota-resume` | Resumes the current session once at a confirmed subscription quota reset, with persistent waiting and explicit cancellation. | [README](extensions/quota-resume/README.md) |
@@ -108,4 +108,4 @@ npm run typecheck
 - `npm run typecheck` checks `ux` and `hooks` with `tsconfig.json`, and the other extensions with `tsconfig.extensions.json`.
 - `scripts/acceptance.sh` installs pi-extras from git into a throwaway home directory and checks what pi loads, with all extensions, with a settings filter, and after `pi config`.
 
-pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions. They are peer dependencies. The coding-agent minimum is 1.3.0 because automatic handoff uses its custom-message startup lifecycle. The runtime dependencies are `croner` (for cron in `rpc-subagents`), `mermaid` (for the browser page's diagrams in `annotation`) and `grok-mermaid` (for the terminal view's text diagrams in `annotation`), all pinned to exact versions.
+pi supplies `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui` and `typebox` to extensions. They are peer dependencies. The coding-agent minimum is 1.3.0 because automatic handoff uses its custom-message startup lifecycle. The only bundled runtime dependency is `croner` (for cron in `rpc-subagents`), pinned to an exact version.

@@ -24,4 +24,4 @@ The thresholds are a budget for the final turn plus handoff generation, not a gu
 
 ## Tests
 
-`npm test` from the repository root runs the unit tests in `test/`. `test/e2e/acceptance.mjs` runs a real pi with a real provider under tmux. Run it with `node extensions/resume-handoff/test/e2e/acceptance.mjs --provider <provider> --model <model>`. `extensions/annotation/test/e2e/tmux-handoff.sh` checks that annotation clients follow a handoff.
+`npm test` from the repository root runs the unit tests in `test/`. `test/e2e/acceptance.mjs` runs a real pi with a real provider under tmux. Run it with `node extensions/resume-handoff/test/e2e/acceptance.mjs --provider <provider> --model <model>`. `extensions/annotation/test/native-lifecycle.test.ts` checks how Herdr annotation disconnects from the source session during a handoff.
