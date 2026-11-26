@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, Button, Popup, TextareaState, Textarea, TextView } from "gpui-base";
+import { h_flex, v_flex, Button, Popup, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
 import { checking, closeOverlay, focused, openOverlay, props, readTextFile, settings, theme, window } from "herdr";
 import {
 	applyUpdate,
@@ -27,10 +27,12 @@ import {
 	startRequest,
 } from "./model.js";
 import { fetchEvents, fetchReview, fetchSnapshot, postReview } from "./client.js";
+import { GUTTER_WIDTH, ROW_HEIGHT, TranscriptKeyboard } from "./keyboard.js";
 
 const HIDDEN_SLEEP_MS = 1500;
 const RETRY_SLEEP_MS = 2500;
 const REVIEW_POLL_MS = 4000;
+const KEYBOARD_MOTIONS = new Set(["h", "j", "k", "l", "ctrl-d", "ctrl-u"]);
 const commentPopupReplies = new Map();
 
 const PHASE_LABELS = {
@@ -172,6 +174,11 @@ export default class PiAnnotate extends View {
 		this.reviewError = "";
 		this.items = [];
 		this.expandedTools = new Set();
+		this.keyboard = null;
+		this.keyboardG = false;
+		this.keyboardFocus = cx.focus_handle();
+		this.saveFocus = cx.focus_handle();
+		this.keyboardScroll = VirtualListScrollHandle.new();
 		this.version = 0;
 		this.notes = [];
 		this.selection = null;
@@ -217,6 +224,9 @@ export default class PiAnnotate extends View {
 		this.pollTask?.cancel();
 		this.reviewTask?.cancel();
 		this.composerState?.release();
+		this.keyboardFocus.release();
+		this.saveFocus.release();
+		this.keyboardScroll.release();
 		for (const state of this.replyStates.values()) state.release();
 		this.replyStates.clear();
 		return localStorage.flush();
@@ -257,8 +267,9 @@ export default class PiAnnotate extends View {
 				this.version = snapshot.version;
 				this.status = "live";
 				this.reviewError = "";
-				this.pruneSelection();
 				this.pruneExpandedTools();
+				this.reflowKeyboard();
+				this.pruneSelection();
 				if (!this.restored) {
 					this.restored = true;
 					this.restoreComposerDraft();
@@ -292,8 +303,9 @@ export default class PiAnnotate extends View {
 						this.items = next.items;
 						this.status = "live";
 						this.connectionError = "";
-						this.pruneSelection();
 						this.pruneExpandedTools();
+						this.reflowKeyboard();
+						this.pruneSelection();
 						cx.notify();
 						this.refreshReview(cx, true);
 					} else if (this.status !== "live" || this.connectionError !== "") {
@@ -474,7 +486,8 @@ export default class PiAnnotate extends View {
 		this.persistComposer();
 	}
 
-	closeComposer() {
+	closeComposer(restoreFocus) {
+		if (restoreFocus && this.keyboard) this.keyboardFocus.focus();
 		const key = composerDraftKey(this.sessionId);
 		if (localStorage.getItem(key) === encodeComposerDraft(this.composer)) localStorage.removeItem(key);
 		this.composer = null;
@@ -554,12 +567,97 @@ export default class PiAnnotate extends View {
 
 	clearSelection(cx) {
 		this.dismissSelectionPopup();
+		if (this.keyboard) this.keyboard.visual = null;
 		this.selection = null;
+		cx.notify();
+	}
+
+	enterKeyboard(cx) {
+		const keyboard = new TranscriptKeyboard(this.items, this.expandedTools, this.selection);
+		if (!keyboard.cursor) return;
+		this.clearSelection(cx);
+		this.keyboard = keyboard;
+		this.keyboardG = false;
+		this.keyboardFocus.focus();
+		this.keyboardScroll.scroll_to_item(keyboard.cursor.row);
+		cx.notify();
+	}
+
+	exitKeyboard() {
+		this.keyboard = null;
+		this.keyboardG = false;
+		if (!this.composer) this.selection = null;
+	}
+
+	reflowKeyboard() {
+		if (!this.keyboard) return;
+		const row = this.keyboard.cursor.row;
+		if (!this.keyboard.reflow(this.items, this.expandedTools)) this.exitKeyboard();
+		else if (this.keyboard.cursor.row !== row) this.revealKeyboardCursor();
+	}
+
+	resizeKeyboard(size, cx) {
+		if (!this.keyboard) return;
+		const resized = this.keyboard.resize(size.width / settings().zoom, this.items, this.expandedTools);
+		if (resized) this.revealKeyboardCursor();
+		else this.exitKeyboard();
+		cx.notify();
+	}
+
+	revealKeyboardCursor(pageDelta = 0) {
+		const scroll = this.keyboardScroll;
+		const { row } = this.keyboard.cursor;
+		const offset = scroll.offset().y;
+		const top = Math.ceil(offset / ROW_HEIGHT);
+		const bottom = Math.max(top, Math.floor((offset + scroll.viewport_size().height) / ROW_HEIGHT) - 1);
+		if (pageDelta === 0 && row >= top && row <= bottom) return;
+		const target = Math.max(0, Math.min(row, Math.max(top + pageDelta, row - (bottom - top))));
+		scroll.scroll_to_item(target);
+	}
+
+	updateSelection(pageDelta = 0) {
+		this.selection = this.keyboard.selection();
+		this.revealKeyboardCursor(pageDelta);
+	}
+
+	onTranscriptKey(event, cx) {
+		if (!this.keyboard || this.composer || !this.keyboardFocus.is_focused()) return;
+		const key = event.keystroke;
+		if (key !== "g") this.keyboardG = false;
+		if (key === "g") {
+			if (event.is_held) this.keyboardG = false;
+			else if (this.keyboardG) {
+				this.keyboardG = false;
+				this.keyboard.jumpFirst();
+				this.updateSelection();
+			} else this.keyboardG = true;
+		} else if (key === "shift-g") {
+			this.keyboard.jumpLast();
+			this.updateSelection();
+		} else if (KEYBOARD_MOTIONS.has(key)) {
+			const pageRows = Math.floor(this.keyboardScroll.viewport_size().height / ROW_HEIGHT);
+			this.updateSelection(this.keyboard.move(key, pageRows));
+		} else if (key === "v") {
+			if (!event.is_held) {
+				this.keyboard.toggleVisual();
+				this.selection = this.keyboard.selection();
+			}
+		} else if (key === "escape") {
+			if (!event.is_held) {
+				if (this.keyboard.visual) this.clearSelection(cx);
+				else this.exitKeyboard();
+			}
+		} else if (key === "c" && this.keyboard.visual) {
+			if (this.selection) this.openComposer(cx);
+		} else return;
+		cx.stop_propagation();
 		cx.notify();
 	}
 
 	openComposer(cx, position) {
 		if (!this.selection || this.composer) return;
+		this.keyboardG = false;
+		if (this.keyboard) this.keyboard.visual = null;
 		this.beginComposer(null, { ...this.selection }, "");
 		if (position) {
 			const bounds = this.transcriptBounds;
@@ -593,7 +691,7 @@ export default class PiAnnotate extends View {
 
 	cancelComposer(cx) {
 		if (!this.composer) return;
-		this.closeComposer();
+		this.closeComposer(true);
 		cx.notify();
 	}
 
@@ -601,7 +699,10 @@ export default class PiAnnotate extends View {
 		this.selectedNoteId = this.selectedNoteId === noteId ? null : noteId;
 		const note = this.notes.find((candidate) => candidate.id === this.selectedNoteId);
 		const item = note && this.items.find((candidate) => candidate.id === note.anchor.itemId);
-		if (item?.kind === "tool") this.expandedTools.add(item.id);
+		if (item?.kind === "tool" && !this.expandedTools.has(item.id)) {
+			this.expandedTools.add(item.id);
+			this.reflowKeyboard();
+		}
 		this.confirmDeleteId = null;
 		cx.notify();
 	}
@@ -628,13 +729,17 @@ export default class PiAnnotate extends View {
 			composer.createText = body.text;
 			if (ownsDraft) this.persistComposer();
 		}
+		const tab = focused()?.tab;
+		const fromSave = this.saveFocus.is_focused();
+		const fromComposer = this.composerFocused;
 		this.submitReview(cx, "save", body, (noteId, review) => {
 			if (this.composer !== composer) return;
 			const currentText = this.composerState.value();
 			const changedSinceCreate = body.createId && review.notes.find((note) => note.id === noteId)?.text !== body.text;
 			if (currentText === body.text && !changedSinceCreate) {
 				this.selectedNoteId = noteId;
-				this.closeComposer();
+				const retainsFocus = fromSave ? this.saveFocus.is_focused() : fromComposer && this.composerFocused;
+				this.closeComposer(tab === focused()?.tab && retainsFocus);
 				return;
 			}
 			const ownsDraft = localStorage.getItem(key) === encodeComposerDraft(composer);
@@ -787,6 +892,15 @@ export default class PiAnnotate extends View {
 			.child(h_flex().h(22).px(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.raised)
 				.child(div().text_size(10.5).text_color(t.muted).child("Current branch")))
 			.child(div().flex_1())
+			.child(actionButton(t, "pi-keyboard-toggle", this.keyboard ? "Exit keyboard" : "Keyboard selection", {
+				quiet: true,
+				disabled: !this.keyboard && (Boolean(this.composer) || !this.items.some((item) => item.text.trim() && (item.kind !== "tool" || this.expandedTools.has(item.id)))),
+				onClick: (_event, cx) => {
+					if (this.keyboard) this.exitKeyboard();
+					else this.enterKeyboard(cx);
+					cx.notify();
+				},
+			}).tab_stop(true))
 			.when(Boolean(this.sessionId), (row) => row.child(div().text_size(10).text_color(t.dim).child(this.sessionId.slice(0, 8))))
 			.child(div().text_size(10.5).text_color(t.dim).child(`${this.items.length} message${this.items.length === 1 ? "" : "s"}`))
 			.child(h_flex().gap(5).items_center()
@@ -862,6 +976,54 @@ export default class PiAnnotate extends View {
 			.when(expanded, (column) => column.child(text));
 	}
 
+	renderKeyboardRow(t, row, index, cursor, font) {
+		const { item, offsets } = row;
+		const start = offsets[0];
+		const end = offsets.at(-1);
+		const selected = this.selection?.itemId === item.id ? this.selection : null;
+		const active = this.keyboard.cursor.row === index && !this.composer;
+		const cuts = [start, end];
+		for (const range of [selected, active ? cursor : null]) {
+			if (!range) continue;
+			if (range.start > start && range.start < end) cuts.push(range.start);
+			if (range.end > start && range.end < end) cuts.push(range.end);
+		}
+		const boundaries = [...new Set(cuts)].sort((a, b) => a - b);
+		const text = h_flex().text_size(12).whitespace_nowrap().font_family(font);
+		for (let i = 1; i < boundaries.length; i++) {
+			const from = boundaries[i - 1];
+			const to = boundaries[i];
+			const caret = active && from === cursor.start;
+			const highlighted = selected && from >= selected.start && to <= selected.end;
+			text.child(div().flex_none()
+				.when(caret, (span) => span.bg(t.solid).text_color(t.solid_foreground))
+				.when(!caret && highlighted, (span) => span.bg(t.selection))
+				.child(item.text.slice(from, to).replaceAll("\t", "    ")));
+		}
+		if (active && start === end) text.child(div().w(7).h(16).bg(t.solid));
+		return h_flex().w_full().h(ROW_HEIGHT).px(12).items_center().overflow_hidden()
+			.when(active, (line) => line.bg(t.surface))
+			.child(div().w(GUTTER_WIDTH).flex_none().text_size(10).text_color(t.dim).child(index === row.first ? itemKindLabel(item) : ""))
+			.child(text);
+	}
+
+	renderKeyboard(t) {
+		const keyboard = this.keyboard;
+		const cursor = keyboard.current();
+		const font = window()?.platform === "macos" ? "Menlo" : "monospace";
+		return v_flex().flex_1().min_h(0)
+			.child(h_flex().px(12).py(6).gap(10).items_center().border_b_1().border_color(t.border)
+				.child(div().text_size(10.5).text_color(t.accent).font_medium().child(keyboard.visual ? "VISUAL" : "NORMAL"))
+				.child(div().text_size(10.5).text_color(t.muted).child("Markdown source · hjkl move · gg/G first/last · Ctrl+D/U half page · v select · c comment · Esc back")))
+			.child(v_flex().id("pi-keyboard-viewport").relative().flex_1().min_h(0)
+				.on_size_change((size, cx) => this.resizeKeyboard(size, cx))
+				.child(v_virtual_list("pi-keyboard-lines", keyboard.rows.length, ROW_HEIGHT,
+					(index) => `${keyboard.rows[index].item.id}:${keyboard.rows[index].offsets[0]}`,
+					({ start, end }) => keyboard.rows.slice(start, end).map((row, index) => this.renderKeyboardRow(t, row, start + index, cursor, font)))
+					.size_full().track_scroll(this.keyboardScroll))
+				.child(Scrollbar.vertical("pi-keyboard-lines").absolute().inset_0()));
+	}
+
 	renderTranscript(t, cx, notes) {
 		const byItem = new Map();
 		for (const note of notes) {
@@ -884,6 +1046,9 @@ export default class PiAnnotate extends View {
 			.child(div().text_size(11.5).text_color(t.muted).child("The transcript updates as user, assistant, and tool messages finish."));
 		return v_flex()
 			.id("pi-transcript")
+			.track_focus(this.keyboardFocus)
+			.tab_stop(Boolean(this.keyboard))
+			.on_key_down((event, cx) => this.onTranscriptKey(event, cx))
 			.relative()
 			.flex_1()
 			.min_w(0)
@@ -892,7 +1057,8 @@ export default class PiAnnotate extends View {
 			.on_window_mouse_up("left", (event) => { this.transcriptBounds = event.bounds ?? null; })
 			.child(this.renderTranscriptHeader(t))
 			.when(Boolean(this.connectionError), (column) => column.child(this.renderConnectionBanner(t, cx)))
-			.child(v_flex()
+			.when(this.keyboard, (column) => column.child(this.renderKeyboard(t)))
+			.when(!this.keyboard, (column) => column.child(v_flex()
 				.id("pi-transcript-scroll")
 				.flex_1()
 				.min_h(0)
@@ -911,7 +1077,7 @@ export default class PiAnnotate extends View {
 					.mx_auto()
 					.py(8)
 					.when(this.items.length === 0, (column) => column.child(empty))
-					.children(this.items.map((item) => this.renderItem(t, cx, item, byItem.get(item.id) ?? [])))))
+					.children(this.items.map((item) => this.renderItem(t, cx, item, byItem.get(item.id) ?? []))))))
 			.when(this.composerPlacement, (column) => column.child(this.renderLocalComposer(t, cx, this.composerPlacement)));
 	}
 
@@ -1039,7 +1205,7 @@ export default class PiAnnotate extends View {
 					primary: true,
 					disabled,
 					onClick: (_event, cx) => this.saveComposer(cx),
-				})))
+				}).track_focus(this.saveFocus)))
 			.child(div().text_size(10).text_color(t.dim).child(`${submitHint()} saves the comment only.`));
 	}
 
