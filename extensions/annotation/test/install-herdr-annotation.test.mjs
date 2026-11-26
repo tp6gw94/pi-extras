@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const INSTALLER = fileURLToPath(new URL("../bin/install-herdr-annotation.mjs", import.meta.url));
 const SOURCE = fileURLToPath(new URL("../herdr-mod/", import.meta.url));
-const FILES = ["client.js", "main.js", "mod.json", "model.js"];
+const FILES = ["client.js", "keyboard.js", "main.js", "mod.json", "model.js"];
 
 function fakeHome(t) {
 	const dir = mkdtempSync(join(tmpdir(), "pi-extras-herdr-install-"));
@@ -29,7 +29,7 @@ test("ships an executable Node ESM installer", () => {
 	assert.match(readFileSync(INSTALLER, "utf8"), /^#!\/usr\/bin\/env node\n/);
 });
 
-test("installs exactly the four mod files and leaves existing app files alone", (t) => {
+test("installs the mod files and leaves existing app files alone", (t) => {
 	const home = fakeHome(t);
 	const settings = join(home, "settings.json");
 	const keys = join(home, "keys.json");

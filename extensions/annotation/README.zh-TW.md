@@ -21,6 +21,7 @@ node extensions/annotation/bin/install-herdr-annotation.mjs
 在 Herdr 桌面版的本機 Pi session 裡執行 `/annotate-herdr`。再次執行會回到既有的標註分頁。標註分頁一直對應到來源 session，不會隨目前焦點切換到別的 Pi。重啟 Pi 後如果分頁仍斷線，請在來源 session 執行 `/annotate-herdr`，再到 Herdr 點 **Reconnect**。
 
 - 在逐字稿選取文字後，點 **Add comment**。用滑鼠選取時，編輯框會在選取處旁開啟。按 **⌘ Enter**（其他平台用 **Ctrl+Enter**）儲存留言，不會送給 Pi。
+- 選 **Keyboard selection** 可用鍵盤瀏覽 Markdown 原文。`h`／`j`／`k`／`l` 移動游標，`gg`／`G` 跳到第一／最後一行，`Ctrl+D`／`Ctrl+U` 向下／向上移動半頁。按 `v` 在單則訊息內開始選取，再按 `c` 開啟留言草稿。`Esc` 先取消選取，再按一次回到原本的逐字稿。草稿不會送給 Pi。
 - **Put in original Pi input** 會把引文和待處理留言附加到原本 Pi 的輸入框，不會提交。
 - **Send to background Pi** 會針對已存留言開啟獨立、唯讀的背景 Pi 對話。在其中回覆不會送到原本的 session。
 

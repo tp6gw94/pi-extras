@@ -5,6 +5,7 @@ import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import * as client from "../../herdr-mod/client.js";
+import * as keyboard from "../../herdr-mod/keyboard.js";
 import * as model from "../../herdr-mod/model.js";
 
 const source = (await readFile(new URL("../../herdr-mod/main.js", import.meta.url), "utf8"))
@@ -25,6 +26,7 @@ function element(id) {
 			if (key === "children") return (children) => { node.nodes.push(...children); return proxy; };
 			if (key === "when") return (condition, apply) => condition ? apply(proxy) : proxy;
 			if (key === "highlight_range") return (start, end, color) => { node.highlights.push({ start, end, color }); return proxy; };
+			if (key === "track_focus") return (handle) => { handle.id = node.elementId === "pi-transcript" ? "Transcript" : node.elementId; return proxy; };
 			if (key === "selectable") return (value) => { node.selectableState = value; return proxy; };
 			if (key.startsWith("on_")) return (...args) => { node.handlers[key] = args.at(-1); return proxy; };
 			if (key === "left" || key === "top") return (position) => { node.position[key] = position; return proxy; };
@@ -51,11 +53,25 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 	let currentProps = { sessionId, connectionFile: "connection.json" };
 	let activeTab = "source-tab";
 	let focusedInput;
+	let blurInput;
+	const focus = (id, onBlur) => {
+		if (focusedInput === id) return;
+		blurInput?.();
+		focusedInput = id;
+		blurInput = onBlur;
+	};
+	let scrollTop = 0;
 	let pollReview;
 	const idle = new Promise(() => {});
 	const cx = {
 		notify() {},
 		stop_propagation() {},
+		focus_handle: () => ({
+			id: "Transcript",
+			focus() { focus(this.id); },
+			is_focused() { return focusedInput === this.id; },
+			release() {},
+		}),
 		spawn(run) { void run(cx); return { cancel() {} }; },
 		sleep: () => idle,
 		timer: { every(_interval, run) {
@@ -100,13 +116,24 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 			h_flex: () => element(), v_flex: () => element(), Button: { new: element }, Popup: { new: element },
 			TextView: { markdown: (id, text) => element(id).child(text) },
 			Textarea: { new: () => element() },
+			Scrollbar: { vertical: () => element() },
+			v_virtual_list: (id, count, _height, _key, render) => element(id).children(render({ start: 0, end: count })),
+			VirtualListScrollHandle: { new: () => ({
+				offset: () => ({ y: scrollTop }), viewport_size: () => ({ height: 132 }),
+				scroll_to_item(row) { scrollTop = row * keyboard.ROW_HEIGHT; }, release() {},
+			}) },
 			TextareaState: { new({ placeholder, value = "" }) {
 				const handlers = {};
 				let selection;
 				const state = { on: (name, handler) => { handlers[name] = handler; }, value: () => value,
 					selected_range: () => selection ?? { start: value.length, end: value.length },
 					set_value(text) { value = text; if (setValueEmitsChange) handlers.change({}, cx); },
-					focus() { focusedInput = placeholder; }, blur() { focusedInput = undefined; }, release() {} };
+					focus() {
+						focus(placeholder, () => handlers.blur?.({}, cx));
+						handlers.focus?.({}, cx);
+					},
+					blur() { if (focusedInput === placeholder) focus(undefined); },
+					release() {} };
 				const edit = (text) => { value = text; handlers.change({}, cx); };
 				inputs.set(placeholder, { edit, value: state.value, submit(event, insertedText = "", range) {
 					if (insertedText) {
@@ -144,6 +171,7 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 			readTextFile: async () => JSON.stringify({ sessionId, port, token: `token-${port}` }),
 		},
 		"./model.js": model,
+		"./keyboard.js": keyboard,
 		"./client.js": Object.fromEntries(["fetchEvents", "fetchReview", "fetchSnapshot", "postReview"]
 			.map((name) => [name, (connection, arg) => name === "fetchEvents" || name === "postReview"
 				? client[name](connection, arg, fetch) : client[name](connection, fetch)])),
@@ -156,7 +184,10 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 	view.init({}, cx);
 	const tree = () => flatten(view.render(cx));
 	const node = (id) => tree().find((child) => child.elementId === id);
-	const click = (id) => node(id).handlers.on_click({}, cx);
+	const click = (id) => {
+		if (id === "pi-save-comment" || id.startsWith("pi-note-")) focus(id);
+		node(id).handlers.on_click({}, cx);
+	};
 	const popup = () => [...overlays.values()].at(-1);
 	const commentInput = () => inputs.get("Write a comment on the selected text");
 	const replyInput = () => inputs.get("Reply to the background Pi thread");
@@ -168,6 +199,10 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 		dismissPopup: () => modules.herdr.closeOverlay([...overlays.keys()].at(-1)),
 		elementEvent: (id, name, event) => node(id).handlers[name](event, cx),
 		focusedInput: () => focusedInput,
+		focusTranscript: () => focus("Transcript"),
+		scrollTop: () => scrollTop,
+		scrollTo: (offset) => { scrollTop = offset; },
+		key: (keystroke, event = {}) => node("pi-transcript").handlers.on_key_down({ keystroke, ...event }, cx),
 		selectTab: (id) => { activeTab = id; },
 		commentInput, replyInput,
 		editComment: (text) => commentInput().edit(text),
@@ -191,6 +226,243 @@ async function open(t, notes = [], nextReview, drafts = new Map(), setValueEmits
 		},
 	};
 }
+
+test("Vim motion and Visual selection open a local draft with the exact transcript anchor", async (t) => {
+	const first = { id: "first", kind: "user", label: "You", text: "Ignore" };
+	const text = "head\nx\nrow2\nrow3\n甲😀丙\nDone\nrow6\nrow7";
+	const second = { id: "second", kind: "assistant", label: "Assistant", text };
+	const app = await open(t, [], undefined, new Map(), false, { items: [first, second] });
+	app.click("pi-keyboard-toggle");
+	assert.equal(app.focusedInput(), "Transcript");
+	assert.match(app.text(), /NORMAL/);
+	app.key("c");
+	assert.equal(app.drafts.size, 0);
+	app.key("ctrl-d");
+	app.key("ctrl-d");
+	app.key("ctrl-u");
+	app.key("j");
+	app.key("l");
+	app.key("l");
+	app.key("v");
+	assert.match(app.text(), /VISUAL/);
+	app.key("h");
+	app.key("c");
+	assert.equal(app.focusedInput(), "Write a comment on the selected text");
+	app.editComment("Please clarify");
+	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	const start = text.indexOf("😀");
+	assert.deepEqual(draft.anchor, { itemId: "second", start, end: start + 3, quote: "😀丙" });
+	assert.equal(draft.text, "Please clarify");
+	assert.equal(app.posts.length, 0);
+	app.click("pi-cancel-comment");
+	assert.equal(app.focusedInput(), "Transcript");
+	app.key("escape");
+	assert.equal(app.node("pi-markdown-second").selectableState, true);
+});
+
+test("review polling does not move the keyboard transcript viewport", async (t) => {
+	const items = [{ id: "item", kind: "assistant", label: "Assistant", text: "Row\n".repeat(30) }];
+	const app = await open(t, [], undefined, new Map(), false, { items });
+	app.click("pi-keyboard-toggle");
+	app.scrollTo(220);
+	app.pollReview();
+	await setImmediate();
+	assert.equal(app.scrollTop(), 220);
+});
+
+test("live transcript updates preserve Visual anchors on append and exit on rewrite", async (t) => {
+	const first = { id: "first", kind: "user", label: "You", text: "First" };
+	const second = { id: "second", kind: "assistant", label: "Assistant", text: "a b" };
+	const third = { id: "third", kind: "user", label: "You", text: "Third" };
+	const app = await open(t, [], undefined, new Map(), false, { items: [first, second], updates: 3 });
+	app.click("pi-keyboard-toggle");
+	app.key("v");
+	app.key("l");
+	app.event({ version: 2, reset: false, items: [third] });
+	await setImmediate();
+	app.event({ version: 3, reset: true, items: [first, { ...second, text: "a b and more" }, third] });
+	await setImmediate();
+	app.key("c");
+	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	assert.deepEqual(draft?.anchor, { itemId: "second", start: 0, end: 2, quote: "a " });
+	app.click("pi-cancel-comment");
+	app.key("j");
+	app.key("v");
+	app.key("c");
+	assert.equal(model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)))?.anchor.itemId, "third");
+	app.click("pi-cancel-comment");
+	app.event({ version: 4, reset: true, items: [first, second, { ...third, text: "Changed" }] });
+	await setImmediate();
+	assert.equal(app.node("pi-keyboard-lines"), undefined);
+	assert.equal(app.node("pi-markdown-third").selectableState, true);
+});
+
+test("Visual selects combined glyphs without splitting their UTF-16 ranges", async (t) => {
+	const cluster = "e\u0301👨‍👩‍👧‍👦";
+	const items = [{ id: "item", kind: "user", label: "You", text: cluster + "!" }];
+	const app = await open(t, [], undefined, new Map(), false, { items });
+	app.click("pi-keyboard-toggle");
+	app.key("v");
+	app.key("l");
+	app.key("c");
+	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	assert.deepEqual(draft?.anchor, { itemId: "item", start: 0, end: cluster.length, quote: cluster });
+});
+
+test("selecting a note makes its expanded tool output reachable by keyboard immediately", async (t) => {
+	const items = [
+		{ id: "item", kind: "tool", label: "Tool", text: "Quote from tool" },
+		{ id: "second", kind: "assistant", label: "Assistant", text: "Answer" },
+	];
+	const app = await open(t, [pending("tool", "Tool note")], undefined, new Map(), false, { items });
+	app.click("pi-keyboard-toggle");
+	app.click("pi-note-tool");
+	app.focusTranscript();
+	app.key("k");
+	app.key("v");
+	app.key("c");
+	assert.equal(model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)))?.anchor.itemId, "item");
+});
+
+for (const focusElsewhere of [false, true]) {
+	test(`saving a keyboard comment ${focusElsewhere ? "leaves newer focus alone" : "returns focus from Save to the transcript"}`, async (t) => {
+		const app = await open(t, [pending("existing", "Earlier comment")]);
+		app.click("pi-keyboard-toggle");
+		app.key("v");
+		app.key("c");
+		app.editComment("New comment");
+		app.click("pi-save-comment");
+		if (focusElsewhere) app.click("pi-note-existing");
+		const body = app.posts[0].body;
+		app.posts[0].resolve(response({ noteId: "saved", notes: [pending("existing", "Earlier comment"),
+			{ id: "saved", status: "pending", anchor: body.anchor, text: body.text }] }));
+		await setImmediate();
+		assert.equal(app.node("pi-save-comment"), undefined);
+		assert.equal(app.focusedInput(), focusElsewhere ? "pi-note-existing" : "Transcript");
+	});
+}
+
+test("Visual mode stops at the message boundary and Escape clears it before leaving keyboard mode", async (t) => {
+	const app = await open(t, [], undefined, new Map(), false, { items: [
+		{ id: "before", kind: "user", label: "You", text: "Earlier" },
+		{ id: "current", kind: "assistant", label: "Assistant", text: "A\nB" },
+	] });
+	app.click("pi-keyboard-toggle");
+	app.key("v");
+	app.key("k");
+	app.key("j");
+	assert.match(app.text(), /Selected text · Assistant\nA B/);
+	app.key("escape");
+	assert.match(app.text(), /NORMAL/);
+	assert.equal(app.node("pi-add-comment"), undefined);
+	app.key("k");
+	app.key("k");
+	app.key("v");
+	app.key("c");
+	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	assert.deepEqual(draft.anchor, { itemId: "before", start: 0, end: 1, quote: "E" });
+});
+
+test("resizing across a wrapped line preserves the selection's source offsets", async (t) => {
+	const app = await open(t, [], undefined, new Map(), false, { items: [
+		{ id: "item", kind: "assistant", label: "Assistant", text: "abcdefghijkl" },
+	] });
+	app.click("pi-keyboard-toggle");
+	for (let col = 0; col < 7; col++) app.key("l");
+	app.key("v");
+	app.elementEvent("pi-keyboard-viewport", "on_size_change", { width: 392, height: 264 });
+	app.key("l");
+	app.key("c");
+	const draft = model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	assert.deepEqual(draft.anchor, { itemId: "item", start: 7, end: 9, quote: "hi" });
+});
+
+test("gg and G reach the transcript endpoints while Visual keeps each jump inside its message", async (t) => {
+	const items = [
+		{ id: "first", kind: "assistant", label: "Assistant", text: "Alpha\nBravo" },
+		{ id: "second", kind: "user", label: "You", text: "Charlie\nDelta" },
+	];
+	const draft = (app) => model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	const first = await open(t, [], undefined, new Map(), false, { items });
+	first.click("pi-keyboard-toggle");
+	first.key("g");
+	first.key("g");
+	first.key("v");
+	first.key("c");
+	assert.deepEqual(draft(first).anchor, { itemId: "first", start: 0, end: 1, quote: "A" });
+
+	const last = await open(t, [], undefined, new Map(), false, { items });
+	last.click("pi-keyboard-toggle");
+	last.key("shift-g");
+	last.key("v");
+	last.key("c");
+	assert.deepEqual(draft(last).anchor, { itemId: "second", start: 8, end: 9, quote: "D" });
+
+	const visualLast = await open(t, [], undefined, new Map(), false, { items });
+	visualLast.click("pi-keyboard-toggle");
+	visualLast.key("k");
+	visualLast.key("v");
+	visualLast.key("shift-g");
+	visualLast.key("c");
+	assert.deepEqual(draft(visualLast).anchor, { itemId: "first", start: 6, end: 7, quote: "B" });
+
+	const visualFirst = await open(t, [], undefined, new Map(), false, { items });
+	visualFirst.click("pi-keyboard-toggle");
+	visualFirst.key("v");
+	visualFirst.key("j");
+	visualFirst.key("g");
+	visualFirst.key("g");
+	visualFirst.key("c");
+	assert.deepEqual(draft(visualFirst).anchor, { itemId: "second", start: 0, end: 1, quote: "C" });
+});
+
+test("the g prefix jumps only on two initial presses and clears on another key, auto-repeat, or re-entry", async (t) => {
+	const items = [
+		{ id: "first", kind: "assistant", label: "Assistant", text: "Alpha" },
+		{ id: "second", kind: "user", label: "You", text: "Charlie\nDelta" },
+	];
+	const draft = (app) => model.parseComposerDraft(app.drafts.get(model.composerDraftKey(sessionId)));
+	const interrupted = await open(t, [], undefined, new Map(), false, { items });
+	interrupted.click("pi-keyboard-toggle");
+	interrupted.key("g");
+	interrupted.key("j");
+	interrupted.key("g");
+	interrupted.key("v");
+	interrupted.key("c");
+	assert.deepEqual(draft(interrupted).anchor, { itemId: "second", start: 8, end: 9, quote: "D" });
+
+	const repeated = await open(t, [], undefined, new Map(), false, { items });
+	repeated.click("pi-keyboard-toggle");
+	repeated.key("j");
+	repeated.key("g");
+	repeated.key("g", { is_held: true });
+	repeated.key("v");
+	repeated.key("c");
+	assert.deepEqual(draft(repeated).anchor, { itemId: "second", start: 8, end: 9, quote: "D" });
+
+	const reentered = await open(t, [], undefined, new Map(), false, { items });
+	reentered.click("pi-keyboard-toggle");
+	reentered.key("g");
+	reentered.click("pi-keyboard-toggle");
+	reentered.click("pi-keyboard-toggle");
+	reentered.key("g");
+	reentered.key("v");
+	reentered.key("c");
+	assert.deepEqual(draft(reentered).anchor, { itemId: "second", start: 0, end: 1, quote: "C" });
+});
+
+test("gg and G scroll the jumped-to row into view", async (t) => {
+	const lines = Array.from({ length: 12 }, (_, index) => `line ${index}`);
+	const app = await open(t, [], undefined, new Map(), false, {
+		items: [{ id: "item", kind: "assistant", label: "Assistant", text: lines.join("\n") }],
+	});
+	app.click("pi-keyboard-toggle");
+	app.key("shift-g");
+	assert.equal(app.scrollTop(), 6 * keyboard.ROW_HEIGHT);
+	app.key("g");
+	app.key("g");
+	assert.equal(app.scrollTop(), 0);
+});
 
 test("a note shows its quote and comment once when collapsed, expanded, and collapsed again", async (t) => {
 	const note = pending("preview", "A comment on the quote");

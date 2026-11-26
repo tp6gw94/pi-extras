@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const FILES = ["main.js", "model.js", "client.js", "mod.json"];
+const FILES = ["main.js", "model.js", "client.js", "keyboard.js", "mod.json"];
 const source = fileURLToPath(new URL("../herdr-mod/", import.meta.url));
 const appHome = process.env.HERDR_APP_HOME || join(homedir(), ".config/herdr-app");
 const mods = join(appHome, "mods");
