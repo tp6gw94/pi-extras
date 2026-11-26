@@ -1,26 +1,41 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import annotation, { BIN_PATH, newSessionWithAnnotation } from "../index.ts";
+import annotation, { newSessionWithAnnotation } from "../index.ts";
 import { SESSION_SWITCHED } from "../server.ts";
-import { listEntries } from "../registry.ts";
 
-type Handler = (args: string, ctx: unknown) => Promise<void>;
-type Listener = (event: unknown, ctx: unknown) => unknown;
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((next) => {
+		resolve = next;
+	});
+	return { promise, resolve };
+}
 
-function call(url: URL, method: string, endpoint: string, token: string | undefined, body?: unknown): Promise<{ status: number; body: string }> {
-	const sid = url.pathname.slice(1);
+type Handler = (args: string, ctx: any) => Promise<void>;
+type Listener = (event: unknown, ctx: any) => unknown;
+type Connection = { sessionId: string; port: number; token: string; file: string };
+type TabProps = { sessionId: string; connectionFile: string };
+
+interface Reply {
+	status: number;
+	body: string;
+}
+
+function call(port: number, sessionId: string, method: string, endpoint: string, token?: string, body?: unknown, origin?: string): Promise<Reply> {
 	return new Promise((resolve, reject) => {
 		const headers: Record<string, string> = {};
 		if (token) headers["x-annotate-token"] = token;
 		if (body !== undefined) headers["content-type"] = "application/json";
-		const req = httpRequest({ host: "127.0.0.1", port: url.port, method, path: `/${sid}/api/${endpoint}`, headers }, (res) => {
+		if (origin) headers.origin = origin;
+		const req = httpRequest({ host: "127.0.0.1", port, method, path: `/${encodeURIComponent(sessionId)}/api/${endpoint}`, headers }, (res) => {
 			const chunks: Buffer[] = [];
 			res.on("data", (chunk: Buffer) => chunks.push(chunk));
 			res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
@@ -48,34 +63,56 @@ async function freePort(): Promise<number> {
 }
 
 const msg = (id: string, role: string, content: unknown) => ({ type: "message", id, message: { role, content } });
+const cleanups: (() => unknown)[] = [];
+afterEach(async () => {
+	while (cleanups.length) await cleanups.pop()!();
+});
+
+function tempRoot(prefix: string): string {
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	return root;
+}
 
 async function setup(options: {
 	env?: NodeJS.ProcessEnv;
 	hasUI?: boolean;
 	editor?: string;
-	submitError?: Error;
 	sessionId?: string;
-	registryDir?: string;
+	annotationDir?: string;
+	branch?: unknown[];
+	exec?: (...args: any[]) => any;
 	newSession?: ExtensionCommandContext["newSession"];
 } = {}) {
 	const commands = new Map<string, Handler>();
 	const listeners = new Map<string, Listener[]>();
 	const notices: string[] = [];
-	const statuses: (string | undefined)[] = [];
 	const userMessages: unknown[] = [];
+	const tabs: TabProps[] = [];
+	const execCalls: string[][] = [];
 	let editorText = options.editor ?? "";
 	let stale = false;
 	let sessionId = options.sessionId ?? "session-a";
-	let branch: unknown[] = [msg("u1", "user", "explain the cache"), msg("a1", "assistant", [{ type: "text", text: "The cache is LRU." }])];
+	let branch = options.branch ?? [msg("u1", "user", "explain the cache"), msg("a1", "assistant", [{ type: "text", text: "The cache is LRU." }])];
 	const guard = () => {
 		if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
 	};
+	const exec = options.exec ?? (async (_command: string, args: string[]) => {
+		execCalls.push(args);
+		if (args[0] === "ls") return { code: 0, stdout: '{"spaces":[]}', stderr: "", killed: false };
+		if (args[1] === "tab.new") {
+			const props = JSON.parse(args[2]!).props as TabProps;
+			tabs.push(props);
+			return { code: 0, stdout: JSON.stringify({ tab: `tab-${tabs.length}` }), stderr: "", killed: false };
+		}
+		return { code: 0, stdout: "{}", stderr: "", killed: false };
+	});
 	const pi = {
 		registerCommand: (name: string, spec: { handler: Handler }) => commands.set(name, spec.handler),
 		registerShortcut: () => {},
+		exec,
 		on: (event: string, handler: Listener) => listeners.set(event, [...(listeners.get(event) ?? []), handler]),
 		sendUserMessage: (message: unknown, delivery: unknown) => {
-			if (options.submitError) throw options.submitError;
 			userMessages.push({ message, delivery });
 		},
 	};
@@ -83,6 +120,7 @@ async function setup(options: {
 		newSession: options.newSession ?? (async () => ({ cancelled: false })),
 		hasUI: options.hasUI ?? true,
 		cwd: "/work/project",
+		model: { provider: "fixture", id: "local" },
 		sessionManager: {
 			getBranch: () => {
 				guard();
@@ -92,6 +130,8 @@ async function setup(options: {
 				guard();
 				return sessionId;
 			},
+			getSessionFile: () => undefined,
+			getLeafId: () => "leaf",
 		},
 		ui: {
 			notify: (message: string) => {
@@ -109,576 +149,475 @@ async function setup(options: {
 				guard();
 				return editorText;
 			},
-			setStatus: (_key: string, text: string | undefined) => {
-				guard();
-				statuses.push(text);
-			},
+			setStatus: () => {},
 		},
 	};
 	const env = options.env ?? { PI_ANNOTATE_PORT: String(await freePort()) };
-	const registry = options.registryDir ?? mkdtempSync(join(tmpdir(), "annotate-registry-"));
-	if (!options.registryDir) cleanups.push(() => rmSync(registry, { recursive: true, force: true }));
-	annotation(pi as never, { env, refreshDelayMs: 0, longPollMs: 3000, registryDir: registry });
+	const created = options.annotationDir === undefined;
+	const annotationDir = options.annotationDir ?? mkdtempSync(join(tmpdir(), "native-annotation-"));
+	if (created) cleanups.push(() => rmSync(annotationDir, { recursive: true, force: true }));
+	annotation(pi as never, { env, refreshDelayMs: 0, longPollMs: 3000, annotationDir });
 	const emit = async (event: string) => {
 		for (const listener of listeners.get(event) ?? []) await listener({ type: event }, ctx);
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await delay(20);
 	};
-	const lastUrl = () => /http:\/\/127\.0\.0\.1:\d+\/[\w-]+#t=[\w-]+/.exec(notices.filter((n) => n.includes("Browser: ")).at(-1) ?? "")![0];
-	const parts = () => {
-		const url = new URL(lastUrl());
-		return { url, token: new URLSearchParams(url.hash.slice(1)).get("t")! };
+	const shutdown = () => emit("session_shutdown");
+	cleanups.push(shutdown);
+	const connection = (): Connection => {
+		const props = tabs.at(-1);
+		assert.ok(props, "no tab was opened");
+		return { ...JSON.parse(readFileSync(props.connectionFile, "utf8")), file: props.connectionFile };
 	};
 	return {
 		ctx,
-		run: (args = "") => commands.get("annotate")!(args, ctx),
-		registry,
+		env,
 		commands,
-		emit,
-		lastUrl,
-		parts,
+		listeners,
 		notices,
-		statuses,
 		userMessages,
+		tabs,
+		execCalls,
+		annotationDir,
+		emit,
+		shutdown,
+		connection,
+		launch: (args = "") => commands.get("annotate-herdr")!(args, ctx),
 		editor: () => editorText,
+		branch: () => branch,
 		setBranch: (next: unknown[]) => {
 			branch = next;
 		},
-		branch: () => branch,
-		shutdown: () => emit("session_shutdown"),
 		makeStale: () => {
 			stale = true;
 		},
 		switchSession: (id: string) => {
 			sessionId = id;
 		},
+		reviewDir: (id = sessionId) => join(annotationDir, "herdr", createHash("sha256").update(id).digest("hex")),
 	};
 }
 
-const cleanups: (() => unknown)[] = [];
-afterEach(async () => {
-	while (cleanups.length) await cleanups.pop()!();
-});
-
-describe("/annotate command", () => {
-	it("starts on PI_ANNOTATE_PORT with the session id in the path and the token in the fragment", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		assert.equal(url.port, String(port));
-		assert.equal(url.pathname, "/session-a");
-		assert.equal(url.search, "");
-		assert.match(token, /^[\w-]{32}$/);
-		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
-		assert.equal(
-			t.notices.at(-1),
-			[`annotate: live on 127.0.0.1:${port}`, `Browser: ${t.lastUrl()}`, `Terminal: '${BIN_PATH}' session-a`, "Run /annotate again to stop it."].join("\n"),
-		);
-	});
-
-	it("uses 4747 by default, or the next free port", async () => {
-		const t = await setup({ env: {} });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const port = Number(t.parts().url.port);
-		assert.ok((port >= 4747 && port <= 4756) || port > 0, String(port));
-	});
-
-	it("registers /annotate and no /annotation-end", async () => {
+describe("native command surface", () => {
+	it("registers only /annotate-herdr", async () => {
 		const t = await setup();
-		assert.deepEqual([...t.commands.keys()], ["annotate", "annotation-mode"]);
+		assert.deepEqual([...t.commands.keys()], ["annotate-herdr"]);
 	});
 
-	it("adds the ssh -L hint to the notice over SSH", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { SSH_CONNECTION: "1.2.3.4 5 6.7.8.9 22", PI_ANNOTATE_PORT: String(port) } });
-		cleanups.push(t.shutdown);
-		await t.run();
-		assert.equal(
-			t.notices.at(-1),
-			[
-				`annotate: live on 127.0.0.1:${port}`,
-				`Browser: ${t.lastUrl()}`,
-				`Terminal: '${BIN_PATH}' session-a`,
-				`Over SSH, forward the port from your machine first: ssh -L ${port}:127.0.0.1:${port} <host>`,
-				"Run /annotate again to stop it.",
-			].join("\n"),
-		);
+	it("refuses Herdr review over SSH or without a UI", async () => {
+		for (const options of [{ env: { SSH_CONNECTION: "1 2 3 4" } }, { env: { SSH_TTY: "/dev/pts/1" } }]) {
+			const t = await setup({ ...options, exec: async () => { throw new Error("Herdr must not run"); } });
+			await t.launch();
+			assert.match(t.notices.at(-1)!, /local Pi session/);
+			assert.deepEqual(t.tabs, []);
+		}
+		const t = await setup({ hasUI: false, exec: async () => { throw new Error("Herdr must not run"); } });
+		await t.launch();
+		assert.deepEqual(t.tabs, []);
 	});
 
-	it("does nothing without a UI", async () => {
-		const t = await setup({ hasUI: false });
-		await t.run();
-		assert.equal(t.notices.length, 0);
+	it("opens one tab for concurrent calls and publishes the stable review connection", async () => {
+		const t = await setup();
+		await Promise.all([t.launch(), t.launch()]);
+		assert.equal(t.tabs.length, 1);
+		assert.equal(t.execCalls.filter((args) => args[0] === "do").length, 1);
+		const conn = t.connection();
+		assert.equal(conn.sessionId, "session-a");
+		assert.equal(conn.port, Number(t.env.PI_ANNOTATE_PORT));
+		const dir = t.reviewDir();
+		assert.equal(dirname(conn.file), dir);
+		assert.equal(dir, join(t.annotationDir, "herdr", createHash("sha256").update("session-a").digest("hex")));
+		assert.equal(statSync(conn.file).mode & 0o777, 0o600);
+		assert.equal(statSync(dir).mode & 0o777, 0o700);
+		const snapshot = await call(conn.port, conn.sessionId, "GET", "snapshot", conn.token);
+		assert.equal(snapshot.status, 200);
+		assert.deepEqual(JSON.parse(snapshot.body).items.map((item: { text: string }) => item.text), ["explain the cache", "The cache is LRU."]);
+		const review = await call(conn.port, conn.sessionId, "GET", "review", conn.token);
+		assert.equal(review.status, 200);
+		assert.deepEqual(JSON.parse(review.body), { notes: [] });
+		for (const endpoint of ["snapshot", "events?after=1", "review"]) {
+			assert.equal((await call(conn.port, conn.sessionId, "GET", endpoint)).status, 403, endpoint);
+		}
+		assert.equal((await call(conn.port, conn.sessionId, "POST", "send", conn.token, { seq: 1, items: [{ quote: "x" }] })).status, 404);
+	});
+
+	it("reuses a cached tab and replaces malformed tab data", async () => {
+		const root = tempRoot("native-annotation-cache-");
+		let opened = 0;
+		let cacheFile: string | undefined;
+		const t = await setup({
+			annotationDir: join(root, "annotation"),
+			exec: async (_command, args) => {
+				if (args[0] === "ls") return { code: 0, stdout: '{"spaces":[]}', stderr: "", killed: false };
+				assert.equal(args[1], "tab.new");
+				cacheFile = join(dirname(JSON.parse(args[2]).props.connectionFile), "tab.json");
+				return { code: 0, stdout: JSON.stringify({ tab: `tab-${++opened}` }), stderr: "", killed: false };
+			},
+		});
+		await t.launch();
+		assert.ok(cacheFile);
+		for (const [saved, replacement] of [["{", "tab-2"], ['{"id":"stale"}', "tab-3"]] as const) {
+			writeFileSync(cacheFile, saved);
+			await t.launch();
+			assert.equal(JSON.parse(readFileSync(cacheFile, "utf8")), replacement);
+		}
+	});
+
+	it("selects the cached Herdr tab instead of opening another", async () => {
+		const root = tempRoot("native-annotation-reuse-");
+		const calls: string[][] = [];
+		const t = await setup({
+			annotationDir: join(root, "annotation"),
+			exec: async (_command, args) => {
+				calls.push(args);
+				if (args[0] === "ls") return { code: 0, stdout: JSON.stringify({ spaces: [{ id: "space-1", tabs: [{ id: "tab-saved" }] }] }), stderr: "", killed: false };
+				if (args[0] === "do" && (args[1] === "space.select" || args[1] === "tab.select")) return { code: 0, stdout: "{}", stderr: "", killed: false };
+				throw new Error("unexpected Herdr command");
+			},
+		});
+		const dir = t.reviewDir();
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "tab.json"), JSON.stringify("tab-saved"));
+		await t.launch();
+		assert.deepEqual(calls.filter((args) => args[0] === "do").map((args) => args[1]), ["space.select", "tab.select"]);
+		assert.equal(calls.some((args) => args[1] === "tab.new"), false);
+	});
+
+	it("reports malformed Herdr output as a command failure", async () => {
+		for (const [operation, stdout, message] of [
+			["ls", "not JSON", /malformed JSON/],
+			["ls", "null", /malformed JSON/],
+			["ls", '{"spaces":null}', /malformed space data/],
+			["tab.new", "{}", /contains no tab ID/],
+		] as const) {
+			const root = tempRoot("native-annotation-protocol-");
+			const t = await setup({
+				annotationDir: join(root, "annotation"),
+				exec: async (_command, args) => {
+					const out = args[0] === "ls" ? (operation === "ls" ? stdout : '{"spaces":[]}') : stdout;
+					return { code: 0, stdout: out, stderr: "", killed: false };
+				},
+			});
+			await assert.rejects(t.launch(), message);
+		}
 	});
 });
 
-describe("sending", () => {
-	it("submits only annotation text as followUp without touching the editor", async () => {
-		const t = await setup({ editor: "DRAFT" });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		const result = await call(url, "POST", "send", token, { seq: 1, delivery: "agent", items: [{ quote: "quoted", note: "fix it" }] });
-		assert.equal(result.status, 200);
-		assert.deepEqual(JSON.parse(result.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
-		assert.equal(t.editor(), "DRAFT");
-		assert.deepEqual(t.userMessages, [{ message: "> quoted\n\nfix it\n\n", delivery: { deliverAs: "followUp" } }]);
-		const appended = await call(url, "POST", "send", token, { seq: 2, delivery: "editor", items: [{ quote: "quoted", note: "fix it" }] });
-		assert.equal(appended.status, 200);
-		assert.equal(t.editor(), "DRAFT\n> quoted\n\nfix it\n\n");
-	});
-
-	it("does not consume the sequence after synchronous submission failure", async () => {
-		const t = await setup({ editor: "DRAFT", submitError: new Error("submission failed") });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		const items = [{ quote: "quoted", note: "fix it" }];
-		assert.equal((await call(url, "POST", "send", token, { seq: 1, delivery: "agent", items })).status, 500);
-		assert.equal(t.editor(), "DRAFT");
-		assert.equal((await call(url, "POST", "send", token, { seq: 1, delivery: "editor", items })).status, 200);
-		assert.equal(t.editor(), "DRAFT\n> quoted\n\nfix it\n\n");
-	});
-
-	it("appends two send rounds to the editor in order and never messages the agent", async () => {
-		const t = await setup({ editor: "draft" });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		assert.equal((await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "The cache is LRU.", note: "why LRU?" }] })).status, 200);
-		assert.equal((await call(url, "POST", "send", token, { seq: 2, items: [{ quote: "explain the cache", note: "" }, { quote: "LRU", note: "and LFU?" }] })).status, 200);
-		assert.equal(t.editor(), "draft\n> The cache is LRU.\n\nwhy LRU?\n\n> explain the cache\n\n> LRU\n\nand LFU?\n\n");
-		assert.equal(t.userMessages.length, 0);
-		const old = await call(url, "POST", "send", token, { seq: 2, items: [{ quote: "again", note: "" }] });
-		assert.equal(old.status, 409);
-		assert.ok(!t.editor().includes("again"));
-	});
-
-	for (const [editor, expected] of [
-		["", "> quote\n\nnote\n\n"],
-		["draft", "draft\n> quote\n\nnote\n\n"],
-		["draft\n", "draft\n> quote\n\nnote\n\n"],
-		["a\n\n", "a\n\n> quote\n\nnote\n\n"],
-	] as const) {
-		it(`appends after ${JSON.stringify(editor)} with one newline only when needed`, async () => {
-			const t = await setup({ editor });
-			cleanups.push(t.shutdown);
-			await t.run();
-			const { url, token } = t.parts();
-			assert.equal((await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "quote", note: "note" }] })).status, 200);
-			assert.equal(t.editor(), expected);
-		});
+describe("native review protocol", () => {
+	async function reviewSession(root: string) {
+		const t = await setup({ annotationDir: join(root, "annotation") });
+		await t.launch();
+		const conn = t.connection();
+		const request = (body?: unknown) => call(conn.port, conn.sessionId, body === undefined ? "GET" : "POST", "review", conn.token, body);
+		return { t, conn, request, staged: join(dirname(conn.file), "notes.json.tmp") };
 	}
 
-	it("strips control sequences before appending", async () => {
-		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "\x1b[31mred\x1b[0m", note: "n\x1b]0;x\x07\x1b[201~" }] });
-		assert.equal(t.editor(), "> red\n\nn\n\n");
+	it("rejects stale and unguarded updates without replacing a newer pending note", async () => {
+		const root = tempRoot("native-annotation-save-");
+		const { request } = await reviewSession(root);
+		const original = { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "first" };
+		const initial = await request(original);
+		assert.equal(initial.status, 200);
+		const { noteId } = JSON.parse(initial.body);
+		const edit = { ...original, noteId, expectedText: "first", text: "second" };
+		const accepted = await request(edit);
+		assert.equal(accepted.status, 200);
+		assert.equal(JSON.parse(accepted.body).noteId, noteId);
+		for (const expectedText of ["first", undefined]) {
+			const rejected = await request({ ...edit, expectedText, text: "stale draft" });
+			assert.equal(rejected.status, 409);
+			assert.match(rejected.body, /note changed/i);
+		}
+		assert.deepEqual(JSON.parse((await request()).body).notes, JSON.parse(accepted.body).notes);
+		const next = await request({ ...edit, expectedText: "second", text: "third" });
+		assert.equal(next.status, 200);
+		assert.deepEqual(JSON.parse(next.body), { notes: [{ id: noteId, status: "pending", anchor: original.anchor, text: "third" }], noteId });
 	});
 
-	it("rejects with 410 when the ctx went stale and inserts nothing", async () => {
+	it("acknowledges a create replay after reconnect without rewriting, duplicating, or restoring a deleted note", async () => {
+		const root = tempRoot("native-annotation-replay-");
+		const first = await reviewSession(root);
+		const createId = randomUUID();
+		const anchor = { itemId: "u1", start: 0, end: 7, quote: "explain" };
+		const create = { action: "save", createId, anchor, text: "first" };
+		assert.equal((await first.request({ ...create, createId: "../not-a-uuid" })).status, 409);
+		assert.equal((await first.request(create)).status, 200);
+		const edit = { action: "save", noteId: createId, expectedText: "first", anchor, text: "updated" };
+		assert.equal((await first.request(edit)).status, 200);
+		await first.t.shutdown();
+		const reopened = await reviewSession(root);
+		const branch = reopened.t.branch();
+		mkdirSync(reopened.staged);
+		const replay = await reopened.request(create);
+		assert.equal(replay.status, 200);
+		assert.deepEqual(JSON.parse(replay.body), { notes: [{ id: createId, status: "pending", anchor, text: "updated" }], noteId: createId });
+		reopened.t.setBranch([]);
+		const offBranch = await reopened.request(create);
+		assert.equal(offBranch.status, 200);
+		assert.deepEqual(JSON.parse(offBranch.body), { notes: [], noteId: createId });
+		reopened.t.setBranch(branch);
+		rmSync(reopened.staged, { recursive: true });
+		assert.equal((await reopened.request({ action: "delete", noteId: createId })).status, 200);
+		const deleted = await reopened.request(create);
+		assert.equal(deleted.status, 200);
+		assert.deepEqual(JSON.parse(deleted.body), { notes: [], noteId: createId });
+	});
+
+	it("appends only current pending notes using rendered quotes and reports delivery failures", async () => {
+		const root = tempRoot("native-annotation-");
+		const t = await setup({ annotationDir: join(root, "annotation"), editor: "draft", branch: [msg("u1", "user", "Please **explain** the cache")] });
+		await t.launch();
+		const conn = t.connection();
+		const post = (body: unknown) => call(conn.port, conn.sessionId, "POST", "review", conn.token, body);
+		const item = JSON.parse((await call(conn.port, conn.sessionId, "GET", "snapshot", conn.token)).body).items[0];
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "review", "wrong")).status, 403);
+		assert.equal((await call(conn.port, conn.sessionId, "POST", "send", conn.token, { seq: 1, delivery: "agent", items: [{ quote: "x" }] })).status, 404);
+		const saved = await post({ action: "save", anchor: { itemId: item.id, start: 0, end: 18, quote: "Please explain" }, text: "why?" });
+		assert.equal(saved.status, 200);
+		const id = JSON.parse(saved.body).notes[0].id;
+		assert.equal(JSON.parse(saved.body).noteId, id);
+		const cloned = JSON.parse((await post({ action: "save", anchor: { itemId: item.id, start: 0, end: 18, quote: "Please explain" }, text: "clone" })).body);
+		assert.equal(cloned.noteId, cloned.notes.find((note: { text: string }) => note.text === "clone").id);
+		const edited = JSON.parse((await post({ action: "save", noteId: id, expectedText: "why?", anchor: { itemId: item.id, start: 0, end: 18, quote: "Please explain" }, text: "why?" })).body);
+		assert.equal(edited.noteId, id);
+		const branch = t.branch();
+		t.setBranch([]);
+		assert.equal((await post({ action: "deliver", noteIds: [id] })).status, 409);
+		t.setBranch(branch);
+		const notesFile = join(dirname(conn.file), "notes.json");
+		mkdirSync(`${notesFile}.tmp`);
+		const originalNotify = t.ctx.ui.notify;
+		t.ctx.ui.notify = () => { throw new Error("notification failed"); };
+		const failed = await post({ action: "deliver", noteIds: [id] });
+		t.ctx.ui.notify = originalNotify;
+		assert.equal(failed.status, 409);
+		assert.equal(t.editor(), "draft");
+		assert.match(failed.body, /could not save/i);
+		assert.deepEqual(JSON.parse((await call(conn.port, conn.sessionId, "GET", "review", conn.token)).body).notes, JSON.parse(readFileSync(notesFile, "utf8")));
+		rmSync(`${notesFile}.tmp`, { recursive: true });
+		const setEditorText = t.ctx.ui.setEditorText;
+		t.ctx.ui.setEditorText = (text) => {
+			assert.equal(JSON.parse(readFileSync(notesFile, "utf8"))[0].status, "appended");
+			setEditorText(text);
+		};
+		const notify = t.ctx.ui.notify;
+		t.ctx.ui.notify = (message) => {
+			if (message.startsWith("annotate: appended")) throw new Error("notification failed");
+			notify(message);
+		};
+		assert.equal((await post({ action: "deliver", noteIds: [id] })).status, 200);
+		assert.match(t.editor(), /^draft[\s\S]*> Please explain[\s\S]*why\?/);
+		assert.equal((await post({ action: "deliver", noteIds: [id] })).status, 409);
+		const draft = t.editor();
+		t.ctx.ui.setEditorText = () => { throw new Error("editor write failed"); };
+		const rejected = await post({ action: "deliver", noteIds: [cloned.noteId] });
+		assert.equal(rejected.status, 409);
+		assert.match(rejected.body, /batch was consumed/i);
+		assert.equal(t.editor(), draft);
+		assert.equal((await post({ action: "deliver", noteIds: [cloned.noteId] })).status, 409);
+		assert.equal(JSON.parse(readFileSync(notesFile, "utf8"))[1].status, "appended");
+		assert.deepEqual(t.userMessages, []);
+	});
+
+	it("requires the native capability, same origin, and a current session", async () => {
 		const t = await setup();
-		await t.run();
-		const { url, token } = t.parts();
-		t.makeStale();
-		assert.equal((await call(url, "POST", "send", token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 410);
-		assert.equal(t.editor(), "");
-		t.makeStale = () => {};
+		await t.launch();
+		const conn = t.connection();
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "review")).status, 403);
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "review", "wrong")).status, 403);
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "review", conn.token, undefined, "http://evil.example")).status, 403);
+		assert.equal((await call(conn.port, "other-session", "GET", "review", conn.token)).status, 403);
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "review", conn.token, undefined, `http://127.0.0.1:${conn.port}`)).status, 200);
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "snapshot", conn.token)).status, 200);
+	});
+
+	it("keeps review notes and releases the owner lock when the session shuts down", async () => {
+		const root = tempRoot("native-annotation-persist-");
+		const first = await setup({ annotationDir: join(root, "annotation") });
+		await first.launch();
+		const conn = first.connection();
+		const saved = await call(conn.port, conn.sessionId, "POST", "review", conn.token, { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "keep me" });
+		assert.equal(saved.status, 200);
+		await first.shutdown();
+		const second = await setup({ annotationDir: join(root, "annotation") });
+		await second.launch();
+		const next = second.connection();
+		const review = await call(next.port, next.sessionId, "GET", "review", next.token);
+		assert.equal(review.status, 200);
+		assert.deepEqual(JSON.parse(review.body).notes, [{ id: JSON.parse(saved.body).noteId, status: "pending", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "keep me" }]);
 	});
 });
 
-describe("live updates and lifecycle", () => {
-	it("pushes a new agent reply to a waiting long-poll after message_end", async () => {
+describe("native live updates", () => {
+	it("pushes appended messages and branch resets after message_end and session_tree", async () => {
 		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		const snapshot = JSON.parse((await call(url, "GET", "snapshot", token)).body);
-		assert.equal(snapshot.items.length, 2);
-		const poll = call(url, "GET", `events?after=${snapshot.version}`, token);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		t.setBranch([...t.branch(), msg("u2", "user", "and eviction?"), msg("a2", "assistant", [{ type: "text", text: "Oldest first." }])]);
+		await t.launch();
+		const conn = t.connection();
+		const poll = call(conn.port, conn.sessionId, "GET", "events?after=1", conn.token);
+		await delay(50);
+		t.setBranch([...t.branch(), msg("a2", "assistant", [{ type: "text", text: "Second reply" }])]);
 		await t.emit("message_end");
-		const reply = JSON.parse((await poll).body);
-		assert.equal(reply.reset, false);
-		assert.deepEqual(reply.items.map((i: { id: string }) => i.id), ["u2", "a2"]);
-	});
-
-	it("sends a reset after a /tree branch change", async () => {
-		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run();
-		const { url, token } = t.parts();
-		const poll = call(url, "GET", "events?after=1", token);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		t.setBranch([msg("u1", "user", "explain the cache")]);
+		const appended = await poll;
+		assert.equal(appended.status, 200);
+		assert.deepEqual(JSON.parse(appended.body), { version: 2, reset: false, items: [{ id: "a2", kind: "assistant", label: "Assistant", text: "Second reply" }] });
+		const reset = call(conn.port, conn.sessionId, "GET", "events?after=2", conn.token);
+		await delay(50);
+		t.setBranch([msg("u2", "user", "new branch")]);
 		await t.emit("session_tree");
-		const reply = JSON.parse((await poll).body);
-		assert.equal(reply.reset, true);
-		assert.deepEqual(reply.items.map((i: { id: string }) => i.id), ["u1"]);
-	});
-
-	it("a second /annotate stops the server, ends a pending long-poll at once and frees the port", async () => {
-		const t = await setup();
-		await t.run();
-		const { url, token } = t.parts();
-		const started = Date.now();
-		const poll = call(url, "GET", "events?after=1", token);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		await t.run();
-		await assert.rejects(poll);
-		assert.ok(Date.now() - started < 1500);
-		assert.equal(t.notices.at(-1), `annotate: closed, port ${url.port} released`);
-		assert.equal(t.statuses.at(-1), undefined);
-		await new Promise<void>((resolve, reject) => {
-			const probe = createServer();
-			probe.once("error", reject);
-			probe.listen(Number(url.port), "127.0.0.1", () => probe.close(() => resolve()));
-		});
-	});
-
-	it("a third /annotate starts a new server with a new token and the old token gets 403", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const old = t.parts();
-		await t.run();
-		await t.run();
-		const fresh = t.parts();
-		assert.equal(fresh.url.port, String(port));
-		assert.equal(fresh.url.pathname, old.url.pathname);
-		assert.notEqual(fresh.token, old.token);
-		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
-		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 403);
-		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 403);
-		assert.equal((await call(fresh.url, "GET", "snapshot", fresh.token)).status, 200);
-		assert.equal(t.editor(), "");
-	});
-
-	it("two rapid /annotate calls while the server is starting end with it closed and the port released", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		cleanups.push(t.shutdown);
-		await Promise.all([t.run(), t.run()]);
-		assert.equal(t.notices.at(-1), `annotate: closed, port ${port} released`);
-		assert.equal(t.statuses.at(-1), undefined);
-		await new Promise<void>((resolve, reject) => {
-			const probe = createServer();
-			probe.once("error", reject);
-			probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
-		});
-		await t.run();
-		const { url, token } = t.parts();
-		assert.equal(url.port, String(port));
-		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
-		assert.equal((await call(url, "GET", "snapshot", token)).status, 200);
-	});
-
-	it("a session shutdown while the server is starting closes it as soon as it binds", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		const run = t.run();
-		await t.shutdown();
-		await run;
-		await new Promise<void>((resolve, reject) => {
-			const probe = createServer();
-			probe.once("error", reject);
-			probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
-		});
-	});
-
-	it("/annotate after /new starts a fresh server for the new session id even if the old one still runs", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const old = t.parts();
-		t.switchSession("session-b");
-		await t.run();
-		const fresh = t.parts();
-		assert.equal(fresh.url.pathname, "/session-b");
-		assert.equal(fresh.url.port, String(port));
-		assert.notEqual(fresh.token, old.token);
-		assert.equal(t.statuses.at(-1), `annotate: live on 127.0.0.1:${port}`);
-		assert.equal((await call(fresh.url, "GET", "snapshot", fresh.token)).status, 200);
-		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 410);
-	});
-
-	it("after a session switch the old tab gets 410 from the new server and nothing is inserted", async () => {
-		const port = await freePort();
-		const t = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		await t.run();
-		const old = t.parts();
-		await t.shutdown();
-		t.switchSession("session-b");
-		await t.run();
-		cleanups.push(t.shutdown);
-		const fresh = t.parts();
-		assert.equal(fresh.url.port, String(port));
-		assert.equal(fresh.url.pathname, "/session-b");
-		assert.notEqual(fresh.token, old.token);
-		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "x", note: "" }] })).status, 410);
-		assert.equal((await call(old.url, "GET", "events?after=1", old.token)).status, 410);
-		assert.equal(t.editor(), "");
-	});
-
-	it("keeps only one server across extension instances", async () => {
-		const port = await freePort();
-		const a = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		const b = await setup({ env: { PI_ANNOTATE_PORT: String(port) } });
-		cleanups.push(a.shutdown, b.shutdown);
-		await a.run();
-		const first = a.parts();
-		await b.run();
-		assert.equal(b.parts().url.port, String(port));
-		assert.notEqual(b.parts().token, first.token);
-		assert.equal((await call(first.url, "GET", "snapshot", first.token)).status, 403);
+		assert.deepEqual(JSON.parse((await reset).body), { version: 3, reset: true, items: [{ id: "u2", kind: "user", label: "You", text: "new branch" }] });
 	});
 });
 
-describe("annotation handoff", () => {
-	it("follows into a new extension instance on the same port with fresh credentials and delivery callbacks", async () => {
+describe("native handoff", () => {
+	function handoffExec(connections: Map<string, string>) {
+		return async (_command: string, args: string[]) => {
+			if (args[0] === "ls") return { code: 0, stdout: '{"spaces":[]}', stderr: "", killed: false };
+			const props = JSON.parse(args[2]!).props as TabProps;
+			connections.set(props.sessionId, props.connectionFile);
+			return { code: 0, stdout: JSON.stringify({ tab: props.sessionId }), stderr: "", killed: false };
+		};
+	}
+
+	async function connect(source: Awaited<ReturnType<typeof setup>>, id: string, connections: Map<string, string>): Promise<Connection> {
+		await source.launch();
+		const file = connections.get(id);
+		assert.ok(file, `no connection for ${id}`);
+		return { ...JSON.parse(readFileSync(file, "utf8")), file };
+	}
+
+	it("keeps native review data and capabilities bound to the original source", async () => {
+		const root = tempRoot("annotation-handoff-");
+		const annotationDir = join(root, "annotation");
+		const connections = new Map<string, string>();
+		const exec = handoffExec(connections);
+		let original: Awaited<ReturnType<typeof setup>>;
 		let replacement: Awaited<ReturnType<typeof setup>>;
-		let heldSnapshot: ReturnType<typeof call>;
-		let heldSend: ReturnType<typeof call>;
-		const t = await setup({
-			editor: "SOURCE DRAFT",
-			newSession: async (options) => {
-				assert.equal(options?.parentSession, "/sessions/source.jsonl");
-				await t.shutdown();
-				t.makeStale();
-				replacement = await setup({ sessionId: "session-b", registryDir: t.registry, editor: "NEW DRAFT" });
-				cleanups.push(replacement.shutdown);
-				replacement.setBranch([msg("new-user", "user", "read the handoff")]);
+		original = await setup({
+			annotationDir,
+			exec,
+			newSession: async () => {
+				await original.shutdown();
+				original.makeStale();
+				replacement = await setup({ annotationDir, exec, sessionId: "session-b" });
 				await replacement.emit("session_start");
-				heldSnapshot = call(old.url, "GET", "snapshot", old.token);
-				heldSend = call(old.url, "POST", "send", old.token, { seq: 1, delivery: "agent", items: [{ quote: "during handoff" }] });
-				assert.equal(await Promise.race([Promise.race([heldSnapshot, heldSend]).then(() => "answered"), delay(50, "held")]), "held");
-				assert.deepEqual(t.userMessages, []);
-				assert.deepEqual(replacement.userMessages, []);
-				await options?.withSession?.(replacement.ctx as never);
 				return { cancelled: false };
 			},
 		});
-		cleanups.push(t.shutdown);
-		await t.run();
-		const old = t.parts();
-		const result = await newSessionWithAnnotation(t.ctx as never, {
-			parentSession: "/sessions/source.jsonl",
-			withSession: async (ctx) => {
-				assert.equal(ctx.sessionManager.getSessionId(), "session-b");
-				assert.equal(listEntries(t.registry)[0]?.sessionId, "session-a");
-				replacement.setBranch([msg("new-user", "user", "read the handoff"), msg("bootstrap", "user", "handoff prompt sent")]);
-			},
-		});
-		assert.deepEqual(result, { cancelled: false });
-		const [entry] = listEntries(t.registry);
-		assert.equal(entry?.sessionId, "session-b");
-		assert.equal(entry?.port, Number(old.url.port));
-		assert.notEqual(entry!.token, old.token);
-		assert.equal(replacement!.statuses.at(-1), `annotate: live on 127.0.0.1:${old.url.port}`);
-		assert.equal(replacement!.notices.at(-1), [
-			`annotate: followed to this session on 127.0.0.1:${old.url.port}`,
-			`Browser: http://127.0.0.1:${old.url.port}/session-b#t=${entry!.token}`,
-			`Terminal: '${BIN_PATH}' session-b`,
-			"Run /annotate again to stop it.",
-		].join("\n"));
-		for (const reply of await Promise.all([heldSnapshot!, heldSend!])) {
-			assert.equal(reply.status, 410);
-			assert.deepEqual(JSON.parse(reply.body), { error: "Session switched, run /annotate again.", successor: { sessionId: "session-b", token: entry!.token } });
-		}
-		const retired = await call(old.url, "GET", "snapshot", old.token);
-		assert.equal(retired.status, 410);
-		assert.deepEqual(JSON.parse(retired.body), { error: SESSION_SWITCHED, successor: { sessionId: "session-b", token: entry!.token } });
-		const url = new URL(`http://127.0.0.1:${entry!.port}/session-b`);
-		const snapshot = await call(url, "GET", "snapshot", entry!.token);
-		assert.equal(snapshot.status, 200);
-		assert.equal(JSON.parse(snapshot.body).sessionId, "session-b");
-		assert.equal(JSON.parse(snapshot.body).nextSeq, 1);
-		assert.deepEqual(JSON.parse(snapshot.body).items.map((item: { id: string }) => item.id), ["new-user", "bootstrap"]);
-		assert.equal((await call(url, "GET", "snapshot", old.token)).status, 403);
-		const items = [{ quote: "quoted", note: "fix it" }];
-		assert.equal((await call(old.url, "POST", "send", old.token, { seq: 1, delivery: "agent", items })).status, 410);
-		assert.equal((await call(url, "POST", "send", entry!.token, { seq: 1, delivery: "agent", items })).status, 200);
-		assert.deepEqual(replacement!.userMessages, [{ message: "> quoted\n\nfix it\n\n", delivery: { deliverAs: "followUp" } }]);
-		assert.deepEqual(t.userMessages, []);
-		assert.equal((await call(url, "POST", "send", entry!.token, { seq: 2, delivery: "editor", items })).status, 200);
-		assert.equal(replacement!.editor(), "NEW DRAFT\n> quoted\n\nfix it\n\n");
-		assert.equal(t.editor(), "SOURCE DRAFT");
-		await t.shutdown();
-		await replacement!.emit("session_start");
-		assert.equal(replacement!.notices.filter((notice) => notice.includes("followed")).length, 1);
-		assert.equal((await call(url, "GET", "snapshot", entry!.token)).status, 200);
-		await replacement!.shutdown();
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.equal(await canListen(entry!.port), true);
+		const old = await connect(original, "session-a", connections);
+		assert.equal((await call(old.port, old.sessionId, "POST", "review", old.token, { action: "save", anchor: { itemId: "u1", start: 0, end: 7, quote: "explain" }, text: "keep this in A" })).status, 200);
+		await newSessionWithAnnotation(original.ctx as never);
+		const next = await connect(replacement!, "session-b", connections);
+		assert.equal(next.port, old.port);
+		assert.notEqual(connections.get("session-a"), connections.get("session-b"));
+		assert.equal((await call(next.port, next.sessionId, "GET", "review", old.token)).status, 403);
+		const review = await call(next.port, next.sessionId, "GET", "review", next.token);
+		assert.equal(review.status, 200);
+		assert.deepEqual(JSON.parse(review.body), { notes: [] });
+		assert.equal(JSON.parse((await call(next.port, next.sessionId, "GET", "snapshot", next.token)).body).sessionId, "session-b");
+		assert.equal(JSON.parse(readFileSync(join(original.reviewDir("session-a"), "notes.json"), "utf8"))[0].text, "keep this in A");
 	});
 
-	it("leaves the token and registry unchanged when the handoff is cancelled", async () => {
-		let heldSend: ReturnType<typeof call>;
-		const t = await setup({ newSession: async () => {
-			heldSend = call(old.url, "POST", "send", old.token, { seq: 1, items: [{ quote: "still here" }] });
-			assert.equal(await Promise.race([heldSend.then(() => "answered"), delay(50, "held")]), "held");
-			assert.equal(t.editor(), "");
-			return { cancelled: true };
-		} });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const old = t.parts();
-		const entries = listEntries(t.registry);
-		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, {}), { cancelled: true });
-		assert.deepEqual(listEntries(t.registry), entries);
-		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 200);
-		const accepted = await heldSend!;
-		assert.equal(accepted.status, 200);
-		assert.deepEqual(JSON.parse(accepted.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
-		assert.equal(t.editor(), "> still here\n\n");
-		await t.shutdown();
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.equal(await canListen(Number(old.url.port)), true);
+	it("unparks the same server when the replacement is cancelled", async () => {
+		const t = await setup({ newSession: async () => ({ cancelled: true }) });
+		await t.launch();
+		const conn = t.connection();
+		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, { parentSession: "/parent.jsonl" }), { cancelled: true });
+		assert.equal((await call(conn.port, conn.sessionId, "GET", "snapshot", conn.token)).status, 200);
+		assert.deepEqual(JSON.parse((await call(conn.port, conn.sessionId, "GET", "review", conn.token)).body), { notes: [] });
+		assert.equal(t.connection().token, conn.token);
 	});
 
-	it("closes the parked server when replacement completes without an annotation instance", async () => {
-		const t = await setup({ newSession: async () => {
-			await t.shutdown();
-			t.makeStale();
-			return { cancelled: false };
-		} });
-		cleanups.push(t.shutdown);
-		await t.run();
-		const old = t.parts();
-		assert.equal((await call(old.url, "GET", "snapshot", old.token)).status, 200);
-		assert.equal(listEntries(t.registry)[0]?.token, old.token);
-		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, {}), { cancelled: false });
-		await assert.rejects(call(old.url, "GET", "snapshot", old.token));
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.equal(await canListen(Number(old.url.port)), true);
-	});
-
-	it("closes the parked server if replacement throws after teardown", async () => {
-		const failure = new Error("replacement runtime failed");
+	it("closes a parked server when the replacement has no annotation instance", async () => {
+		let releaseSource!: () => Promise<void>;
 		const t = await setup({
 			newSession: async () => {
-				await t.shutdown();
-				t.makeStale();
-				throw failure;
-			},
-		});
-		cleanups.push(t.shutdown);
-		await t.run();
-		const old = t.parts();
-		assert.equal(listEntries(t.registry)[0]?.token, old.token);
-		await assert.rejects(newSessionWithAnnotation(t.ctx as never, {}), failure);
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.equal(await canListen(Number(old.url.port)), true);
-	});
-
-	it("passes through newSession without starting a server when none was running", async () => {
-		const result = { cancelled: false };
-		let replacement: Awaited<ReturnType<typeof setup>>;
-		const t = await setup({
-			newSession: async (options) => {
-				assert.equal(options?.parentSession, "/sessions/source.jsonl");
-				await t.shutdown();
-				t.makeStale();
-				replacement = await setup({ sessionId: "session-b", registryDir: t.registry });
-				cleanups.push(replacement.shutdown);
-				await replacement.emit("session_start");
-				await options?.withSession?.(replacement.ctx as never);
-				return result;
-			},
-		});
-		assert.equal(await newSessionWithAnnotation(t.ctx as never, { parentSession: "/sessions/source.jsonl" }), result);
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.deepEqual(replacement!.statuses, []);
-		assert.deepEqual(replacement!.notices, []);
-		await replacement!.run();
-		assert.equal(listEntries(t.registry)[0]?.sessionId, "session-b");
-		assert.equal(replacement!.statuses.at(-1), `annotate: live on 127.0.0.1:${replacement!.parts().url.port}`);
-	});
-
-	it("does not follow a plain new session into the replacement instance", async () => {
-		const t = await setup();
-		await t.run();
-		const old = t.parts();
-		await t.shutdown();
-		t.makeStale();
-		const replacement = await setup({ sessionId: "session-b", registryDir: t.registry });
-		cleanups.push(replacement.shutdown);
-		await replacement.emit("session_start");
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.deepEqual(replacement.statuses, []);
-		assert.equal(await canListen(Number(old.url.port)), true);
-		await replacement.run();
-		assert.equal(listEntries(t.registry)[0]?.sessionId, "session-b");
-		assert.notEqual(replacement.parts().token, old.token);
-	});
-
-	it("does not follow a server that is still starting when the handoff tears down", async () => {
-		const port = await freePort();
-		const t = await setup({
-			env: { PI_ANNOTATE_PORT: String(port) },
-			newSession: async (options) => {
-				await t.shutdown();
-				const replacement = await setup({ sessionId: "session-b", registryDir: t.registry });
-				await replacement.emit("session_start");
-				await options?.withSession?.(replacement.ctx as never);
-				assert.deepEqual(replacement.statuses, []);
+				await releaseSource();
 				return { cancelled: false };
 			},
 		});
-		cleanups.push(t.shutdown);
-		const starting = t.run();
-		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, {}), { cancelled: false });
-		await starting;
-		assert.equal(t.notices.at(-1), `annotate: closed, port ${port} released`);
-		assert.deepEqual(listEntries(t.registry), []);
-		assert.equal(await canListen(port), true);
-	});
-});
-
-describe("session registry and arguments", () => {
-	it("registers the session with its pi-tui module and serves the snapshot", async () => {
-		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run();
-		const [entry] = listEntries(t.registry);
-		assert.equal(entry?.sessionId, "session-a");
-		assert.equal(entry?.pid, process.pid);
-		assert.equal(entry?.cwd, "/work/project");
-		assert.match(entry?.tuiModule ?? "", /pi-tui/);
-		const url = new URL(`http://127.0.0.1:${entry!.port}/session-a`);
-		assert.equal((await call(url, "GET", "snapshot", entry!.token)).status, 200);
+		releaseSource = t.shutdown;
+		await t.launch();
+		const conn = t.connection();
+		await newSessionWithAnnotation(t.ctx as never);
+		await assert.rejects(call(conn.port, conn.sessionId, "GET", "snapshot", conn.token));
+		assert.equal(await canListen(conn.port), true);
 	});
 
-	it("registers the session and unregisters it when /annotate stops it", async () => {
-		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run();
-		assert.equal(listEntries(t.registry)[0]?.token, t.parts().token);
-		await t.run();
-		assert.deepEqual(listEntries(t.registry), []);
+	it("closes the parked server when the replacement throws", async () => {
+		let releaseSource!: () => Promise<void>;
+		const t = await setup({
+			newSession: async () => {
+				await releaseSource();
+				throw new Error("replacement failed");
+			},
+		});
+		releaseSource = t.shutdown;
+		await t.launch();
+		const conn = t.connection();
+		await assert.rejects(newSessionWithAnnotation(t.ctx as never), /replacement failed/);
+		await assert.rejects(call(conn.port, conn.sessionId, "GET", "snapshot", conn.token));
+		assert.equal(await canListen(conn.port), true);
 	});
 
-	it("unregisters on session shutdown", async () => {
-		const t = await setup();
-		await t.run();
-		await t.shutdown();
-		assert.deepEqual(listEntries(t.registry), []);
+	it("passes through newSession when no annotation server runs", async () => {
+		const calls: unknown[] = [];
+		const t = await setup({
+			newSession: async (options) => {
+				calls.push(options);
+				return { cancelled: false };
+			},
+		});
+		assert.deepEqual(await newSessionWithAnnotation(t.ctx as never, { parentSession: "/parent.jsonl" }), { cancelled: false });
+		assert.deepEqual(calls, [{ parentSession: "/parent.jsonl" }]);
+		assert.deepEqual(t.tabs, []);
 	});
 
-	it("ignores extra arguments and starts a server like plain /annotate", async () => {
-		const t = await setup();
-		cleanups.push(t.shutdown);
-		await t.run("web again");
-		assert.equal(t.notices.length, 1);
-		assert.match(t.notices.at(-1)!, /^annotate: live on 127\.0\.0\.1:\d+\nBrowser: http:\/\/127\.0\.0\.1:\d+\/session-a#t=[\w-]{32}\nTerminal: '.*pi-annotation\.ts' session-a\nRun \/annotate again to stop it\.$/);
-		assert.equal(listEntries(t.registry)[0]?.sessionId, "session-a");
+	it("does not follow a plain new session into a replacement instance", async () => {
+		let releaseSource!: () => Promise<void>;
+		let replacement: Awaited<ReturnType<typeof setup>>;
+		const t = await setup({
+			newSession: async () => {
+				await releaseSource();
+				t.makeStale();
+				replacement = await setup({ annotationDir: t.annotationDir, sessionId: "session-b" });
+				await replacement.emit("session_start");
+				return { cancelled: false };
+			},
+		});
+		releaseSource = t.shutdown;
+		await t.launch();
+		const conn = t.connection();
+		await t.ctx.newSession({});
+		await assert.rejects(call(conn.port, conn.sessionId, "GET", "snapshot", conn.token));
+		assert.deepEqual(replacement!.tabs, []);
+		assert.deepEqual(replacement!.notices, []);
+	});
+
+	it("does not launch a tab when shutdown aborts an in-flight command", async () => {
+		let releaseSource!: () => Promise<void>;
+		const started = deferred<void>();
+		const opened: TabProps[] = [];
+		const t = await setup({
+			exec: async (_command: string, args: string[], options: { signal?: AbortSignal }) => {
+				if (args[0] === "ls") {
+					started.resolve();
+					await delay(80);
+					options?.signal?.throwIfAborted();
+					return { code: 0, stdout: '{"spaces":[]}', stderr: "", killed: false };
+				}
+				opened.push(JSON.parse(args[2]!).props as TabProps);
+				return { code: 0, stdout: '{"tab":"tab-1"}', stderr: "", killed: false };
+			},
+			newSession: async () => {
+				await releaseSource();
+				return { cancelled: false };
+			},
+		});
+		releaseSource = t.shutdown;
+		const launch = t.launch();
+		await started.promise;
+		await newSessionWithAnnotation(t.ctx as never);
+		await launch;
+		assert.deepEqual(opened, []);
+		assert.equal(await canListen(Number(t.env.PI_ANNOTATE_PORT)), true);
 	});
 });

@@ -24,4 +24,4 @@ pi-resume-handoff 是 [pi](https://github.com/earendil-works/pi) 的 extension�
 
 ## 測試
 
-在 repository 根目錄執行 `npm test` 會跑 `test/` 裡的單元測試。`test/e2e/acceptance.mjs` 在 tmux 裡用真的 provider 跑真的 pi。執行方式為 `node extensions/resume-handoff/test/e2e/acceptance.mjs --provider <provider> --model <model>`。`extensions/annotation/test/e2e/tmux-handoff.sh` 檢查 annotation 的 client 會跟隨交接。
+在 repository 根目錄執行 `npm test` 會跑 `test/` 裡的單元測試。`test/e2e/acceptance.mjs` 在 tmux 裡用真的 provider 跑真的 pi。執行方式為 `node extensions/resume-handoff/test/e2e/acceptance.mjs --provider <provider> --model <model>`。`extensions/annotation/test/native-lifecycle.test.ts` 檢查交接時 Herdr 標註如何與來源 session 結束連線。

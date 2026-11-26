@@ -1,22 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createConnection, createServer, type Server } from "node:net";
 import { after, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Annotation } from "../quote.ts";
+import { ReviewError } from "../review.ts";
 import {
 	type AnnotateServer,
-	type AnnotateServerOptions,
 	type CloseReason,
-	classify,
 	DEFAULT_PORT,
-	diffItems,
-	FRAME_CSP,
-	mermaidPath,
 	MAX_BODY_BYTES,
 	preferredPort,
 	SESSION_SWITCHED,
+	SessionSwitchedError,
 	startAnnotateServer,
 } from "../server.ts";
 import type { SnapshotItem } from "../snapshot.ts";
@@ -53,8 +48,13 @@ after(() => {
 	for (const holder of holders) holder.close();
 });
 
-async function start(overrides: { isCurrent?: () => boolean; onSend?: AnnotateServerOptions["onSend"]; longPollMs?: number; port?: number } = {}) {
-	const sent: Annotation[][] = [];
+async function start(overrides: {
+	review?: boolean;
+	request?: (body?: unknown) => unknown;
+	isCurrent?: () => boolean;
+	longPollMs?: number;
+	port?: number;
+} = {}) {
 	const closes: CloseReason[] = [];
 	const server = await startAnnotateServer({
 		sessionId: SID,
@@ -62,21 +62,48 @@ async function start(overrides: { isCurrent?: () => boolean; onSend?: AnnotateSe
 		port: overrides.port ?? 0,
 		isCurrent: overrides.isCurrent ?? (() => true),
 		longPollMs: overrides.longPollMs ?? 2000,
-		onSend:
-			overrides.onSend ??
-			((items) => {
-				sent.push(items);
-				return items.length;
-			}),
 		onClose: (reason) => closes.push(reason),
 	});
 	servers.push(server);
 	const auth = (extra: Record<string, string> = {}): Record<string, string> => ({ "x-annotate-token": server.token, ...extra });
 	const api = (endpoint: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
 		request(server.port, { method: init.method, path: `/${SID}/api/${endpoint}`, headers: init.headers ?? auth(), body: init.body });
-	const send = (seq: number, items: Annotation[] = [{ quote: "hello", note: "why" }], headers: Record<string, string> = auth({ "content-type": "application/json" })) =>
-		api("send", { method: "POST", headers, body: JSON.stringify({ seq, items }) });
-	return { server, sent, closes, auth, api, send };
+	const reviewToken = overrides.review === false ? undefined : server.enableReview(SID, overrides.request ?? ((body) => ({ ok: true, body: body ?? null })));
+	const review = (init: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
+		request(server.port, {
+			method: init.method ?? "GET",
+			path: `/${SID}/api/review`,
+			headers: { "x-annotate-token": reviewToken!, ...init.headers },
+			body: init.body,
+		});
+	return { server, closes, auth, api, reviewToken, review };
+}
+
+async function startWithAdmissions(count = 1, longPollMs?: number) {
+	let observe!: () => void;
+	const admitted = new Promise<void>((resolve) => { observe = resolve; });
+	let remaining = 0;
+	const fixture = await start({
+		longPollMs,
+		isCurrent: () => {
+			if (remaining > 0 && --remaining === 0) observe();
+			return true;
+		},
+	});
+	remaining = count;
+	const waitForAdmission = async (...polls: Promise<Reply>[]) => {
+		const deadline = new AbortController();
+		try {
+			await Promise.race([
+				admitted,
+				delay(2000, undefined, { signal: deadline.signal }).then(() => assert.fail("Long-poll admission timed out")),
+				...polls.map((poll) => poll.then((reply) => assert.fail(`Long-poll answered before admission: HTTP ${reply.status} ${reply.body}`))),
+			]);
+		} finally {
+			deadline.abort();
+		}
+	};
+	return { ...fixture, waitForAdmission };
 }
 
 function canListen(port: number): Promise<boolean> {
@@ -107,88 +134,12 @@ function hold(port: number): Promise<Server> {
 	});
 }
 
-describe("delivery boundary", () => {
-	it("defaults browser requests to editor and shares ordering with agent delivery", async () => {
-		const accepted: unknown[] = [];
-		const t = await start({ onSend: (items, seq, delivery) => { accepted.push({ items, seq, delivery }); return items.length; } });
-		const post = (seq: number, delivery?: unknown) => t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body: JSON.stringify({ seq, delivery, items: [{ quote: "hello", note: "why" }] }) });
-		assert.equal((await post(1)).status, 200);
-		assert.equal((await post(2, "agent")).status, 200);
-		assert.equal((await post(2, "editor")).status, 409);
-		assert.equal((await post(3, "editor")).status, 200);
-		assert.deepEqual(accepted, [
-			{ items: [{ quote: "hello", note: "why" }], seq: 1, delivery: "editor" },
-			{ items: [{ quote: "hello", note: "why" }], seq: 2, delivery: "agent" },
-			{ items: [{ quote: "hello", note: "why" }], seq: 3, delivery: "editor" },
-		]);
-	});
-
-	for (const delivery of [null, "steer", 1, true, {}]) {
-		it(`rejects invalid delivery ${JSON.stringify(delivery)} without consuming sequence`, async () => {
-			const t = await start();
-			const result = await t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body: JSON.stringify({ seq: 1, delivery, items: [{ quote: "q", note: "n" }] }) });
-			assert.equal(result.status, 400);
-			assert.deepEqual(JSON.parse(result.body), { error: 'delivery must be "editor" or "agent"' });
-			assert.equal((await t.send(1)).status, 200);
-			assert.deepEqual(t.sent, [[{ quote: "hello", note: "why" }]]);
-		});
-	}
-
-	for (const delivery of ["editor", "agent"]) {
-		it(`authenticates and checks current session for ${delivery}`, async () => {
-			let current = true;
-			const t = await start({ isCurrent: () => current });
-			const body = JSON.stringify({ seq: 1, delivery, items: [{ quote: "hello", note: "why" }] });
-			assert.equal((await t.api("send", { method: "POST", headers: { "content-type": "application/json", "x-annotate-token": "wrong" }, body })).status, 403);
-			assert.equal((await t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body })).status, 200);
-			current = false;
-			assert.equal((await t.api("send", { method: "POST", headers: t.auth({ "content-type": "application/json" }), body })).status, 410);
-			assert.deepEqual(t.sent, [[{ quote: "hello", note: "why" }]]);
-		});
-	}
-});
-
-describe("session routing", () => {
-	const current = { sessionId: "head", token: "head-token", isCurrent: () => true };
-	const retired = new Map([["old-token", "old"]]);
-	const cases = [
-		["head", "head-token", "current", "hold"],
-		["head", "old-token", "forbidden", "forbidden"],
-		["head", "wrong", "forbidden", "forbidden"],
-		["head", undefined, "forbidden", "forbidden"],
-		["old", "old-token", "successor", "hold"],
-		["old", "head-token", "switched", "switched"],
-		["old", "wrong", "switched", "switched"],
-		["old", undefined, "switched", "switched"],
-		["unknown", "old-token", "switched", "switched"],
-		["unknown", "head-token", "switched", "switched"],
-		["unknown", "wrong", "switched", "switched"],
-		["unknown", undefined, "switched", "switched"],
-	] as const;
-	for (const [path, token, bound, parked] of cases) {
-		it(`classifies ${path} with ${token ?? "no token"}`, () => {
-			assert.equal(classify("bound", current, retired, path, token), bound);
-			assert.equal(classify("parked", current, retired, path, token), parked);
-		});
-	}
-
-	it("only checks session liveness for authenticated bound requests", () => {
-		const stale = { ...current, isCurrent: () => false };
-		assert.equal(classify("bound", stale, retired, "head", "head-token"), "switched");
-		assert.equal(classify("bound", stale, retired, "head", "wrong"), "forbidden");
-		const disposed = { ...current, isCurrent: () => { throw new Error("disposed context"); } };
-		assert.equal(classify("parked", disposed, retired, "head", "head-token"), "hold");
-		assert.equal(classify("bound", disposed, retired, "old", "old-token"), "successor");
-	});
-});
-
 describe("port selection", () => {
-	it("defaults to 4747 and honors PI_ANNOTATE_PORT", () => {
+	it("defaults to 4747 and honors a valid PI_ANNOTATE_PORT", () => {
 		assert.equal(DEFAULT_PORT, 4747);
 		assert.equal(preferredPort({}), 4747);
 		assert.equal(preferredPort({ PI_ANNOTATE_PORT: "5100" }), 5100);
-		assert.equal(preferredPort({ PI_ANNOTATE_PORT: "nope" }), 4747);
-		assert.equal(preferredPort({ PI_ANNOTATE_PORT: "70000" }), 4747);
+		for (const value of ["nope", "0", "70000", "-1", " 4747 "]) assert.equal(preferredPort({ PI_ANNOTATE_PORT: value }), 4747, value);
 	});
 
 	it("takes the next port when the preferred one is busy and checks Host against the bound port", async () => {
@@ -196,196 +147,159 @@ describe("port selection", () => {
 		await hold(base);
 		const { server, auth } = await start({ port: base });
 		assert.equal(server.port, base + 1);
-		assert.equal(server.url, `http://127.0.0.1:${base + 1}/${SID}#t=${server.token}`);
 		assert.equal((await request(server.port, { path: `/${SID}/api/snapshot`, headers: auth() })).status, 200);
 		assert.equal((await request(server.port, { path: `/${SID}/api/snapshot`, headers: auth({ host: `127.0.0.1:${base}` }) })).status, 403);
 	});
+});
 
-	it("falls back to a random port when the whole range is busy", async () => {
-		const base = await freePort();
-		const held: number[] = [];
-		for (let port = base; port < base + 10; port++) {
-			try {
-				await hold(port);
-				held.push(port);
-			} catch {}
+describe("native HTTP boundary", () => {
+	it("serves snapshot and events only with the bound token and Host", async () => {
+		const { server, api } = await start();
+		const snapshot = await api("snapshot");
+		assert.equal(snapshot.status, 200);
+		assert.deepEqual(JSON.parse(snapshot.body), { sessionId: SID, version: 1, items: [item("u1", "hello", "user")] });
+		assert.equal((await api("events?after=1")).status, 200);
+		assert.equal((await api("snapshot", { headers: {} })).status, 403);
+		assert.equal((await api("snapshot", { headers: { "x-annotate-token": "wrong" } })).status, 403);
+		assert.equal((await request(server.port, { path: `/${SID}/api/snapshot?t=${server.token}` })).status, 403);
+		for (const host of [`localhost:${server.port}`, "127.0.0.1", `evil.example:${server.port}`, `127.0.0.1:${server.port + 1}`]) {
+			assert.equal((await request(server.port, { path: `/${SID}/api/snapshot`, headers: { "x-annotate-token": server.token, host } })).status, 403, host);
 		}
-		const { server } = await start({ port: base });
-		assert.ok(server.port < base || server.port >= base + 10, String(server.port));
+		assert.equal((await api("snapshot", { method: "POST" })).status, 405);
+	});
+
+	it("removes the browser page, frame, diagram, and send routes", async () => {
+		const { server } = await start();
+		for (const path of [`/${SID}`, "/frame", "/frame/frame.js", "/frame/mermaid.js"]) {
+			assert.equal((await request(server.port, { path })).status, 404, path);
+		}
+		const send = await request(server.port, {
+			method: "POST",
+			path: `/${SID}/api/send`,
+			headers: { "x-annotate-token": server.token, "content-type": "application/json" },
+			body: JSON.stringify({ seq: 1, items: [{ quote: "x" }] }),
+		});
+		assert.equal(send.status, 404);
+	});
+
+	it("answers malformed percent-encoding and event cursors with 400 and keeps serving", async () => {
+		const { server, api } = await start();
+		for (const path of ["/%E0/api/snapshot", `/${SID}%E0/api/snapshot`, `/${SID}/api/events?after=%E0`, `/${SID}/api/events`]) {
+			const reply = await request(server.port, { path, headers: { "x-annotate-token": server.token } });
+			assert.equal(reply.status, 400, path);
+		}
+		assert.equal((await request(server.port, { path: "/%E0", headers: { "x-annotate-token": server.token } })).status, 404);
+		assert.equal((await api("snapshot")).status, 200);
+	});
+
+	it("rejects a request target that is not a path and keeps serving", async () => {
+		const { server, api } = await start();
+		const reply = await new Promise<string>((resolve, reject) => {
+			const socket = createConnection(server.port, "127.0.0.1", () => socket.end(`GET * HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`));
+			const chunks: Buffer[] = [];
+			socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+			socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			socket.on("error", reject);
+		});
+		assert.match(reply, /^HTTP\/1\.1 400 /);
+		assert.equal((await api("snapshot")).status, 200);
+	});
+
+	it("turns a throwing session check into 500 and keeps serving", async () => {
+		let calls = 0;
+		let throwAt = 0;
+		const { api } = await start({
+			isCurrent: () => {
+				calls++;
+				if (calls === throwAt) throw new Error("boom");
+				return true;
+			},
+		});
+		throwAt = calls + 1;
+		assert.equal((await api("snapshot")).status, 500);
+		throwAt = 0;
+		assert.equal((await api("snapshot")).status, 200);
+		assert.equal((await api("events?after=1")).status, 200);
 	});
 });
 
-describe("annotate server over real HTTP", () => {
-	it("serves the page without the token, with CSP and no CORS headers", async () => {
-		const { server } = await start();
-		const page = await request(server.port, { path: `/${SID}` });
-		assert.equal(page.status, 200);
-		assert.match(String(page.headers["content-type"]), /^text\/html/);
-		const csp = String(page.headers["content-security-policy"]);
-		assert.match(csp, /default-src 'none'/);
-		const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
-		assert.ok(nonce && page.body.includes(`<script nonce="${nonce}">`));
-		assert.ok(!page.body.includes(server.token));
-		for (const name of Object.keys(page.headers)) assert.ok(!name.startsWith("access-control-"), name);
-		assert.equal(
-			csp,
-			`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
-		);
-		assert.ok(page.body.includes("function createMarkdown(document)"));
-		assert.ok(!page.body.includes("__MARKDOWN_JS__") && !page.body.includes("__NONCE__"));
-		assert.ok(!page.body.includes("mermaid.min.js") && !page.body.includes("/frame/mermaid.js"));
-		assert.equal([...page.body.matchAll(/<script\b[^>]*>/g)].length, 2);
-		assert.ok([...page.body.matchAll(/<script\b[^>]*>/g)].every((tag) => tag[0] === `<script nonce="${nonce}">`));
+describe("review capability", () => {
+	it("requires the native token, the current session path, and a local origin", async () => {
+		const { server, auth, reviewToken } = await start();
+		const path = `/${SID}/api/review`;
+		assert.equal((await request(server.port, { path })).status, 403);
+		assert.equal((await request(server.port, { path, headers: { "x-annotate-token": server.token } })).status, 403);
+		assert.equal((await request(server.port, { path, headers: { "x-annotate-token": "wrong" } })).status, 403);
+		assert.equal((await request(server.port, { path, headers: { "x-annotate-token": reviewToken!, origin: "http://evil.example" } })).status, 403);
+		assert.equal((await request(server.port, { path: `/other/api/review`, headers: { "x-annotate-token": reviewToken! } })).status, 403);
+		const sameOrigin = await request(server.port, { path, headers: { "x-annotate-token": reviewToken!, origin: `http://127.0.0.1:${server.port}` } });
+		assert.equal(sameOrigin.status, 200);
+		assert.deepEqual(JSON.parse(sameOrigin.body), { ok: true, body: null });
+		assert.equal((await request(server.port, { path: `/${SID}/api/snapshot`, headers: auth({ "x-annotate-token": reviewToken! }) })).status, 200);
 	});
 
-	it("answers 410 for another session id on the page and every endpoint", async () => {
-		const { server, auth } = await start();
-		const page = await request(server.port, { path: "/other-session" });
-		assert.equal(page.status, 410);
-		assert.match(page.body, /Session switched/);
-		for (const endpoint of ["snapshot", "events?after=1"]) assert.equal((await request(server.port, { path: `/other-session/api/${endpoint}`, headers: auth() })).status, 410);
-		const send = await request(server.port, { method: "POST", path: "/other-session/api/send", headers: auth({ "content-type": "application/json" }), body: JSON.stringify({ seq: 1, items: [{ quote: "x" }] }) });
-		assert.equal(send.status, 410);
+	it("accepts JSON review posts and rejects other methods, types, bodies, and sizes", async () => {
+		const { server, review, reviewToken } = await start();
+		const post = (body: string, headers: Record<string, string> = {}) =>
+			request(server.port, { method: "POST", path: `/${SID}/api/review`, headers: { "x-annotate-token": reviewToken!, "content-type": "application/json", ...headers }, body });
+		assert.deepEqual(JSON.parse((await post('{"action":"save"}')).body), { ok: true, body: { action: "save" } });
+		assert.equal((await review({ method: "PUT" })).status, 405);
+		assert.equal((await post("{}", { "content-type": "text/plain" })).status, 415);
+		assert.equal((await post("{")).status, 400);
+		assert.equal((await post("{".repeat(MAX_BODY_BYTES + 1))).status, 413);
 	});
 
-	it("returns the snapshot with version and next seq, and no CORS headers", async () => {
-		const { api, auth } = await start();
-		const reply = await api("snapshot", { headers: auth({ origin: "http://evil.example" }) });
-		assert.equal(reply.status, 200);
-		assert.deepEqual(JSON.parse(reply.body), { sessionId: SID, version: 1, nextSeq: 1, items: [item("u1", "hello", "user")] });
-		for (const name of Object.keys(reply.headers)) assert.ok(!name.startsWith("access-control-"), name);
+	it("maps review action errors to 409 and unexpected errors to 500", async () => {
+		const rejected = await start({ request: () => { throw new ReviewError("Select a current range."); } });
+		const rejectedReply = await rejected.review();
+		assert.equal(rejectedReply.status, 409);
+		assert.deepEqual(JSON.parse(rejectedReply.body), { error: "Select a current range." });
+		const broken = await start({ request: () => { throw new TypeError("boom"); } });
+		assert.equal((await broken.review()).status, 500);
+		assert.equal((await rejected.review({ headers: { origin: "http://evil.example" } })).status, 403);
 	});
 
-	it("rejects data requests with a missing or wrong token", async () => {
-		const { server, api, send, sent } = await start();
-		assert.equal((await api("snapshot", { headers: {} })).status, 403);
-		assert.equal((await api("events?after=1", { headers: { "x-annotate-token": "wrong" } })).status, 403);
-		const wrong = `${server.token.slice(0, -1)}${server.token.endsWith("A") ? "B" : "A"}`;
-		assert.equal((await send(1, undefined, { "x-annotate-token": wrong, "content-type": "application/json" })).status, 403);
-		assert.equal((await send(1, undefined, { "content-type": "application/json" })).status, 403);
-		assert.equal(sent.length, 0);
-	});
-
-	it("does not accept the fragment token as a query parameter", async () => {
-		const { server, sent } = await start();
-		for (const query of [`t=${server.token}`, `token=${server.token}`]) {
-			assert.equal((await request(server.port, { path: `/${SID}/api/snapshot?${query}` })).status, 403);
-			assert.equal((await request(server.port, { path: `/${SID}/api/events?after=1&${query}` })).status, 403);
-			const send = await request(server.port, { method: "POST", path: `/${SID}/api/send?${query}`, headers: { "content-type": "application/json" }, body: JSON.stringify({ seq: 1, items: [{ quote: "x" }] }) });
-			assert.equal(send.status, 403);
-		}
-		assert.equal(sent.length, 0);
-	});
-
-	it("rejects requests whose Host is not 127.0.0.1:<port>", async () => {
-		const { server, auth, sent } = await start();
-		for (const host of [`localhost:${server.port}`, "127.0.0.1", `evil.example:${server.port}`, `127.0.0.1:${server.port + 1}`]) {
-			assert.equal((await request(server.port, { path: `/${SID}`, headers: { host } })).status, 403, host);
-			assert.equal((await request(server.port, { path: `/${SID}/api/snapshot`, headers: auth({ host }) })).status, 403, host);
-			const send = await request(server.port, { method: "POST", path: `/${SID}/api/send`, headers: auth({ host, "content-type": "application/json" }), body: JSON.stringify({ seq: 1, items: [{ quote: "x" }] }) });
-			assert.equal(send.status, 403, host);
-		}
-		assert.equal(sent.length, 0);
-	});
-
-	it("rejects a send that is not application/json, too large, or malformed", async () => {
-		const { send, auth, sent } = await start();
-		assert.equal((await send(1, undefined, auth({ "content-type": "text/plain" }))).status, 415);
-		assert.equal((await send(1, undefined, auth())).status, 415);
-		assert.equal((await send(1, [{ quote: "x".repeat(MAX_BODY_BYTES), note: "" }])).status, 413);
-		assert.equal((await send(1, [])).status, 400);
-		assert.equal((await send(0)).status, 400);
-		assert.equal((await send(1, [{ quote: " ", note: "" }])).status, 400);
-		assert.equal(sent.length, 0);
-	});
-
-	it("rejects a chunked body that grows over 1 MB", async () => {
-		const { server, sent } = await start();
-		const status = await new Promise<number>((resolve, reject) => {
-			const req = httpRequest(
-				{
-					host: "127.0.0.1",
-					port: server.port,
-					method: "POST",
-					path: `/${SID}/api/send`,
-					headers: { host: `127.0.0.1:${server.port}`, "x-annotate-token": server.token, "content-type": "application/json", "transfer-encoding": "chunked" },
-				},
-				(res) => {
-					res.resume();
-					resolve(res.statusCode ?? 0);
-				},
-			);
-			req.on("error", reject);
-			for (let i = 0; i < 5; i++) req.write(Buffer.alloc(256 * 1024, "x"));
-			req.end();
-		});
-		assert.equal(status, 413);
-		assert.equal(sent.length, 0);
-	});
-
-	it("accepts any number of sends in seq order and rejects duplicate or old seq with 409", async () => {
-		const { server, send, sent } = await start();
-		const first = await send(1, [{ quote: "a", note: "1" }]);
-		assert.deepEqual(JSON.parse(first.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
-		const duplicate = await send(1, [{ quote: "a", note: "1" }]);
-		assert.equal(duplicate.status, 409);
-		assert.equal(JSON.parse(duplicate.body).expectedSeq, 2);
-		assert.equal((await send(3)).status, 409);
-		assert.equal((await send(2, [{ quote: "b", note: "2" }])).status, 200);
-		assert.equal((await send(1)).status, 409);
-		assert.equal((await send(2)).status, 409);
-		assert.equal((await send(3, [{ quote: "c", note: "3" }])).status, 200);
-		assert.deepEqual(sent.map((items) => items[0]!.quote), ["a", "b", "c"]);
-		assert.equal(server.closed, false);
-	});
-
-	it("rejects with 410 and inserts nothing once the session switched", async () => {
+	it("drops to 410 when the session is no longer current", async () => {
 		let current = true;
-		const { api, send, sent } = await start({ isCurrent: () => current });
+		const { api, review, reviewToken } = await start({ isCurrent: () => current });
+		assert.equal((await review()).status, 200);
 		current = false;
+		assert.equal((await review()).status, 410);
+		assert.deepEqual(JSON.parse((await review()).body), { error: SESSION_SWITCHED });
 		assert.equal((await api("snapshot")).status, 410);
-		const reply = await send(1);
-		assert.equal(reply.status, 410);
-		assert.equal(JSON.parse(reply.body).error, SESSION_SWITCHED);
-		assert.equal(sent.length, 0);
+		assert.equal((await api("snapshot", { headers: { "x-annotate-token": reviewToken! } })).status, 410);
 	});
 
-	it("does not consume the seq when inserting fails", async () => {
-		let fail = true;
-		const { send } = await start({
-			onSend: () => {
-				if (fail) throw new Error("editor busy");
-				return 1;
-			},
-		});
-		assert.equal((await send(1)).status, 500);
-		fail = false;
-		assert.equal((await send(1)).status, 200);
+	it("serves review only while a native capability is enabled", async () => {
+		const { server } = await start({ review: false });
+		const path = `/${SID}/api/review`;
+		const token = "native-token";
+		assert.equal((await request(server.port, { path, headers: { "x-annotate-token": token } })).status, 404);
+		const enabled = server.enableReview(SID, () => ({ ok: true }));
+		assert.equal((await request(server.port, { path, headers: { "x-annotate-token": enabled } })).status, 200);
+		server.disableReview();
+		assert.equal((await request(server.port, { path, headers: { "x-annotate-token": enabled } })).status, 404);
+	});
+
+	it("rejects review capabilities for another or stale session", async () => {
+		const { server } = await start();
+		assert.throws(() => server.enableReview("other", () => null), SessionSwitchedError);
+		let current = true;
+		const stale = await start({ isCurrent: () => current });
+		current = false;
+		assert.throws(() => stale.server.enableReview(SID, () => null), SessionSwitchedError);
 	});
 });
 
 describe("live updates", () => {
-	it("computes append and reset diffs", () => {
-		const a = item("a", "1");
-		const b = item("b", "2");
-		const c = item("c", "3");
-		assert.equal(diffItems([a, b], [a, b]), undefined);
-		assert.deepEqual(diffItems([a], [a, b, c]), { reset: false, items: [b, c] });
-		assert.deepEqual(diffItems([a, b], [a, c]), { reset: true, items: [a, c] });
-		assert.deepEqual(diffItems([a, b], [a]), { reset: true, items: [a] });
-		assert.deepEqual(diffItems([a], [item("a", "changed")]), { reset: true, items: [item("a", "changed")] });
-	});
-
 	it("holds a long-poll until new items arrive and then returns only the new items", async () => {
-		const { server, api } = await start();
-		const started = Date.now();
+		const { server, api, waitForAdmission } = await startWithAdmissions();
 		const poll = api("events?after=1");
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await waitForAdmission(poll);
 		server.update([item("u1", "hello", "user"), item("a1", "reply")]);
 		const reply = await poll;
 		assert.equal(reply.status, 200);
 		assert.deepEqual(JSON.parse(reply.body), { version: 2, reset: false, items: [item("a1", "reply")] });
-		assert.ok(Date.now() - started >= 140);
 		assert.deepEqual(JSON.parse((await api("events?after=1")).body), { version: 2, reset: false, items: [item("a1", "reply")] });
 	});
 
@@ -409,391 +323,135 @@ describe("live updates", () => {
 	});
 
 	it("allows four concurrent long-polls and rejects the fifth with 429", async () => {
-		const { server, api } = await start();
+		const { server, api, waitForAdmission } = await startWithAdmissions(4);
 		const polls = [1, 2, 3, 4].map(() => api("events?after=1"));
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await waitForAdmission(...polls);
 		assert.equal((await api("events?after=1")).status, 429);
 		server.update([item("u1", "hello", "user"), item("a1", "reply")]);
 		for (const reply of await Promise.all(polls)) assert.equal(reply.status, 200);
-		const again = api("events?after=2");
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		server.update([item("u1", "hello", "user"), item("a1", "reply"), item("a2", "more")]);
-		assert.equal((await again).status, 200);
 	});
 
 	it("ends a pending long-poll immediately on close and releases the port", async () => {
-		const { server, api, closes } = await start({ longPollMs: 20_000 });
+		const { server, api, closes, waitForAdmission } = await startWithAdmissions(1, 20_000);
 		const started = Date.now();
 		const poll = api("events?after=1");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitForAdmission(poll);
 		server.close("end");
 		await assert.rejects(poll);
 		assert.ok(Date.now() - started < 2000);
 		assert.deepEqual(closes, ["end"]);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		const holder = await hold(server.port);
-		assert.ok(holder.listening);
+		await delay(50);
+		assert.equal(await canListen(server.port), true);
 	});
 });
 
-describe("session handoff over real HTTP", () => {
-	it("unparks held requests under the same binding and credentials", async () => {
-		let observed!: () => void;
-		const admitted = new Promise<void>((resolve) => { observed = resolve; });
-		const { server, api, send, sent } = await start({ longPollMs: 40, isCurrent: () => { observed(); return true; } });
+describe("binding and handoff", () => {
+	it("holds snapshot and event requests while parked and answers them after unpark with the same credentials", async () => {
+		const { server, api, waitForAdmission } = await startWithAdmissions(1, 40);
 		const token = server.token;
 		const poll = api("events?after=1");
-		await admitted;
+		await waitForAdmission(poll);
 		server.park();
 		const snapshot = api("snapshot");
-		const pendingSend = send(1, [{ quote: "kept quote", note: "kept note" }]);
-		assert.equal(await Promise.race([Promise.race([poll, snapshot, pendingSend]).then(() => "answered"), delay(80, "held")]), "held");
-		assert.deepEqual(sent, []);
+		assert.equal(await Promise.race([Promise.race([poll, snapshot]).then(() => "answered"), delay(80, "held")]), "held");
 		server.unpark();
 		assert.equal(server.token, token);
-		const pollReply = await poll;
-		assert.equal(pollReply.status, 200);
-		assert.deepEqual(JSON.parse(pollReply.body), { version: 1, reset: false, items: [] });
+		assert.equal((await poll).status, 200);
 		const snapshotReply = await snapshot;
 		assert.equal(snapshotReply.status, 200);
-		assert.deepEqual(JSON.parse(snapshotReply.body), { sessionId: "0199-session-a", version: 1, nextSeq: 1, items: [{ id: "u1", kind: "user", label: "user", text: "hello" }] });
-		const accepted = await pendingSend;
-		assert.equal(accepted.status, 200);
-		assert.deepEqual(JSON.parse(accepted.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
-		assert.deepEqual(sent, [[{ quote: "kept quote", note: "kept note" }]]);
+		assert.deepEqual(JSON.parse(snapshotReply.body), { sessionId: SID, version: 1, items: [item("u1", "hello", "user")] });
 	});
 
 	it("publishes updates made while parked when a held poll resumes after unpark", async () => {
-		let observed!: () => void;
-		const admitted = new Promise<void>((resolve) => { observed = resolve; });
-		const { server, api } = await start({ isCurrent: () => { observed(); return true; } });
+		const { server, api, waitForAdmission } = await startWithAdmissions();
 		const poll = api("events?after=1");
-		await admitted;
+		await waitForAdmission(poll);
 		server.park();
 		assert.deepEqual(server.update([item("parked", "parked update")]), {
-			version: 2, reset: true, items: [{ id: "parked", kind: "assistant", label: "assistant", text: "parked update" }],
+			version: 2, reset: true, items: [item("parked", "parked update")],
 		});
 		assert.equal(await Promise.race([poll.then(() => "answered"), delay(50, "held")]), "held");
 		server.unpark();
-		const reply = await poll;
-		assert.equal(reply.status, 200);
-		assert.deepEqual(JSON.parse(reply.body), { version: 2, reset: true, items: [{ id: "parked", kind: "assistant", label: "assistant", text: "parked update" }] });
+		assert.deepEqual(JSON.parse((await poll).body), { version: 2, reset: true, items: [item("parked", "parked update")] });
 	});
 
-	for (const longPollMs of [40, 20_000]) {
-		it(`holds an existing ${longPollMs} ms poll until rebind, even if its timer expires while parked`, async () => {
-			let observed!: () => void;
-			const admitted = new Promise<void>((resolve) => { observed = resolve; });
-			const { server, api } = await start({ longPollMs, isCurrent: () => { observed(); return true; } });
-			const oldToken = server.token;
-			const poll = api("events?after=1");
-			await admitted;
-			server.park();
-			assert.equal(await Promise.race([poll.then(() => "answered"), delay(120, "held")]), "held");
-			server.rebind({ sessionId: "next", items: [item("n1", "replacement")], isCurrent: () => true, onSend: (items) => items.length });
-			const reply = await poll;
-			assert.equal(reply.status, 410);
-			assert.deepEqual(JSON.parse(reply.body), { error: "Session switched, run /annotate again.", successor: { sessionId: "next", token: server.token } });
-			assert.notEqual(server.token, oldToken);
-			assert.equal(server.closed, false);
-		});
-	}
-
-	it("holds a send whose body arrives while parked without delivering it to either session", async () => {
-		let observed!: () => void;
-		const admitted = new Promise<void>((resolve) => { observed = resolve; });
-		const { server, sent, auth, send } = await start({ isCurrent: () => { observed(); return true; } });
-		const nextSent: Annotation[][] = [];
-		let finishBody!: () => void;
-		const pending = new Promise<Reply>((resolve, reject) => {
-			const req = httpRequest({ host: "127.0.0.1", port: server.port, method: "POST", path: `/${SID}/api/send`, headers: auth({ "content-type": "application/json" }) }, (res) => {
-				const chunks: Buffer[] = [];
-				res.on("data", (chunk: Buffer) => chunks.push(chunk));
-				res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
-			});
-			req.on("error", reject);
-			req.flushHeaders();
-			finishBody = () => req.end(JSON.stringify({ seq: 1, items: [{ quote: "old quote", note: "kept" }] }));
-		});
-		await admitted;
-		server.park();
-		finishBody();
-		const parkedSend = send(1);
-		assert.equal(await Promise.race([Promise.race([pending, parkedSend]).then(() => "answered"), delay(80, "held")]), "held");
-		assert.deepEqual(sent, []);
-		server.rebind({ sessionId: "next", items: [], isCurrent: () => true, onSend: (items) => { nextSent.push(items); return items.length; } });
-		for (const reply of await Promise.all([pending, parkedSend])) {
-			assert.equal(reply.status, 410);
-			assert.deepEqual(JSON.parse(reply.body), { error: "Session switched, run /annotate again.", successor: { sessionId: "next", token: server.token } });
-		}
-		assert.deepEqual(sent, []);
-		assert.deepEqual(nextSent, []);
-		const accepted = await request(server.port, { method: "POST", path: "/next/api/send", headers: auth({ "content-type": "application/json" }), body: JSON.stringify({ seq: 1, items: [{ quote: "new quote", note: "sent" }] }) });
-		assert.equal(accepted.status, 200);
-		assert.deepEqual(JSON.parse(accepted.body), { ok: true, inserted: 1, seq: 1, nextSeq: 2 });
-		assert.deepEqual(nextSent, [[{ quote: "new quote", note: "sent" }]]);
-	});
-
-	it("resets sequence and history, rotates credentials, and publishes only the replacement items", async () => {
-		const { server, api, send, auth, closes } = await start();
+	it("rebinds to a new session, rotates credentials, resets history, and answers old tokens with the successor", async () => {
+		const { server, auth, review } = await start();
 		const oldToken = server.token;
-		assert.equal((await send(1)).status, 200);
-		assert.deepEqual(server.update([item("old", "old update")]), { version: 2, reset: true, items: [item("old", "old update")] });
-		const before = JSON.parse((await api("snapshot")).body);
-		assert.equal(before.nextSeq, 2);
+		assert.equal((await review()).status, 200);
 		server.park();
-		assert.deepEqual(server.update([item("parked", "parked update")]), {
-			version: 3, reset: true, items: [{ id: "parked", kind: "assistant", label: "assistant", text: "parked update" }],
-		});
-		const nextCloses: CloseReason[] = [];
-		server.rebind({ sessionId: "next", items: [item("n1", "new conversation")], isCurrent: () => true, onSend: (items) => items.length, onClose: (reason) => nextCloses.push(reason) });
-		const snapshot = await request(server.port, { path: "/next/api/snapshot", headers: auth() });
-		assert.equal(snapshot.status, 200);
-		assert.deepEqual(JSON.parse(snapshot.body), { sessionId: "next", version: 4, nextSeq: 1, items: [{ id: "n1", kind: "assistant", label: "assistant", text: "new conversation" }] });
-		assert.equal(server.sessionId, "next");
-		assert.equal(server.url, `http://127.0.0.1:${server.port}/next#t=${server.token}`);
+		server.rebind({ sessionId: "next", items: [item("n1", "new conversation")], isCurrent: () => true });
 		assert.notEqual(server.token, oldToken);
-		const history = await request(server.port, { path: "/next/api/events?after=2", headers: auth() });
-		assert.equal(history.status, 200);
-		assert.deepEqual(JSON.parse(history.body), { version: 4, reset: true, items: [{ id: "n1", kind: "assistant", label: "assistant", text: "new conversation" }] });
-		const wrongPath = await request(server.port, { path: "/next/api/snapshot", headers: { "x-annotate-token": oldToken } });
-		assert.equal(wrongPath.status, 403);
-		assert.deepEqual(JSON.parse(wrongPath.body), { error: "missing or wrong X-Annotate-Token" });
-		const wrongToken = await api("snapshot", { headers: { "x-annotate-token": "wrong" } });
-		assert.equal(wrongToken.status, 410);
-		assert.deepEqual(JSON.parse(wrongToken.body), { error: "Session switched, run /annotate again." });
-		server.close("end");
-		server.close("session");
-		assert.deepEqual(closes, []);
-		assert.deepEqual(nextCloses, ["end"]);
+		const oldReply = await request(server.port, { path: `/${SID}/api/snapshot`, headers: { "x-annotate-token": oldToken } });
+		assert.equal(oldReply.status, 410);
+		assert.deepEqual(JSON.parse(oldReply.body), { error: SESSION_SWITCHED, successor: { sessionId: "next", token: server.token } });
+		assert.equal((await request(server.port, { path: `/${SID}/api/review`, headers: { "x-annotate-token": oldToken } })).status, 404);
+		const snapshot = await request(server.port, { path: "/next/api/snapshot", headers: { "x-annotate-token": server.token } });
+		assert.equal(snapshot.status, 200);
+		assert.deepEqual(JSON.parse(snapshot.body), { sessionId: "next", version: 2, items: [item("n1", "new conversation")] });
+		const history = await request(server.port, { path: `/${SID}/api/events?after=1`, headers: { "x-annotate-token": oldToken } });
+		assert.equal(history.status, 410);
+		assert.deepEqual(JSON.parse(history.body), { error: SESSION_SWITCHED, successor: { sessionId: "next", token: server.token } });
+		assert.equal((await request(server.port, { path: `/${SID}/api/snapshot`, headers: auth() })).status, 410);
 	});
 
-	it("resolves a first-session client directly to the head after two rebinds", async () => {
-		const { server, auth } = await start();
-		const firstAuth = auth();
-		server.park();
-		server.rebind({ sessionId: "second", items: [], isCurrent: () => true, onSend: (items) => items.length });
-		const secondToken = server.token;
-		server.park();
-		const pending = request(server.port, { path: `/${SID}/api/snapshot`, headers: firstAuth });
-		assert.equal(await Promise.race([pending.then(() => "answered"), delay(50, "held")]), "held");
-		server.rebind({ sessionId: "third", items: [], isCurrent: () => true, onSend: (items) => items.length });
-		for (const reply of [await pending, await request(server.port, { path: `/${SID}/api/snapshot`, headers: firstAuth }), await request(server.port, { path: "/second/api/snapshot", headers: { "x-annotate-token": secondToken } })]) {
+	it("rejects stale native reads without revealing the successor", { timeout: 5000 }, async () => {
+		const { server, reviewToken, waitForAdmission } = await startWithAdmissions(1, 20_000);
+		const read = (session: string, endpoint: string, token: string) =>
+			request(server.port, { path: `/${session}/api/${endpoint}`, headers: { "x-annotate-token": token } });
+		const endpoints = ["snapshot", "events?after=0"] as const;
+		const assertSwitched = (reply: Reply) => {
 			assert.equal(reply.status, 410);
-			assert.deepEqual(JSON.parse(reply.body), { error: "Session switched, run /annotate again.", successor: { sessionId: "third", token: server.token } });
-		}
-	});
-
-	it("holds current page and API requests while parked but never gives page requests a successor", async () => {
-		const { server, api } = await start();
+			assert.deepEqual(JSON.parse(reply.body), { error: SESSION_SWITCHED });
+		};
+		const readOldEndpoints = () => Promise.all(endpoints.map((endpoint) => read(SID, endpoint, reviewToken!)));
+		const poll = read(SID, "events?after=1", reviewToken!);
+		await waitForAdmission(poll);
 		server.park();
-		const page = request(server.port, { path: `/${SID}` });
-		const snapshot = api("snapshot");
-		assert.equal(await Promise.race([Promise.race([page, snapshot]).then(() => "answered"), delay(50, "held")]), "held");
-		const unknown = await request(server.port, { path: "/unknown" });
-		assert.equal(unknown.status, 410);
-		assert.equal(unknown.body, "Session switched, run /annotate again.\n");
-		server.rebind({ sessionId: "next", items: [], isCurrent: () => true, onSend: (items) => items.length });
-		const oldPage = await page;
-		assert.equal(oldPage.status, 410);
-		assert.equal(oldPage.body, "Session switched, run /annotate again.\n");
-		assert.equal(oldPage.headers["content-type"], "text/plain; charset=utf-8");
-		const oldSnapshot = await snapshot;
-		assert.equal(oldSnapshot.status, 410);
-		assert.deepEqual(JSON.parse(oldSnapshot.body), { error: "Session switched, run /annotate again.", successor: { sessionId: "next", token: server.token } });
-		assert.equal((await request(server.port, { path: "/next" })).status, 200);
+		(await readOldEndpoints()).forEach(assertSwitched);
+
+		const items = [item("n1", "new conversation")];
+		server.rebind({ sessionId: "next", items, isCurrent: () => true });
+		const newToken = server.enableReview("next", () => ({ sessionId: "next" }));
+		assertSwitched(await poll);
+		(await readOldEndpoints()).forEach(assertSwitched);
+		for (const endpoint of endpoints) assert.equal((await read("next", endpoint, reviewToken!)).status, 403);
+
+		const [snapshot, events, review] = await Promise.all([
+			read("next", endpoints[0], newToken),
+			read("next", endpoints[1], newToken),
+			read("next", "review", newToken),
+		]);
+		for (const reply of [snapshot, events, review]) assert.equal(reply.status, 200);
+		assert.deepEqual(JSON.parse(snapshot.body), { sessionId: "next", version: 2, items });
+		assert.deepEqual(JSON.parse(events.body), { version: 2, reset: true, items });
+		assert.deepEqual(JSON.parse(review.body), { sessionId: "next" });
 	});
 
 	it("ends parked polls and held requests on close and releases the port", async () => {
-		let observed!: () => void;
-		const admitted = new Promise<void>((resolve) => { observed = resolve; });
-		const { server, api, closes } = await start({ longPollMs: 40, isCurrent: () => { observed(); return true; } });
+		const { server, api, closes, waitForAdmission } = await startWithAdmissions(1, 40);
 		const poll = api("events?after=1");
-		await admitted;
+		await waitForAdmission(poll);
 		server.park();
 		const snapshot = api("snapshot");
-		const send = api("send", { method: "POST", headers: { "x-annotate-token": server.token, "content-type": "application/json" }, body: JSON.stringify({ seq: 1, items: [{ quote: "held" }] }) });
-		assert.equal(await Promise.race([Promise.race([poll, snapshot, send]).then(() => "answered"), delay(120, "held")]), "held");
-		const ended = Promise.all([assert.rejects(poll), assert.rejects(snapshot), assert.rejects(send)]);
+		assert.equal(await Promise.race([Promise.race([poll, snapshot]).then(() => "answered"), delay(120, "held")]), "held");
+		const ended = Promise.all([assert.rejects(poll), assert.rejects(snapshot)]);
 		server.close("session");
 		await ended;
 		assert.equal(server.closed, true);
 		assert.deepEqual(closes, ["session"]);
 		assert.equal(await canListen(server.port), true);
 	});
-});
 
-describe("annotate server robustness", () => {
-	const crashes: unknown[] = [];
-	const onCrash = (error: unknown) => crashes.push(error);
-	process.on("uncaughtException", onCrash);
-	process.on("unhandledRejection", onCrash);
-	after(() => {
-		process.off("uncaughtException", onCrash);
-		process.off("unhandledRejection", onCrash);
-	});
-
-	it("answers malformed percent-encoding with 400 and keeps serving", async () => {
-		const { server, auth, api } = await start();
-		const paths = ["/%E0", "/%E0/api/snapshot", "/%E0/api/events?after=1", "/%E0/api/send", "/%", "/%ZZ/api/events?after=%E0", `/${SID}%E0/api/snapshot`];
-		for (const path of paths) {
-			for (const headers of [{}, auth()]) {
-				const reply = await request(server.port, { path, headers });
-				assert.ok(reply.status >= 400 && reply.status < 500, `${path} ${reply.status}`);
-			}
-		}
-		assert.equal((await request(server.port, { path: "/%E0" })).status, 400);
-		assert.equal((await request(server.port, { path: "/%E0/api/snapshot", headers: auth() })).status, 400);
-		assert.equal((await request(server.port, { path: "/%E0/api/events?after=1", headers: auth() })).status, 400);
-		assert.equal((await request(server.port, { method: "POST", path: "/%E0/api/send", headers: auth({ "content-type": "application/json" }), body: "{}" })).status, 400);
-		assert.equal((await request(server.port, { path: `/${SID}/api/events?after=%E0`, headers: auth() })).status, 400);
-		assert.equal((await request(server.port, { path: `/${SID}/api/events`, headers: auth() })).status, 400);
-		const snapshot = await api("snapshot");
-		assert.equal(snapshot.status, 200);
-		assert.equal(JSON.parse(snapshot.body).sessionId, SID);
-		assert.equal((await request(server.port, { path: `/${SID}` })).status, 200);
-		assert.equal(server.closed, false);
-		assert.deepEqual(crashes, []);
-	});
-
-	it("rejects a request target that is not a path", async () => {
-		const { server, api } = await start();
-		const reply = await new Promise<string>((resolve, reject) => {
-			const socket = createConnection(server.port, "127.0.0.1", () => socket.end(`GET * HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`));
-			const chunks: Buffer[] = [];
-			socket.on("data", (chunk: Buffer) => chunks.push(chunk));
-			socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-			socket.on("error", reject);
-		});
-		assert.match(reply, /^HTTP\/1\.1 400 /);
-		assert.equal((await api("snapshot")).status, 200);
-		assert.deepEqual(crashes, []);
-	});
-
-	it("turns an error thrown inside a handler into 500 and keeps serving", async () => {
-		let calls = 0;
-		let throwAt = 0;
-		const { server, api, send, sent } = await start({
-			isCurrent: () => {
-				calls++;
-				if (calls === throwAt) throw new Error("boom");
-				return true;
-			},
-		});
-		throwAt = calls + 1;
-		assert.equal((await request(server.port, { path: `/${SID}` })).status, 500);
-		throwAt = calls + 1;
-		assert.equal((await api("snapshot")).status, 500);
-		throwAt = calls + 2;
-		assert.equal((await send(1)).status, 500);
-		assert.deepEqual(sent, []);
-		const poll = api("events?after=1");
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		throwAt = calls + 1;
-		server.update([item("u1", "hello", "user"), item("a1", "reply")]);
-		assert.equal((await poll).status, 500);
-		throwAt = 0;
-		assert.equal((await api("snapshot")).status, 200);
-		assert.equal((await send(1)).status, 200);
-		assert.equal(sent.length, 1);
-		assert.equal(JSON.parse((await api("events?after=1")).body).items.length, 1);
-		assert.equal(server.closed, false);
-		assert.deepEqual(crashes, []);
-	});
-
-	it("turns a failing onSend into 500 without using up the seq", async () => {
-		let fail = true;
-		const { send } = await start({
-			onSend: (items) => {
-				if (fail) throw new TypeError("editor exploded");
-				return items.length;
-			},
-		});
-		assert.equal((await send(1)).status, 500);
-		fail = false;
-		assert.equal((await send(1)).status, 200);
-		assert.deepEqual(crashes, []);
+	it("closes once, clears the review capability, and ignores updates after close", async () => {
+		const { server, closes } = await start();
+		const token = server.enableReview(SID, () => null);
+		server.close("end");
+		server.close("session");
+		assert.equal(server.closed, true);
+		assert.deepEqual(closes, ["end"]);
+		assert.equal(server.update([item("late", "late")]), undefined);
+		await assert.rejects(request(server.port, { path: `/${SID}/api/review`, headers: { "x-annotate-token": token } }));
+		assert.throws(() => server.enableReview(SID, () => null), SessionSwitchedError);
 	});
 });
-
-describe("annotate diagram frame routes", () => {
-	const frameCsp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts";
-
-	it("serves /frame without the token, with its own CSP and no conversation or token", async () => {
-		const { server } = await start();
-		server.update([item("u1", "hello", "user"), item("a1", "SECRET-CONVERSATION-TEXT")]);
-		const frame = await request(server.port, { path: "/frame" });
-		assert.equal(frame.status, 200);
-		assert.equal(FRAME_CSP, frameCsp);
-		assert.equal(frame.headers["content-security-policy"], frameCsp);
-		assert.match(String(frame.headers["content-type"]), /^text\/html; charset=utf-8$/);
-		assert.equal(frame.headers["x-frame-options"], "SAMEORIGIN");
-		assert.equal(frame.headers["x-content-type-options"], "nosniff");
-		assert.equal(frame.body, readFileSync(new URL("../frame.html", import.meta.url), "utf8"));
-		assert.deepEqual([...frame.body.matchAll(/<script\b[^>]*>/g)].map((tag) => tag[0]), ['<script src="/frame/mermaid.js">', '<script src="/frame/frame.js">']);
-		for (const body of [frame.body, (await request(server.port, { path: "/frame/frame.js" })).body]) {
-			assert.ok(!body.includes(server.token));
-			assert.ok(!body.includes("SECRET-CONVERSATION-TEXT"));
-			assert.ok(!body.includes(SID));
-		}
-		for (const name of Object.keys(frame.headers)) assert.ok(!name.startsWith("access-control-"), name);
-	});
-
-	it("serves mermaid.min.js from the installed package and the frame script, both as JavaScript", async () => {
-		const { server } = await start();
-		const file = mermaidPath();
-		assert.ok(file !== undefined && file.endsWith("mermaid/dist/mermaid.min.js"), String(file));
-		const mermaid = await request(server.port, { path: "/frame/mermaid.js" });
-		assert.equal(mermaid.status, 200);
-		assert.match(String(mermaid.headers["content-type"]), /^text\/javascript; charset=utf-8$/);
-		assert.equal(mermaid.headers["x-content-type-options"], "nosniff");
-		assert.equal(mermaid.headers["content-security-policy"], frameCsp);
-		assert.equal(Number(mermaid.headers["content-length"]), statSync(file).size);
-		assert.equal(Buffer.byteLength(mermaid.body), statSync(file).size);
-		assert.ok(!mermaid.body.includes(server.token));
-		const etag = String(mermaid.headers.etag);
-		assert.equal((await request(server.port, { path: "/frame/mermaid.js", headers: { "if-none-match": etag } })).status, 304);
-		const script = await request(server.port, { path: "/frame/frame.js" });
-		assert.equal(script.status, 200);
-		assert.match(String(script.headers["content-type"]), /^text\/javascript; charset=utf-8$/);
-		assert.equal(script.body, readFileSync(new URL("../frame.js", import.meta.url), "utf8"));
-		assert.equal((await request(server.port, { path: "/frame?x=1" })).status, 200);
-	});
-
-	it("serves nothing else under /frame: traversal and other names get 404", async () => {
-		const { server } = await start();
-		const paths = [
-			"/frame/",
-			"/frame/x",
-			"/frame/mermaid.min.js",
-			"/frame/mermaid.js/",
-			"/frame/mermaid.js/x",
-			"/frame/../package.json",
-			"/frame/%2e%2e/package.json",
-			"/frame/%2E%2E/%2E%2E/package.json",
-			"/frame/..%2fpackage.json",
-			"/frame/..%5cpackage.json",
-			"/frame/frame.html",
-			"/frame/page.html",
-			"/frame/server.ts",
-			"/frame/./mermaid.js",
-			"/frame//mermaid.js",
-			"/frame/%6d%65rmaid.js",
-			"/frame/node_modules/mermaid/package.json",
-		];
-		for (const path of paths) {
-			const reply = await request(server.port, { path });
-			assert.equal(reply.status, 404, path);
-			assert.ok(!reply.body.includes('"version"') && !reply.body.includes("mermaid"), path);
-		}
-		for (const path of ["/frame%2Fmermaid.js", "/FRAME", "/frame.js", "/mermaid.js", "/package.json", "/../package.json"]) {
-			const reply = await request(server.port, { path });
-			assert.ok(reply.status === 404 || reply.status === 410, `${path} ${reply.status}`);
-			assert.ok(!reply.body.includes('"version"'), path);
-		}
-		assert.equal((await request(server.port, { method: "POST", path: "/frame" })).status, 405);
-		assert.equal((await request(server.port, { path: "/frame", headers: { host: "localhost" } })).status, 403);
-		assert.equal((await request(server.port, { path: "/frame/mermaid.js", headers: { host: `127.0.0.1:${server.port + 1}` } })).status, 403);
-	});
-});
-
