@@ -148,7 +148,7 @@ export default function piHooks(pi: ExtensionAPI): void {
 	): Promise<RunOutcome> {
 		const command = substituteFiles(rule.command, files);
 		ctx.ui.setStatus(STATUS_KEY, `${phase === "afterWrite" ? "format" : "lint"}: ${rule.name}`);
-		const outcome = await runShell(exec, command, { cwd: ctx.cwd, timeoutMs: rule.timeoutMs, signal: ctx.signal });
+		const outcome = await runShell(command, { cwd: ctx.cwd, timeoutMs: rule.timeoutMs, signal: ctx.signal });
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		trace({
 			event: "run",

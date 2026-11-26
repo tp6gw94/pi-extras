@@ -173,7 +173,8 @@ pi-hooks 把 `command` 裡每個 `{files}` 換成符合的檔案，以空白分�
 ### 錯誤與逾時
 
 - `.pi/hooks.json` 有錯時，pi-hooks 警告一次，略過有問題的規則，其餘照常載入。
-- 指令執行超過 `timeoutMs` 時，pi-hooks 終止它整個 process group 並通知你。行程一直不結束時，pi-hooks 在時間上限過後 7 秒停止等待。
+- 指令逾時或被中止時，pi-hooks 會向整個行程群組送出 `SIGTERM`。兩秒後若仍有行程，就送出 `SIGKILL` 並停止等待。逾時會另外通知你。
+- 每個指令的標準輸出與錯誤輸出合計保留前 64 KiB。截斷輸出不會改變指令的結束狀態。
 - lint 逾時只通知你，不送給 agent。formatter 失敗或逾時也只通知你。
 - agent 修正 `maxFixAttempts` 次後檢查仍失敗時，pi-hooks 停止，把剩下的錯誤顯示給你，並加進對話但不要求 agent 繼續。次數在下一次使用者 prompt 時歸零。
 
@@ -194,7 +195,7 @@ pi-hooks 把 `command` 裡每個 `{files}` 換成符合的檔案，以空白分�
 - 每次修正後，pi-hooks 對這次 prompt 以來改過的所有檔案重跑檢查，不只修正過的檔案。在預設 3 次修正的上限下，一個檢查每次 prompt 最多跑 4 次。
 - 因為你中斷或因為錯誤而結束的一輪，pi-hooks 不跑 lint。
 - pi-hooks 從 pi 執行的目錄讀取 `.pi/hooks.json`，不是從 git 根目錄。
-- 逾時時，pi-hooks 需要 `setsid` 才能終止指令的子行程。Linux 有 `setsid`。沒有 `setsid` 時（例如預設的 macOS），pi-hooks 只終止主行程，子行程可能繼續執行。
+- 在 Linux 和 macOS 上，hook 指令使用獨立的行程群組，不需要安裝 `setsid` 指令。子行程若離開該群組，就不會跟著被終止。
 
 ## 開發
 

@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { ExecFn } from "./run.ts";
 
@@ -44,6 +44,12 @@ export async function changedSince(exec: ExecFn, cwd: string, start: GitSnapshot
 	const end = await snapshotGit(exec, cwd);
 	if (!end || end.root !== start.root) return undefined;
 	if (end.tree === start.tree) return [];
+	let workdir: string;
+	try {
+		workdir = realpathSync(cwd);
+	} catch {
+		return undefined;
+	}
 	const r = await exec(
 		"git",
 		["diff-tree", "-r", "-z", "--no-renames", "--name-only", "--diff-filter=AMT", start.tree, end.tree],
@@ -53,8 +59,8 @@ export async function changedSince(exec: ExecFn, cwd: string, start: GitSnapshot
 	const out: string[] = [];
 	for (const p of r.stdout.split("\0")) {
 		if (!p) continue;
-		const rel = toProjectRelative(resolve(start.root, p), cwd);
-		if (rel && isRegularFile(resolve(cwd, rel))) out.push(rel);
+		const rel = toProjectRelative(resolve(start.root, p), workdir);
+		if (rel && isRegularFile(resolve(workdir, rel))) out.push(rel);
 	}
 	return out;
 }

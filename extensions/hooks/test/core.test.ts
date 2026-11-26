@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -17,7 +17,7 @@ import { FixCounter } from "../core/fix-counter.ts";
 import { fixRequestMessage, giveUpMessage } from "../core/messages.ts";
 import { RunConfig } from "../core/run-config.ts";
 import { matchAny, matchGlob } from "../core/glob.ts";
-import { runShell, type ExecFn } from "../core/run.ts";
+import { runShell } from "../core/run.ts";
 import { hashConfig, TrustStore } from "../core/trust.ts";
 import { nodeExec } from "./exec.ts";
 
@@ -179,7 +179,7 @@ describe("{files} substitution", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-hooks-dash-"));
 		try {
 			writeFileSync(join(dir, "--version"), "x");
-			const r = await runShell(nodeExec, substituteFiles("ls {files}", ["--version"]), { cwd: dir, timeoutMs: 5000 });
+			const r = await runShell(substituteFiles("ls {files}", ["--version"]), { cwd: dir, timeoutMs: 5000 });
 			assert.equal(r.ok, true);
 			assert.equal(r.output.trim(), "./--version");
 		} finally {
@@ -232,58 +232,129 @@ describe("fix counter / cap", () => {
 describe("command runner / timeout", () => {
 	const cwd = tmpdir();
 
+	function killFixture(file: string) {
+		if (!existsSync(file)) return;
+		const pid = Number(readFileSync(file, "utf8"));
+		if (!Number.isSafeInteger(pid) || pid < 2) return;
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+		}
+	}
+
 	it("reports success and output", async () => {
-		const r = await runShell(nodeExec, "echo out; echo err >&2", { cwd, timeoutMs: 5000 });
+		const r = await runShell("echo out; echo err >&2", { cwd, timeoutMs: 5000 });
 		assert.equal(r.ok, true);
 		assert.equal(r.timedOut, false);
 		assert.match(r.output, /out/);
 		assert.match(r.output, /err/);
 	});
 
+	it("preserves UTF-8 characters split across writes", async () => {
+		const r = await runShell("printf '\\342'; sleep 0.1; printf '\\202\\254'", { cwd, timeoutMs: 5000 });
+		assert.equal(r.output, "€");
+	});
+
+	it("preserves an exited shell's status when a background job inherits its pipes", async () => {
+		const dir = mkdtempSync(join(cwd, "pi-hooks-drain-"));
+		try {
+			const r = await runShell("sleep 10 & echo $! > pid; exit 3", { cwd: dir, timeoutMs: 500 });
+			assert.equal(r.code, 3);
+			assert.equal(r.timedOut, false);
+		} finally {
+			killFixture(join(dir, "pid"));
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("retains diagnostics written shortly after the shell exits", async () => {
+		const r = await runShell("(sleep 0.2; echo diagnostic >&2) & exit 3", { cwd, timeoutMs: 5000 });
+		assert.equal(r.code, 3);
+		assert.equal(r.timedOut, false);
+		assert.equal(r.output, "diagnostic\n");
+	});
+
+	it("bounds retained output without changing the command's exit status", async () => {
+		const command = `${shellQuote(process.execPath)} -e 'process.stdout.write("a".repeat(100000)); process.exitCode = 3'`;
+		const r = await runShell(command, { cwd, timeoutMs: 5000 });
+		assert.equal(r.code, 3);
+		assert.equal(r.timedOut, false);
+		assert.equal(r.output, "[Hook output truncated after 64 KiB]\n" + "a".repeat(65536));
+	});
+
 	it("reports a non-zero exit", async () => {
-		const r = await runShell(nodeExec, "echo bad; exit 3", { cwd, timeoutMs: 5000 });
+		const r = await runShell("echo bad; exit 3", { cwd, timeoutMs: 5000 });
 		assert.equal(r.ok, false);
 		assert.equal(r.code, 3);
 		assert.equal(r.timedOut, false);
 	});
 
+	it("reports a signal exit as shell status", async () => {
+		const r = await runShell("kill -TERM $$", { cwd, timeoutMs: 5000 });
+		assert.equal(r.code, 143);
+		assert.equal(r.timedOut, false);
+	});
+
 	it("kills a hung command at timeoutMs", async () => {
 		const t0 = Date.now();
-		const r = await runShell(nodeExec, "sleep 30", { cwd, timeoutMs: 300 });
+		const r = await runShell("sleep 30", { cwd, timeoutMs: 300 });
 		assert.equal(r.timedOut, true);
 		assert.equal(r.ok, false);
 		assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
 	});
 
 	it("kills the whole process group of a compound command", async () => {
-		const r = await runShell(nodeExec, "sh -c 'sleep 41; echo leaked' & sleep 42", { cwd, timeoutMs: 300 });
-		assert.equal(r.timedOut, true);
-		await new Promise((res) => setTimeout(res, 300));
-		const left = execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })
-			.split("\n")
-			.filter((l) => /^sleep 4[12]$/.test(l.trim()))
-			.join("\n");
-		assert.equal(left.trim(), "");
+		const dir = mkdtempSync(join(cwd, "pi-hooks-group-"));
+		const pidFile = join(dir, "pid");
+		try {
+			writeFileSync(join(dir, "worker.cjs"), `const fs = require('node:fs'); process.on('SIGTERM', () => fs.writeFileSync('term', 'yes')); fs.writeFileSync('pid', String(process.pid)); setInterval(() => {}, 1000);`);
+			const r = await runShell(`sh -c ${shellQuote(`${shellQuote(process.execPath)} worker.cjs; :`)} & wait`, { cwd: dir, timeoutMs: 2000 });
+			assert.equal(r.timedOut, true);
+			assert.equal(readFileSync(join(dir, "term"), "utf8"), "yes");
+			const pid = Number(readFileSync(pidFile, "utf8"));
+			const state = () => {
+				const ps = spawnSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" });
+				if (ps.error) throw ps.error;
+				return ps.stdout.trim();
+			};
+			let status = state();
+			for (let attempt = 0; status && !status.startsWith("Z") && attempt < 20; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+				status = state();
+			}
+			assert.match(status, /^(?:$|Z)/);
+		} finally {
+			killFixture(pidFile);
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("distinguishes a user abort from a timeout", async () => {
 		const ac = new AbortController();
 		setTimeout(() => ac.abort(), 100);
-		const r = await runShell(nodeExec, "sleep 30", { cwd, timeoutMs: 10_000, signal: ac.signal });
+		const r = await runShell("sleep 30", { cwd, timeoutMs: 10_000, signal: ac.signal });
 		assert.equal(r.aborted, true);
 		assert.equal(r.timedOut, false);
 	});
 
-	it("hard guard returns even if exec never settles", async () => {
-		const never: ExecFn = () => new Promise(() => {});
-		const t0 = Date.now();
-		const r = await runShell(never, "whatever", { cwd, timeoutMs: 100, graceMs: 100 });
-		assert.equal(r.timedOut, true);
-		assert.ok(Date.now() - t0 < 1000);
+	it("returns within the hard deadline when an escaped descendant holds the pipes", async () => {
+		const dir = mkdtempSync(join(cwd, "pi-hooks-pipes-"));
+		try {
+			writeFileSync(join(dir, "launch.cjs"), `const child = require('node:child_process').spawn('sleep', ['12'], { detached: true, stdio: 'inherit' }); require('node:fs').writeFileSync('pid', String(child.pid)); child.unref(); setInterval(() => {}, 1000);`);
+			const t0 = Date.now();
+			const r = await runShell(`${shellQuote(process.execPath)} launch.cjs`, { cwd: dir, timeoutMs: 600 });
+			assert.ok(existsSync(join(dir, "pid")));
+			assert.equal(r.timedOut, true);
+			assert.ok(Date.now() - t0 < 7600);
+		} finally {
+			killFixture(join(dir, "pid"));
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("a missing command is a failure, not a crash", async () => {
-		const r = await runShell(nodeExec, "definitely-not-a-command-xyz", { cwd, timeoutMs: 5000 });
+		const r = await runShell("definitely-not-a-command-xyz", { cwd, timeoutMs: 5000 });
 		assert.equal(r.ok, false);
 		assert.equal(r.code, 127);
 	});
@@ -312,7 +383,7 @@ describe("changed files (git)", () => {
 			assert.ok(start);
 			assert.deepEqual(await changedSince(nodeExec, dir, start), []);
 
-			execFileSync("sed", ["-i", "s/a/b/", join(dir, "a.ts")]);
+			writeFileSync(join(dir, "a.ts"), "b\n");
 			mkdirSync(join(dir, "src"));
 			writeFileSync(join(dir, "src", "new.py"), "x\n");
 			mkdirSync(join(dir, "dist"));
@@ -327,6 +398,8 @@ describe("changed files (git)", () => {
 
 			const sub = await changedSince(nodeExec, join(dir, "src"), start);
 			assert.deepEqual(sub, ["new.py"]);
+			symlinkSync("src", join(dir, "alias"), "dir");
+			assert.deepEqual(await changedSince(nodeExec, join(dir, "alias"), start), ["new.py"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
