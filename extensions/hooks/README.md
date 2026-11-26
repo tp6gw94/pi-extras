@@ -173,7 +173,8 @@ If the project is not a git repository, pi-hooks uses the paths from the turn's 
 ### Errors and timeouts
 
 - If `.pi/hooks.json` has an error, pi-hooks shows a warning once, skips the bad rules, and loads the others.
-- When a command runs longer than `timeoutMs`, pi-hooks stops its whole process group and tells you. If the process does not exit, pi-hooks stops waiting 7 seconds after the time limit.
+- On timeout or cancellation, pi-hooks sends `SIGTERM` to the command's process group. After a two-second grace period it sends `SIGKILL` if needed and stops waiting. Timeouts are reported to you.
+- pi-hooks keeps the first 64 KiB of combined output per command. Truncating output does not change the command's exit status.
 - A lint timeout goes to you and not to the agent. A formatter failure or timeout also goes only to you.
 - If the agent still fails a check after `maxFixAttempts` fixes, pi-hooks stops, shows you the remaining errors, and adds them to the conversation without asking the agent to continue. The count resets at the next user prompt.
 
@@ -194,7 +195,7 @@ If the project is not a git repository, pi-hooks uses the paths from the turn's 
 - After each fix, pi-hooks runs the checks again on every file changed since the prompt, not only on the fixed files. With the default limit of 3 fixes, a check runs up to 4 times per prompt.
 - pi-hooks does not lint a turn that ends because you stopped it or because of an error.
 - pi-hooks reads `.pi/hooks.json` from the directory that pi runs in, not from the git root.
-- pi-hooks needs `setsid` to stop a command's child processes on timeout. Linux has it. Without `setsid`, as on stock macOS, pi-hooks stops only the main process, and child processes can keep running.
+- On Linux and macOS, hook commands run in a separate process group without requiring a `setsid` executable. Descendants that leave this group are not stopped with it.
 
 ## Development
 
