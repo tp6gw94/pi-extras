@@ -298,18 +298,18 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 	};
 
 	const handleReview = (req: IncomingMessage, res: ServerResponse, token: string | undefined): void => {
-		const apply = (body?: unknown) => {
+		const apply = async (body?: unknown) => {
 			if (!native || !sameToken(token, native.token) || phase !== "bound" || !current.binding.isCurrent()) {
 				return sendJson(res, 410, { error: SESSION_SWITCHED });
 			}
 			try {
-				sendJson(res, 200, native.request(body));
+				sendJson(res, 200, await native.request(body));
 			} catch (error) {
-				if (error instanceof ReviewError) return sendJson(res, 409, { error: error.message });
+				if (error instanceof ReviewError) return sendJson(res, 409, { error: error.message, pendingSendRequestId: error.pendingSendRequestId });
 				failed(res);
 			}
 		};
-		if (req.method === "GET") return apply();
+		if (req.method === "GET") return void apply().catch(() => failed(res));
 		if (req.method !== "POST") return sendJson(res, 405, { error: "method not allowed" });
 		if (!isJson(req)) return sendJson(res, 415, { error: "Expected JSON." });
 		readBody(req, res, (text) => {
@@ -319,7 +319,7 @@ export async function startAnnotateServer(options: AnnotateServerOptions): Promi
 			} catch {
 				return sendJson(res, 400, { error: "Invalid JSON." });
 			}
-			apply(body);
+			void apply(body).catch(() => failed(res));
 		});
 	};
 

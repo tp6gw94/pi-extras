@@ -279,6 +279,117 @@ test("a corrupt review lock database is not reported as another review owner", (
 	}), /file is not a database/);
 });
 
+test("unanchored threads own separate children across branches and copy only completed exchanges", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "annotation-unanchored-"));
+	let branch = "first";
+	const incomplete = deferred<string>();
+	const owner = openReview(dir, {
+		items: () => [{ id: branch, text: branch, label: "User", kind: "user" }],
+		model: () => ({ provider: "fixture", id: "local" }),
+		prepareDelivery: () => assert.fail("Unexpected delivery"),
+		run: async (file, _model, create, prompt) => {
+			if (create) writeFileSync(file, prompt.original);
+			return prompt.reply === "still running" ? incomplete.promise : `answer to ${prompt.reply ?? prompt.original}`;
+		},
+		reportPersistenceError() {},
+	});
+	t.after(async () => {
+		incomplete.resolve("late");
+		await owner.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+	const ids = [randomUUID(), randomUUID()];
+	for (const [i, id] of ids.entries()) {
+		const start = { action: "start", createId: id, text: `question ${i}` };
+		assert.equal(owner.request(start).noteId, id);
+		assert.equal(owner.request(start).noteId, id);
+		assert.equal(readFileSync(join(dir, `${id}.jsonl`), "utf8"), start.text);
+	}
+	await delay(0);
+	branch = "second";
+	assert.deepEqual(owner.request().notes.map(n => [n.id, n.anchor]), ids.map(id => [id, null]));
+	owner.request({ action: "reply", noteId: ids[0], text: "follow up", requestId: randomUUID() });
+	await delay(0);
+	owner.request({ action: "reply", noteId: ids[0], text: "still running", requestId: randomUUID() });
+	const before = structuredClone(owner.request().notes);
+	const payload = { action: "copy", noteId: ids[0], createId: randomUUID() };
+	const result = owner.request(payload);
+	assert.deepEqual(result.notes.slice(0, 2), before);
+	const copied = result.notes[2]!;
+	assert.ok("version" in copied);
+	const { version: _version, ...note } = copied;
+	assert.deepEqual(note, { id: payload.createId, status: "pending", anchor: null, text: "question 0\n\nanswer to question 0\n\nfollow up\n\nanswer to follow up" });
+	assert.deepEqual(owner.request(payload), result);
+});
+
+test("copy keeps unchanged Markdown anchors and falls back to the rendered quote when the source cannot be verified", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "annotation-copy-"));
+	let branch = "source";
+	let sourceText = "The **answer**";
+	const owner = openReview(dir, {
+		items: () => [{ id: branch, text: sourceText, label: "Assistant", kind: "assistant" }],
+		model: () => ({ provider: "fixture", id: "local" }),
+		prepareDelivery: () => assert.fail("Unexpected delivery"),
+		run: async () => "42",
+		reportPersistenceError() {},
+	});
+	t.after(async () => {
+		await owner.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+	const legacy = { itemId: branch, start: 0, end: sourceText.length, quote: "The answer" };
+	const verified = { ...legacy, sourceText };
+	const start = (anchor: typeof legacy & { sourceText?: string }) => {
+		const { noteId } = owner.request({ action: "save", anchor, text: "meaning?" });
+		owner.request({ action: "start", noteId });
+		return noteId;
+	};
+	const verifiedId = start(verified);
+	const legacyId = start(legacy);
+	await delay(0);
+	const copy = (noteId = verifiedId) => owner.request({ action: "copy", noteId, createId: randomUUID() }).notes.at(-1);
+	const fallback = { anchor: null, text: "The answer\n\nmeaning?\n\n42" };
+	const content = (note: ReturnType<typeof copy>) => ({ anchor: note?.anchor, text: note?.text });
+	assert.deepEqual(content(copy()), { anchor: verified, text: "meaning?\n\n42" });
+	assert.deepEqual(content(copy(legacyId)), fallback);
+	sourceText = "The **result**";
+	assert.deepEqual(content(copy()), fallback);
+	assert.throws(() => owner.request({ action: "save", anchor: verified, text: "stale selection" }), /source text changed/i);
+	branch = "other";
+	assert.deepEqual(content(copy()), fallback);
+});
+
+test("unconfirmed batches remain pending but cannot be resent on reopening", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "annotation-receipt-"));
+	const messages: string[] = [];
+	const open = () => openReview(dir, {
+		items: () => [{ id: "source", text: "text", label: "User", kind: "user" }],
+		model: () => undefined,
+		prepareDelivery: () => assert.fail("Unexpected delivery"),
+		prepareSend: (message) => async () => {
+			messages.push(message);
+			throw new Error("Source stopped");
+		},
+		run: async () => assert.fail("Unexpected thread"),
+		reportPersistenceError() {},
+	});
+	let owner = open();
+	t.after(async () => {
+		await owner.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+	const noteId = owner.request({ action: "save", anchor: { itemId: "source", start: 0, end: 4, quote: "text" }, text: "why" }).noteId;
+	const note = owner.request().notes[0]!;
+	const payload = { action: "send", requestId: randomUUID(), noteIds: [noteId], noteVersions: ["version" in note ? note.version : undefined], text: "" };
+	await assert.rejects(owner.handle(payload), /receipt unknown/i);
+	await owner.close();
+	owner = open();
+	await assert.rejects(owner.handle(payload), /receipt unknown/i);
+	await assert.rejects(owner.handle({ ...payload, requestId: randomUUID() }), /receipt unknown/i);
+	assert.equal(owner.request().notes[0]?.status, "pending");
+	assert.deepEqual(messages, ["> text\n\nwhy"]);
+});
+
 test("failed request writes preserve persisted notes and allow a retry", async (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "annotation-requests-"));
 	const owner = openReview(dir, {

@@ -20,12 +20,18 @@ node extensions/annotation/bin/install-herdr-annotation.mjs
 
 在 Herdr 桌面版的本機 Pi session 裡執行 `/annotate-herdr`。再次執行會回到既有的標註分頁。標註分頁一直對應到來源 session，不會隨目前焦點切換到別的 Pi。重啟 Pi 後如果分頁仍斷線，請在來源 session 執行 `/annotate-herdr`，再到 Herdr 點 **Reconnect**。
 
-- 在逐字稿選取文字後，點 **Add comment**。用滑鼠選取時，編輯框會在選取處旁開啟。按 **⌘ Enter**（其他平台用 **Ctrl+Enter**）儲存留言，不會送給 Pi。
-- 選 **Keyboard selection** 可用鍵盤瀏覽 Markdown 原文。`h`／`j`／`k`／`l` 移動游標，`gg`／`G` 跳到第一／最後一行，`Ctrl+D`／`Ctrl+U` 向下／向上移動半頁。按 `v` 在單則訊息內開始選取，再按 `c` 開啟留言草稿。`Esc` 先取消選取，再按一次回到原本的逐字稿。草稿不會送給 Pi。
-- **Put in original Pi input** 會把引文和待處理留言附加到原本 Pi 的輸入框，不會提交。
-- **Send to background Pi** 會針對已存留言開啟獨立、唯讀的背景 Pi 對話。在其中回覆不會送到原本的 session。
+點一下逐字稿就能用 `hjkl` 移動、`Ctrl+D`／`Ctrl+U` 翻半頁、`gg`／`G` 跳到首尾。按 `v` 在單則訊息內選取，`c` 開留言，`Esc` 取消選取。也可以用滑鼠拖選後按 **Add comment**。
 
-工具輸出預設收合，可以逐則展開。對話訊息仍會完整保留，已儲存的留言可在右欄查看。
+右欄依送出目的地分成兩區：
+
+- **Main Pi** 把自由文字和這個分支的待送留言合成一則，直接送到原本的 session，不動 Pi 的輸入框。如果 Pi 忙碌或無法確認送出，草稿會保留。
+- **Background threads** 是各自獨立、唯讀的背景對話。可以用引文留言或自由文字開新串；回覆會沿用該串的 session。按 **Add to main Pi drafts** 才會把原留言和已完成的問答複製到主 Pi 草稿，原本的背景串不變。
+
+`Enter` 儲存但不送出，`Shift+Enter` 換行。在 macOS，`⌘ Enter` 送給主 Pi，`⌘ Shift+Enter` 開啟或回覆背景串。其他平台用 `Ctrl` 代替 `⌘`。
+
+如果送出尚未確認，請點 **Check previous send**。只要來源 Pi 仍可能送達，就只能在看到訊息後確認已送出，不能標記為未送出。**Check pending start** 會重試原本的背景開串請求，保留後來輸入的草稿。
+
+工具輸出預設收合，可以逐則展開。
 
 ## 從舊標註介面升級
 

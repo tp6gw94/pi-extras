@@ -24,7 +24,7 @@ import {
 
 const snapshotItem = (id, text, kind = "assistant", label = "Assistant") => ({ id, kind, label, text });
 const anchor = (itemId, start, end, quote) => ({ itemId, start, end, quote });
-const note = (id, itemId, status, extra = {}) => ({ id, anchor: anchor(itemId, 0, 4, "text"), text: `note ${id}`, status, ...extra });
+const note = (id, itemId, status, extra = {}) => ({ id, anchor: anchor(itemId, 0, 4, "text"), text: `note ${id}`, status, ...(status === "pending" ? { version: `version of ${id}` } : {}), ...extra });
 
 test("connection files are bound to the tab's Pi session", () => {
 	const raw = JSON.stringify({ sessionId: "session-a", port: 4747, token: "secret" });
@@ -46,7 +46,7 @@ test("snapshot updates append only new items and resets replace the branch", () 
 });
 
 test("branch notes follow transcript order and the delivery batch only carries pending notes", () => {
-	const items = [snapshotItem("b", "B"), snapshotItem("a", "A")];
+	const items = [snapshotItem("b", "text B"), snapshotItem("a", "text A")];
 	const notes = [
 		note("a-pending", "a", "pending"),
 		note("b-thread", "b", "thread", { turns: [{ id: "t1", text: "ask", status: "completed", reply: "ok" }] }),
